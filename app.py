@@ -124,37 +124,6 @@ class StartReq(BaseModel):
         description="If true, enable QoS on ndisink (may drop late frames).",
     )
 
-
-    ndi_multicast_enabled: bool = Field(
-        default_factory=lambda: bool(cfg.get("ndi_multicast_enabled", False)),
-        description="Enable NDI multicast for this stream.",
-    )
-
-    # NDI multicast uses a RANGE (netprefix/netmask), not a single per-stream address.
-    ndi_multicast_netprefix: str = Field(
-        default_factory=lambda: str(cfg.get("ndi_multicast_netprefix", "239.255.0.0")),
-        description="NDI multicast netprefix (e.g. 239.255.0.0).",
-    )
-
-    ndi_multicast_netmask: str = Field(
-        default_factory=lambda: str(cfg.get("ndi_multicast_netmask", "255.255.0.0")),
-        description="NDI multicast netmask (e.g. 255.255.0.0).",
-    )
-
-    # Backwards-compat: older UIs/clients may still send a single address.
-    # If present, we treat it as the netprefix.
-    ndi_multicast_addr: Optional[str] = Field(
-        default_factory=lambda: str(cfg.get("ndi_multicast_addr", "")) or None,
-        description="(Deprecated) Multicast address. Treated as netprefix.",
-    )
-
-    ndi_multicast_ttl: int = Field(
-        default_factory=lambda: int(cfg.get("ndi_multicast_ttl", 1)),
-        ge=0,
-        le=255,
-        description="NDI multicast TTL (default 1).",
-    )
-
 @app.post("/api/start")
 def api_start(req: StartReq):
     global _active_profile
@@ -163,15 +132,6 @@ def api_start(req: StartReq):
     except Exception as e:
         raise HTTPException(400, f"Could not resolve stream URL: {e}")
     try:
-        # Backwards compat: if caller only supplied ndi_multicast_addr, treat it as netprefix.
-        netprefix = (req.ndi_multicast_netprefix or "").strip()
-        netmask = (req.ndi_multicast_netmask or "").strip()
-        if (not netprefix) and req.ndi_multicast_addr:
-            netprefix = str(req.ndi_multicast_addr).strip()
-
-        if req.ndi_multicast_enabled and (not netprefix or not netmask):
-            raise HTTPException(400, "Multicast is enabled but netprefix/netmask were not provided")
-
         # NDI delay is fixed via config (ndi_delay_ms) and clamped in the pipeline layer (defence in depth).
         ndi_bridge.start_with_delay(
             input_url=stream_url,
@@ -181,10 +141,6 @@ def api_start(req: StartReq):
             deinterlace=req.deinterlace,
             buffer_extra_ms=req.buffer_extra_ms,
             ndi_qos=req.ndi_qos,
-            ndi_multicast_enabled=req.ndi_multicast_enabled,
-            ndi_multicast_netprefix=netprefix,
-            ndi_multicast_netmask=netmask,
-            ndi_multicast_ttl=req.ndi_multicast_ttl,
         )
     except FileNotFoundError:
         raise HTTPException(500, "gst-launch-1.0 not found. Install gstreamer.")

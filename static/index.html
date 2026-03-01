@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Tvheadend → NDI Bridge</title>
+  <title>TeleTwat V1.0</title>
   <link rel="stylesheet" href="/static/common.css">
   
 </head>
@@ -12,7 +12,7 @@
 <div class="wrap">
   <header>
     <div class="title">
-      <h1 class="srOnly">Tvheadend → NDI Bridge</h1>
+      <h1 class="srOnly">TeleTwat</h1>
       <div class="sub">Select a channel, name the NDI source, and publish it on your LAN.</div>
     </div>
         <div class="rightTop">
@@ -40,31 +40,6 @@
         <div class="field">
           <label for="ndiname">NDI source name</label>
           <input id="ndiname" placeholder="e.g. BROADCASTPI 1" value="BROADCASTPI Test" />
-        </div>
-      </div>
-
-
-      <div class="row" style="margin-top:8px;">
-        <div class="field">
-          <label for="ndi_mcast_mode">NDI Multicast</label>
-          <select id="ndi_mcast_mode">
-            <option value="disabled">Disabled</option>
-            <option value="enabled">Enabled</option>
-          </select>
-        </div>
-      </div>
-
-      <div id="ndiMcastFields" class="row hidden" style="margin-top:4px;">
-        <div class="field">
-          <label for="ndi_mcast_netprefix">Netprefix</label>
-          <input id="ndi_mcast_netprefix" placeholder="e.g. 239.255.0.0" />
-
-          <label for="ndi_mcast_netmask">Netmask</label>
-          <input id="ndi_mcast_netmask" placeholder="e.g. 255.255.0.0" />
-        </div>
-        <div class="field">
-          <label for="ndi_mcast_ttl">TTL</label>
-          <input id="ndi_mcast_ttl" type="number" min="0" max="255" value="1" />
         </div>
       </div>
       <div class="actions">
@@ -108,6 +83,11 @@
 
 <script src="/static/common.js"></script>
 <script>
+// Local UI timer used ONLY as a short-lived fallback immediately after the user
+// presses Start (before the backend returns a fresh started_at). It must NOT
+// be set on page load, otherwise uptime would reset on every visit.
+let _localStartedAt = null;
+
 function setRunningUI(running){
   const dot = document.getElementById("dot");
   const statusText = document.getElementById("statusText");
@@ -118,7 +98,7 @@ function setRunningUI(running){
 
 
 function setFormDisabled(disabled){
-  const ids = ["channel","ndiname","ndi_mcast_mode","ndi_mcast_netprefix","ndi_mcast_netmask","ndi_mcast_ttl"];
+  const ids = ["channel","ndiname"];
   for (const id of ids){
     const el = document.getElementById(id);
     if (el) el.disabled = !!disabled;
@@ -129,13 +109,6 @@ function setFormDisabled(disabled){
 }
 
 
-function updateMcastUI(){
-  const mode = document.getElementById("ndi_mcast_mode");
-  const fields = document.getElementById("ndiMcastFields");
-  if (!mode || !fields) return;
-  const enabled = (mode.value === "enabled");
-  fields.classList.toggle("hidden", !enabled);
-}
 
 function populateFormFromStatus(st){
   if (!st || !st.running) return;
@@ -143,17 +116,6 @@ function populateFormFromStatus(st){
   if (ch && st.channel_uuid) ch.value = st.channel_uuid;
   const n = document.getElementById("ndiname");
   if (n && st.ndi_name) n.value = st.ndi_name;
-
-  const mode = document.getElementById("ndi_mcast_mode");
-  const netprefix = document.getElementById("ndi_mcast_netprefix");
-  const netmask = document.getElementById("ndi_mcast_netmask");
-  const ttl = document.getElementById("ndi_mcast_ttl");
-
-  if (mode) mode.value = st.ndi_multicast_enabled ? "enabled" : "disabled";
-  if (netprefix) netprefix.value = st.ndi_multicast_netprefix || st.ndi_multicast_addr || "";
-  if (netmask) netmask.value = st.ndi_multicast_netmask || "";
-  if (ttl && (st.ndi_multicast_ttl !== null && st.ndi_multicast_ttl !== undefined)) ttl.value = String(st.ndi_multicast_ttl);
-  updateMcastUI();
 }
 
 function setAlertBadge(kind, text){
@@ -190,7 +152,28 @@ async function refreshStatus() {
   if (running) populateFormFromStatus(st);
 
   document.getElementById("st_state").textContent = st.pipeline_state || (running ? "PLAYING" : "NULL");
-  document.getElementById("st_uptime").textContent = running ? fmtUptime(st.started_at) : "—";
+
+  // Track *actual* stream uptime across page reloads using backend started_at.
+  // Only use the local fallback right after Start was pressed.
+  let startedAt = st.started_at;
+  let uptimeSec = st.uptime_sec;
+  if (running) {
+    if (_localStartedAt && (!startedAt || startedAt < (_localStartedAt - 2))) {
+      startedAt = _localStartedAt;
+    }
+  } else {
+    _localStartedAt = null;
+  }
+  // Prefer server-computed uptime to avoid client/server clock skew.
+  let uptimeText = "—";
+  if (running) {
+    if (uptimeSec !== undefined && uptimeSec !== null) {
+      uptimeText = fmtDuration(uptimeSec);
+    } else {
+      uptimeText = fmtUptime(startedAt);
+    }
+  }
+  document.getElementById("st_uptime").textContent = uptimeText;
   document.getElementById("st_ndi").textContent = running ? (st.ndi_name || "—") : "—";
 
   if (st.last_error){
@@ -210,33 +193,19 @@ document.getElementById("start").addEventListener("click", async () => {
     return;
   }
 
-  const st = await jget("/api/status?lite=1");
-  if (st.running){
-    toast("NDI is already running.", "warn");
-    await refreshStatus();
-    return;
-  }
+  // Reset uptime immediately in the UI.
+  _localStartedAt = Math.floor(Date.now()/1000);
+  document.getElementById("st_uptime").textContent = "00:00:00";
+  setRunningUI(true);
+  setFormDisabled(true);
+
   toast("Starting…");
   document.getElementById("start").disabled = true;
 
   try {
-        const mcastEnabled = (document.getElementById("ndi_mcast_mode").value === "enabled");
-    const mcastNetprefix = document.getElementById("ndi_mcast_netprefix").value.trim();
-    const mcastNetmask = document.getElementById("ndi_mcast_netmask").value.trim();
-    const mcastTtl = parseInt(document.getElementById("ndi_mcast_ttl").value, 10);
-
-    if (mcastEnabled && (!mcastNetprefix || !mcastNetmask)){
-      toast("Multicast is enabled: please enter netprefix and netmask.", "bad");
-      return;
-    }
-
     await jpost("/api/start", {
       channel_uuid: uuid,
       ndi_name: ndi,
-      ndi_multicast_enabled: mcastEnabled,
-      ndi_multicast_netprefix: mcastNetprefix,
-      ndi_multicast_netmask: mcastNetmask,
-      ndi_multicast_ttl: isFinite(mcastTtl) ? mcastTtl : 1,
     });
     toast("NDI started.");
   } catch (e) {
@@ -266,10 +235,6 @@ document.getElementById("refresh").addEventListener("click", refreshStatus);
 
 (async () => {
   await loadChannels();
-
-  const mode = document.getElementById("ndi_mcast_mode");
-  if (mode) mode.addEventListener("change", updateMcastUI);
-  updateMcastUI();
 
   await refreshStatus();
   setInterval(refreshStatus, 2000);

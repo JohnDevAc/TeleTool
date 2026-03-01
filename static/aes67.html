@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Tvheadend → AES67 Bridge</title>
+  <title>TeleTwat v1.0</title>
   <link rel="stylesheet" href="/static/common.css">
   
 </head>
@@ -34,7 +34,7 @@
       <div class="row">
         <div class="field">
           <label for="mcast">Multicast address</label>
-          <input id="mcast" placeholder="e.g. 239.69.0.1" value="239.69.0.1" />
+          <input id="mcast" placeholder="e.g. 239.255.0.0" value="239.255.0.0" />
         </div>
 
         <div class="field">
@@ -50,6 +50,7 @@
             <option value="1">1 ms (AES67 low-latency)</option>
             <option value="2">2 ms</option>
             <option value="5">5 ms (lower packet rate)</option>
+            <option value="10">10 ms (lower packet rate)</option>
           </select>
         </div>
         <div class="field">
@@ -182,7 +183,9 @@ async function refreshStatus(){
   if (stopBtn) stopBtn.disabled = !aesRunning;
 
   document.getElementById("st_ndi").textContent = ndiRunning ? "RUNNING" : "STOPPED";
-  document.getElementById("st_state").textContent = st.pipeline_state || (aesRunning ? "PLAYING" : "NULL");
+  // Show the effective pipeline state (more reliable than raw bus state on some systems).
+  // If you ever need the raw bus state for debugging, it is still provided by the API.
+  document.getElementById("st_state").textContent = (st.pipeline_state || st.pipeline_state_raw || (aesRunning ? "—" : "NULL"));
   document.getElementById("st_mcast").textContent = aesRunning ? (st.multicast_addr || "—") : "—";
   document.getElementById("st_port").textContent = aesRunning ? String(st.rtp_port || "—") : "—";
   // Input field removed from UI; avoid touching a non-existent element.

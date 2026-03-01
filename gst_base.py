@@ -75,9 +75,12 @@ class GstPipelineBase:
             # pipeline isn't always observed (GI wrapper differences), which can
             # leave _pipeline_state stuck at NULL even though the pipeline is
             # PLAYING. The UI uses `running` to decide whether to show live stats.
-            # If we have a pipeline object but never observed STATE_CHANGED on the
-            # top-level pipeline (some GI builds), keep the UI sensible.
-            state_for_ui = self._pipeline_state
+            #
+            # We therefore expose BOTH:
+            #   - pipeline_state_raw: the last state observed from the GST bus (may be stale)
+            #   - pipeline_state: an "effective" state used for UI gating (may be adjusted)
+            raw_state = self._pipeline_state
+            state_for_ui = raw_state
             if self._pipeline is not None and state_for_ui in ("NULL", "READY"):
                 state_for_ui = "PLAYING"
 
@@ -87,6 +90,7 @@ class GstPipelineBase:
             d = {
                 "running": running,
                 "pipeline_state": state_for_ui,
+                "pipeline_state_raw": raw_state,
                 "last_error": self._last_error,
                 "last_warning": self._last_warning,
             }

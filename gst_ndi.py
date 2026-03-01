@@ -4,83 +4,10 @@ from dataclasses import dataclass, asdict
 from typing import Any, Deque, Dict, List, Optional
 import json
 from pathlib import Path
-import os
-import ipaddress
 
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
 
 
-def _ndi_config_path(cfg: Dict[str, Any]) -> Path:
-    """Resolve the NDI runtime configuration file path.
-
-    NDI's Linux configuration is typically read from a JSON file named
-    "ndi-config.v1.json" in the effective user's home directory.
-
-    This project allows overriding the path via config.json key
-    "ndi_config_path".
-    """
-    p = cfg.get("ndi_config_path")
-    if p:
-        try:
-            return Path(str(p)).expanduser().resolve()
-        except Exception:
-            pass
-    return Path.home() / "ndi-config.v1.json"
-
-
-def _read_json(path: Path) -> Dict[str, Any]:
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return {}
-
-
-def _atomic_write_json(path: Path, data: Dict[str, Any]):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
-    tmp.replace(path)
-
-
-def _validate_ipv4(s: str) -> str:
-    # Accept only IPv4 here (NDI multicast range examples are IPv4).
-    return str(ipaddress.IPv4Address(s.strip()))
-
-
-def _ensure_ndi_multicast_config(
-    cfg: Dict[str, Any],
-    enable: bool,
-    ttl: int,
-    netprefix: str,
-    netmask: str,
-) -> Path:
-    """Write NDI multicast send configuration to the NDI runtime config file.
-
-    This is the primary supported control-plane for NDI multicast on Linux.
-    The NDI runtime reads this config file to decide whether to send via
-    multicast and what multicast range (prefix/mask) to use.
-    """
-    ttl_i = int(max(0, min(255, int(ttl))))
-    netprefix_i = _validate_ipv4(netprefix)
-    netmask_i = _validate_ipv4(netmask)
-
-    path = _ndi_config_path(cfg)
-    doc = _read_json(path)
-
-    doc.setdefault("ndi", {})
-    ndi = doc["ndi"]
-    ndi.setdefault("multicast", {})
-    mcast = ndi["multicast"]
-    mcast.setdefault("send", {})
-    send = mcast["send"]
-
-    send["enable"] = bool(enable)
-    send["ttl"] = ttl_i
-    send["netprefix"] = netprefix_i
-    send["netmask"] = netmask_i
-
-    _atomic_write_json(path, doc)
-    return path
 
 def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     """Load config.json for pipeline defaults.
@@ -112,9 +39,12 @@ class RunState:
     ndi_name: Optional[str]
     input_url: Optional[str]
     started_at: Optional[float]
+    # Server-side uptime in seconds (avoids client/server clock skew)
+    uptime_sec: Optional[float]
     last_log: List[str]
 
     pipeline_state: str
+    pipeline_state_raw: str
     video_caps: Optional[str]
     audio_caps: Optional[str]
 
@@ -146,8 +76,10 @@ class Aes67RunState:
     channel_uuid: Optional[str]
     input_url: Optional[str]
     started_at: Optional[float]
+    uptime_sec: Optional[float]
     last_log: List[str]
     pipeline_state: str
+    pipeline_state_raw: str
     last_error: Optional[str]
     sap_mcast: Optional[str]
     sap_port: Optional[int]
@@ -179,12 +111,6 @@ class GstNDIBridge(GstPipelineBase):
 
         # Configured NDI delay (ms) for the currently running pipeline
         self._ndi_delay_ms: Optional[int] = None
-
-        # NDI multicast (per-stream overrides; only meaningful while running)
-        self._ndi_multicast_enabled: bool = False
-        self._ndi_multicast_netprefix: Optional[str] = None
-        self._ndi_multicast_netmask: Optional[str] = None
-        self._ndi_multicast_ttl: Optional[int] = None
 
         self._qos_events: int = 0
         # Estimated bitrate (bps) of buffers reaching NDI (optional; controlled via enable_bitrate_probe).
@@ -284,15 +210,24 @@ class GstNDIBridge(GstPipelineBase):
     def status(self) -> Dict:
         base = self._base_status_fields(include_log=True)
         with self._lock:
+            running = bool(base["running"])
+            uptime_sec = None
+            if running and self._started_at:
+                try:
+                    uptime_sec = max(0.0, float(time.time() - float(self._started_at)))
+                except Exception:
+                    uptime_sec = None
             st = RunState(
-                running=bool(base["running"]),
+                running=running,
                 pid=None,
-                channel_uuid=self._channel_uuid if base["running"] else None,
-                ndi_name=self._ndi_name if base["running"] else None,
-                input_url=self._input_url if base["running"] else None,
-                started_at=self._started_at if base["running"] else None,
+                channel_uuid=self._channel_uuid if running else None,
+                ndi_name=self._ndi_name if running else None,
+                input_url=self._input_url if running else None,
+                started_at=self._started_at if running else None,
+                uptime_sec=uptime_sec,
                 last_log=base["last_log"],
                 pipeline_state=base["pipeline_state"],
+                pipeline_state_raw=base.get("pipeline_state_raw","NULL"),
                 video_caps=self._video_caps,
                 audio_caps=self._audio_caps,
                 ndi_delay_ms=self._ndi_delay_ms,
@@ -317,23 +252,23 @@ class GstNDIBridge(GstPipelineBase):
         base = self._base_status_fields(include_log=bool(include_logs))
         with self._lock:
             running = bool(base.get("running"))
+            uptime_sec = None
+            if running and self._started_at:
+                try:
+                    uptime_sec = max(0.0, float(time.time() - float(self._started_at)))
+                except Exception:
+                    uptime_sec = None
             d: Dict = {
                 "running": running,
                 "pipeline_state": base.get("pipeline_state"),
+                "pipeline_state_raw": base.get("pipeline_state_raw"),
                 "last_error": base.get("last_error"),
                 "last_warning": base.get("last_warning"),
                 "channel_uuid": self._channel_uuid if running else None,
                 "ndi_name": self._ndi_name if running else None,
                 "input_url": self._input_url if running else None,
                 "started_at": self._started_at if running else None,
-                "ndi_multicast_enabled": bool(self._ndi_multicast_enabled) if running else False,
-                # Backwards-compat field: previously the UI asked for a single multicast address.
-                # NDI multicast actually uses a range (netprefix/netmask). We keep this key as the
-                # prefix so older UIs don't crash.
-                "ndi_multicast_addr": self._ndi_multicast_netprefix if running else None,
-                "ndi_multicast_netprefix": self._ndi_multicast_netprefix if running else None,
-                "ndi_multicast_netmask": self._ndi_multicast_netmask if running else None,
-                "ndi_multicast_ttl": self._ndi_multicast_ttl if running else None,
+                "uptime_sec": uptime_sec,
             }
             if include_logs:
                 d["last_log"] = base.get("last_log", [])
@@ -362,6 +297,12 @@ class GstNDIBridge(GstPipelineBase):
             # so the UI can display/copy it.
             enabled = bool(self._aes67_enabled)
             running = bool(base["running"]) and enabled
+            uptime_sec = None
+            if enabled and self._aes67_started_at:
+                try:
+                    uptime_sec = max(0.0, float(time.time() - float(self._aes67_started_at)))
+                except Exception:
+                    uptime_sec = None
             st = Aes67RunState(
                 running=running,
                 multicast_addr=self._aes67_multicast_addr if enabled else None,
@@ -369,8 +310,10 @@ class GstNDIBridge(GstPipelineBase):
                 channel_uuid=self._channel_uuid if base["running"] else None,
                 input_url=self._input_url if base["running"] else None,
                 started_at=self._aes67_started_at if enabled else None,
+                uptime_sec=uptime_sec,
                 last_log=list(self._aes67_log_tail),
                 pipeline_state=base["pipeline_state"],
+                pipeline_state_raw=base.get("pipeline_state_raw","NULL"),
                 last_error=self._aes67_last_error,
                 sap_mcast=self._aes67_sap_mcast if enabled else None,
                 sap_port=self._aes67_sap_port if enabled else None,
@@ -551,10 +494,6 @@ class GstNDIBridge(GstPipelineBase):
         buffer_extra_ms: Optional[int] = None,
         ndi_qos: Optional[bool] = None,
         enable_bitrate_probe: Optional[bool] = None,
-        ndi_multicast_enabled: Optional[bool] = None,
-        ndi_multicast_netprefix: Optional[str] = None,
-        ndi_multicast_netmask: Optional[str] = None,
-        ndi_multicast_ttl: Optional[int] = None,
     ):
         """Start the pipeline with a configurable output delay.
 
@@ -602,34 +541,6 @@ class GstNDIBridge(GstPipelineBase):
         ndi_qos_i = bool(cfg.get("ndi_qos", False)) if ndi_qos is None else bool(ndi_qos)
 
         enable_probe_i = bool(cfg.get("enable_bitrate_probe", False)) if enable_bitrate_probe is None else bool(enable_bitrate_probe)
-
-        # NDI multicast configuration.
-        # NOTE: NDI multicast is controlled by the NDI runtime configuration (Linux: ndi-config.v1.json).
-        # We treat these as per-start overrides but apply them by writing the config file.
-        multicast_enabled_default = bool(cfg.get("ndi_multicast_enabled", False))
-        multicast_enabled_i = multicast_enabled_default if ndi_multicast_enabled is None else bool(ndi_multicast_enabled)
-
-        multicast_ttl_default = int(cfg.get("ndi_multicast_ttl", 1))
-        try:
-            multicast_ttl_i = int(multicast_ttl_default if ndi_multicast_ttl is None else ndi_multicast_ttl)
-        except Exception:
-            multicast_ttl_i = multicast_ttl_default
-        multicast_ttl_i = max(0, min(255, multicast_ttl_i))
-
-        netprefix_default = str(cfg.get("ndi_multicast_netprefix", "239.255.0.0"))
-        netmask_default = str(cfg.get("ndi_multicast_netmask", "255.255.0.0"))
-        netprefix_i = netprefix_default if ndi_multicast_netprefix is None else str(ndi_multicast_netprefix or netprefix_default)
-        netmask_i = netmask_default if ndi_multicast_netmask is None else str(ndi_multicast_netmask or netmask_default)
-
-        if multicast_enabled_i:
-            # Validate early so the API returns a useful error instead of starting a broken pipeline.
-            try:
-                _validate_ipv4(netprefix_i)
-                _validate_ipv4(netmask_i)
-            except Exception as e:
-                raise ValueError(f"Invalid NDI multicast netprefix/netmask: {e}")
-
-
         # Persist UI-facing metadata for /api/status.
         # These are cleared on stop(); when running, status_lite exposes them for the web UI.
         with self._lock:
@@ -638,28 +549,6 @@ class GstNDIBridge(GstPipelineBase):
             self._input_url = str(input_url)
             self._started_at = time.time()
             self._ndi_delay_ms = int(delay_ms_i)
-            self._ndi_multicast_enabled = bool(multicast_enabled_i)
-            self._ndi_multicast_netprefix = _validate_ipv4(netprefix_i) if multicast_enabled_i else None
-            self._ndi_multicast_netmask = _validate_ipv4(netmask_i) if multicast_enabled_i else None
-            self._ndi_multicast_ttl = int(multicast_ttl_i) if multicast_enabled_i else None
-
-        # Apply multicast configuration via NDI runtime config, if enabled for this project.
-        manage_cfg = bool(cfg.get("ndi_multicast_manage_config", True))
-        if manage_cfg:
-            try:
-                p = _ensure_ndi_multicast_config(
-                    cfg=cfg,
-                    enable=multicast_enabled_i,
-                    ttl=multicast_ttl_i,
-                    netprefix=netprefix_i,
-                    netmask=netmask_i,
-                )
-                self._push_log(
-                    f"NDI multicast config {'enabled' if multicast_enabled_i else 'disabled'} via {p} (ttl={multicast_ttl_i}, netprefix={netprefix_i}, netmask={netmask_i})"
-                )
-            except Exception as e:
-                # Don't block pipeline start; but surface the problem clearly.
-                self._push_warn(f"Failed to write NDI multicast config: {e}")
 
 
         with self._lock:
@@ -757,8 +646,6 @@ class GstNDIBridge(GstPipelineBase):
 
         self._start_pipeline(pipeline_desc=pipeline_desc, poll_cb=self._poll_stats)
 
-        # NDI multicast is controlled via the NDI runtime configuration.
-        # We no longer attempt to set ad-hoc multicast properties on the ndisink element
         # (different plugins expose different properties, and many expose none).
 
 
@@ -777,10 +664,6 @@ class GstNDIBridge(GstPipelineBase):
             self._input_url = None
             self._started_at = None
             self._ndi_delay_ms = None
-            self._ndi_multicast_enabled = False
-            self._ndi_multicast_netprefix = None
-            self._ndi_multicast_netmask = None
-            self._ndi_multicast_ttl = None
             self._bitrate_bps_est = None
             self._bitrate_probe_hooked = False
             self._bitrate_probe_bytes = 0

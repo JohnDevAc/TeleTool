@@ -1380,6 +1380,40 @@ def _manager_heartbeat_unit(unit: Dict[str, Any], manager_identity: Dict[str, st
         return {"ok": False, "error": str(e)}
 
 
+def _manager_connection_error_message(target: Dict[str, Any], exc: Exception) -> str:
+    address = str(target.get("address") or target.get("host") or "that address")
+    if isinstance(exc, (requests.ConnectTimeout, requests.ReadTimeout, requests.Timeout)):
+        return f"Could not reach {address}. Check the IP/hostname and that TeleTool is running."
+    if isinstance(exc, requests.ConnectionError):
+        return f"Could not connect to {address}. Check the IP/hostname, port, and network connection."
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        status = exc.response.status_code
+        if status == 404:
+            return f"{address} responded, but it does not appear to be a TeleTool unit."
+        return f"{address} returned HTTP {status} while validating the TeleTool unit."
+    return f"Could not validate {address}: {exc}"
+
+
+def _manager_validate_unit_for_add(target: Dict[str, Any], manager_identity: Dict[str, str]) -> Dict[str, Any]:
+    try:
+        status = _manager_fetch_json(target["base_url"], "/api/status?lite=1")
+    except Exception as e:
+        raise ValueError(_manager_connection_error_message(target, e))
+
+    if "running" not in status and "pipeline_state" not in status and "supervisor" not in status:
+        raise ValueError(f"{target['address']} responded, but it does not look like a TeleTool unit.")
+
+    adoption = _manager_heartbeat_unit(target, manager_identity)
+    if not adoption.get("ok"):
+        raise ValueError(adoption.get("error") or "That TeleTool unit could not be adopted.")
+
+    return {
+        "online": True,
+        "adoption": adoption.get("adoption") or {},
+        "running": bool(status.get("running")),
+    }
+
+
 def _manager_release_unit(unit: Dict[str, Any], manager_identity: Dict[str, str]) -> None:
     try:
         _manager_post_json(
@@ -1575,14 +1609,26 @@ class ManagerUnitReq(BaseModel):
 
 
 @app.post("/api/manager/units")
-def api_manager_add_unit(req: ManagerUnitReq):
+def api_manager_add_unit(req: ManagerUnitReq, request: Request):
     try:
         target = _normalise_manager_target(req.host)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+    current_base_url = str(request.base_url).rstrip("/")
+    if target["base_url"].rstrip("/").lower() == current_base_url.lower():
+        raise HTTPException(409, "This TeleTool is already shown as the Primary unit")
+
     units = _manager_units_from_config()
     if any(unit["base_url"].lower() == target["base_url"].lower() for unit in units):
         raise HTTPException(409, "That TeleTool unit is already listed")
+
+    manager_identity = _manager_identity(current_base_url + "/manager")
+    try:
+        validation = _manager_validate_unit_for_add(target, manager_identity)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
     new_unit = {
         "id": uuid.uuid4().hex,
         "host": target["host"],
@@ -1592,7 +1638,7 @@ def api_manager_add_unit(req: ManagerUnitReq):
         "port": target["port"],
     }
     _update_stored_config({MANAGER_CONFIG_KEY: units + [new_unit]})
-    return {"ok": True, "unit": new_unit, "units": _manager_units_from_config()}
+    return {"ok": True, "unit": new_unit, "validation": validation, "units": _manager_units_from_config()}
 
 
 @app.delete("/api/manager/units/{unit_id}")

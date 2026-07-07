@@ -33,7 +33,7 @@
       <form id="addUnitForm" class="row">
         <div class="field">
           <label for="unitHost">IP address or hostname</label>
-          <input id="unitHost" placeholder="192.168.1.50" autocomplete="off" spellcheck="false" />
+          <input id="unitHost" placeholder="192.168.1.50" autocomplete="off" spellcheck="false" required />
         </div>
         <div class="actions managerControlActions">
           <button id="addUnit" class="primary" type="submit">Add Unit</button>
@@ -281,6 +281,7 @@ document.getElementById("addUnitForm").addEventListener("submit", async (event) 
     return;
   }
   document.getElementById("addUnit").disabled = true;
+  toast("Validating unit...");
   try{
     await jpost("/api/manager/units", { host });
     input.value = "";

@@ -51,6 +51,31 @@ function setBadge(el, kind, text){
   el.textContent = text || "";
 }
 
+function rfSignalKind(rf){
+  const kind = rf && rf.kind ? String(rf.kind) : "";
+  if (kind === "good" || kind === "warn" || kind === "bad") return kind;
+  const percent = Number(rf && rf.percent);
+  if (Number.isFinite(percent)){
+    if (percent >= 65) return "good";
+    if (percent >= 35) return "warn";
+  }
+  return "bad";
+}
+
+function rfSignalLabel(rf){
+  if (!rf || !rf.available) return "N/A";
+  if (Number.isFinite(Number(rf.percent))) return `${Math.round(Number(rf.percent))}%`;
+  return String(rf.label || "N/A");
+}
+
+function rfSignalTitle(rf){
+  if (!rf || !rf.available) return "RF signal unavailable";
+  const parts = [`RF signal ${rfSignalLabel(rf)}`];
+  if (rf.snr) parts.push(`SNR ${rf.snr}`);
+  if (rf.mux) parts.push(String(rf.mux));
+  return parts.join(" | ");
+}
+
 let _toastTimer = null;
 function toast(msg, kind="info", ms=2400){
   const el = document.querySelector("#toast");

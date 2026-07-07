@@ -183,6 +183,181 @@ def _channel_summary_for_uuid(channel_uuid: Optional[str]) -> Dict[str, Any]:
     return {}
 
 
+def _rf_number(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    match = re.search(r"-?\d+(?:\.\d+)?", str(value))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except Exception:
+        return None
+
+
+def _rf_percent(value: Any) -> Optional[int]:
+    n = _rf_number(value)
+    if n is None:
+        return None
+    text = str(value or "")
+    if "%" in text or 0 <= n <= 100:
+        return max(0, min(100, int(round(n))))
+    if 100 < n <= 65535:
+        return max(0, min(100, int(round((n / 65535.0) * 100))))
+    return None
+
+
+def _rf_kind(percent: Optional[int], *, snr: Any = None) -> str:
+    if percent is not None:
+        if percent >= 65:
+            return "good"
+        if percent >= 35:
+            return "warn"
+        return "bad"
+    snr_n = _rf_number(snr)
+    if snr_n is not None and 0 <= snr_n <= 60:
+        if snr_n >= 28:
+            return "good"
+        if snr_n >= 18:
+            return "warn"
+    return "bad"
+
+
+def _rf_text(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, float):
+        return f"{value:.1f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def _rf_status_from_mux(mux: Dict[str, Any], *, source: str) -> Dict[str, Any]:
+    signal = mux.get("signal")
+    snr = mux.get("snr")
+    signal_percent = _rf_percent(signal)
+    snr_percent = _rf_percent(snr)
+    percent = signal_percent if signal_percent is not None else snr_percent
+    available = percent is not None or signal not in (None, "") or snr not in (None, "")
+    label = f"{percent}%" if percent is not None else (_rf_text(signal) or _rf_text(snr) or "N/A")
+    return {
+        "available": available,
+        "kind": _rf_kind(percent, snr=snr),
+        "label": label,
+        "percent": percent,
+        "signal": _rf_text(signal),
+        "signal_percent": signal_percent,
+        "snr": _rf_text(snr),
+        "snr_percent": snr_percent,
+        "mux": _mux_label(mux),
+        "source": source,
+    }
+
+
+def _service_matches_channel(service: Dict[str, Any], channel_uuid: Optional[str], channel_name: Optional[str]) -> bool:
+    if channel_uuid:
+        for key in ("channel_uuid", "channel", "channelid", "channel_id"):
+            if str(service.get(key) or "").strip() == str(channel_uuid).strip():
+                return True
+    if channel_name:
+        wanted = str(channel_name).strip().lower()
+        for key in ("channelname", "channel_name", "name", "svcname"):
+            value = str(service.get(key) or "").strip().lower()
+            if value and value == wanted:
+                return True
+    return False
+
+
+def _mux_matches_ref(mux: Dict[str, Any], ref: str) -> bool:
+    ref_s = str(ref or "").strip()
+    if not ref_s:
+        return False
+    candidates = (
+        mux.get("uuid"),
+        mux.get("name"),
+        mux.get("muxname"),
+        mux.get("multiplex"),
+        mux.get("frequency"),
+        mux.get("freq"),
+    )
+    return any(str(candidate or "").strip() == ref_s for candidate in candidates)
+
+
+def _mux_for_service(muxes: List[Dict[str, Any]], service: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    refs = [
+        service.get(key)
+        for key in ("mux_uuid", "multiplex_uuid", "mux", "multiplex", "muxname", "network_mux_uuid")
+        if service.get(key) not in (None, "")
+    ]
+    for ref in refs:
+        for mux in muxes:
+            if _mux_matches_ref(mux, str(ref)):
+                return mux
+    return None
+
+
+def _best_rf_mux(muxes: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    best: Optional[Tuple[float, Dict[str, Any]]] = None
+    for mux in muxes:
+        signal_percent = _rf_percent(mux.get("signal"))
+        snr_percent = _rf_percent(mux.get("snr"))
+        if signal_percent is None and snr_percent is None and mux.get("signal") in (None, "") and mux.get("snr") in (None, ""):
+            continue
+        score = float(signal_percent if signal_percent is not None else (snr_percent if snr_percent is not None else 0))
+        if (_coerce_int(mux.get("num_svc")) or 0) > 0:
+            score += 5.0
+        if best is None or score > best[0]:
+            best = (score, mux)
+    return best[1] if best else None
+
+
+def _rf_status_for_channel(channel_uuid: Optional[str] = None, channel_name: Optional[str] = None) -> Dict[str, Any]:
+    unavailable = {
+        "available": False,
+        "kind": "bad",
+        "label": "N/A",
+        "percent": None,
+        "signal": None,
+        "signal_percent": None,
+        "snr": None,
+        "snr_percent": None,
+        "mux": None,
+        "source": "unavailable",
+    }
+    try:
+        network = _resolve_dvbt_network()
+        network_uuid = str(network.get("uuid") or "")
+        muxes = tvh.list_muxes_for_network(network_uuid) if network_uuid else []
+    except Exception as e:
+        out = dict(unavailable)
+        out["error"] = str(e)
+        return out
+
+    matched_service: Optional[Dict[str, Any]] = None
+    if channel_uuid or channel_name:
+        try:
+            for service in tvh.list_services(hidemode="none"):
+                if _service_matches_channel(service, channel_uuid, channel_name):
+                    matched_service = service
+                    break
+        except Exception:
+            matched_service = None
+
+    if matched_service:
+        service_rf = _rf_status_from_mux(matched_service, source="service")
+        if service_rf.get("available"):
+            return service_rf
+        mux = _mux_for_service(muxes, matched_service)
+        if mux:
+            return _rf_status_from_mux(mux, source="active_mux")
+
+    mux = _best_rf_mux(muxes)
+    if mux:
+        return _rf_status_from_mux(mux, source="best_mux")
+    return unavailable
+
+
 def _restore_desired_lineout(reason: str = "supervisor restore") -> None:
     with NDI_SUPERVISOR_LOCK:
         audio_req = deepcopy(NDI_SUPERVISOR_STATE.get("lineout_request"))
@@ -817,6 +992,10 @@ def api_status(lite: bool = Query(False), logs: bool = Query(False), stats: bool
     else:
         st["active_channel_name"] = None
         st["active_channel_number"] = None
+    st["rf"] = _rf_status_for_channel(
+        st.get("channel_uuid") or req_d.get("channel_uuid"),
+        st.get("active_channel_name") or req_d.get("channel_name"),
+    )
     st["supervisor"] = {
         "desired": bool(sup.get("desired")),
         "restart_count": int(sup.get("restart_count") or 0),
@@ -1128,6 +1307,7 @@ def _manager_status_for_unit(unit: Dict[str, Any], manager_identity: Dict[str, s
         "started_at": None,
         "last_error": None,
         "last_warning": None,
+        "rf": None,
         "adoption_ok": False,
         "adoption_error": None,
         "error": None,
@@ -1158,6 +1338,7 @@ def _manager_status_for_unit(unit: Dict[str, Any], manager_identity: Dict[str, s
         "started_at": status.get("started_at"),
         "last_error": status.get("last_error") or supervisor.get("last_error"),
         "last_warning": status.get("last_warning"),
+        "rf": status.get("rf"),
     })
 
     try:
@@ -1237,6 +1418,7 @@ def _manager_status_for_self(base_url: str) -> Dict[str, Any]:
         "started_at": status.get("started_at"),
         "last_error": status.get("last_error") or supervisor.get("last_error"),
         "last_warning": status.get("last_warning"),
+        "rf": status.get("rf"),
         "adoption_ok": True,
         "adoption_error": None,
         "error": None,

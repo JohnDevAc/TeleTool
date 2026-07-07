@@ -97,6 +97,13 @@
           <div class="k">Uptime</div>
           <div id="st_uptime" class="v mono">-</div>
         </div>
+        <div class="stat">
+          <div class="k">RF signal</div>
+          <div id="st_rf" class="v rfValue">
+            <span class="rfDot bad" aria-hidden="true"></span>
+            <span>N/A</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -384,6 +391,19 @@ function scheduleStatusPoll(delayMs){
   statusPollTimer = setTimeout(async () => { await refreshStatus(); }, delayMs);
 }
 
+function renderRfStatus(rf){
+  const el = document.getElementById("st_rf");
+  if (!el) return;
+  const kind = rfSignalKind(rf);
+  const dot = document.createElement("span");
+  const label = document.createElement("span");
+  dot.className = `rfDot ${kind}`;
+  dot.setAttribute("aria-hidden", "true");
+  label.textContent = rfSignalLabel(rf);
+  el.title = rfSignalTitle(rf);
+  el.replaceChildren(dot, label);
+}
+
 async function refreshStatus() {
   if (document.visibilityState === "hidden") return;
   const st = await jget("/api/status?lite=1");
@@ -396,6 +416,8 @@ async function refreshStatus() {
     running,
     pipeline_state: st.pipeline_state || (running ? "PLAYING" : "NULL"),
     ndi_name: running ? (st.ndi_name || "—") : "—",
+    rf_label: rfSignalLabel(st.rf),
+    rf_kind: rfSignalKind(st.rf),
     last_error: st.last_error || "",
     last_warning: st.last_warning || ""
   });
@@ -409,6 +431,7 @@ async function refreshStatus() {
   }
   const stUptime = document.getElementById("st_uptime");
   if (stUptime) stUptime.textContent = running ? fmtUptime(st.started_at) : "—";
+  renderRfStatus(st.rf);
 
   if (st.last_error) setAlertBadge("bad", st.last_error);
   else if (st.last_warning) setAlertBadge("warn", st.last_warning);

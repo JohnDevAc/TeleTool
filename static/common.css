@@ -186,6 +186,32 @@
     .badge.good{ color: #bdf7de; border-color: rgba(25,195,125,.35); background: rgba(25,195,125,.10); }
     .badge.bad{ color: #ffd0d0; border-color: rgba(255,92,92,.35); background: rgba(255,92,92,.10); }
     .badge.warn{ color: #fff1c2; border-color: rgba(245,197,66,.35); background: rgba(245,197,66,.10); }
+    .rfValue{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+    }
+    .rfDot{
+      display:inline-block;
+      width:10px;
+      height:10px;
+      border-radius:999px;
+      background:var(--bad);
+      box-shadow:0 0 0 4px rgba(255,92,92,.12);
+      flex:0 0 auto;
+    }
+    .rfDot.good{
+      background:var(--good);
+      box-shadow:0 0 0 4px rgba(25,195,125,.14);
+    }
+    .rfDot.warn{
+      background:var(--warn);
+      box-shadow:0 0 0 4px rgba(245,197,66,.12);
+    }
+    .rfDot.bad{
+      background:var(--bad);
+      box-shadow:0 0 0 4px rgba(255,92,92,.12);
+    }
   
 
 /* Secondary-output additions */

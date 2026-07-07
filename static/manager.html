@@ -116,6 +116,9 @@ function renderUnit(unit){
   const issue = statusLine(unit);
   const uptime = unit.stream_running ? fmtUptime(unit.started_at) : "-";
   const latency = Number.isFinite(Number(unit.latency_ms)) ? `${unit.latency_ms} ms` : "-";
+  const rfKind = unit.online ? rfSignalKind(unit.rf) : "bad";
+  const rfLabel = unit.online ? rfSignalLabel(unit.rf) : "N/A";
+  const rfTitle = unit.online ? rfSignalTitle(unit.rf) : "RF signal unavailable";
   const removeButton = unit.removable === false ? "" : `<button class="miniBtn" type="button" data-remove-unit="${escapeHtml(unit.id)}">Remove</button>`;
 
   return `
@@ -138,6 +141,7 @@ function renderUnit(unit){
         ${isSelf ? `<span class="badge">Primary</span>` : ""}
         <span class="${badgeClass(systemKind)}">${escapeHtml(systemText)}</span>
         <span class="${badgeClass(streamKind)}">${escapeHtml(streamText)}</span>
+        <span class="badge rfValue" title="${escapeHtml(rfTitle)}"><span class="rfDot ${escapeHtml(rfKind)}" aria-hidden="true"></span><span>RF ${escapeHtml(rfLabel)}</span></span>
       </div>
 
       <div class="unitStats">

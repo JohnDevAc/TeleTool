@@ -85,7 +85,7 @@ Use it when preparing a fresh Pi or when intentionally rebuilding the tuner/chan
 Open `/system` for:
 
 - Restarting the TeleTool service.
-- Updating the program from the latest server version.
+- Updating the program from the latest server version on either the Main or Dev branch.
 - Rebooting the Pi.
 - Changing hostname.
 - Viewing or applying network settings.
@@ -110,6 +110,8 @@ Network changes can briefly disconnect the web UI if the Pi changes IP address.
 - `golden-images/` - local image artifacts, ignored by git.
 
 ## Git Safety
+
+The repository uses `main` for stable releases and `dev` for development builds. The System page update control lets a device update from either branch.
 
 These files are intentionally not committed:
 

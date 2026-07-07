@@ -37,7 +37,11 @@
         <button id="restartProgram" class="primary">Restart program</button>
         <button id="rebootPi" class="danger">Reboot Pi</button>
         <span id="toastPower" class="toast"></span>
-        <button id="updateFromServer" class="danger pushRight">Update from Server</button>
+        <select id="updateBranch" class="updateBranchSelect pushRight" aria-label="Update branch">
+          <option value="main">Main</option>
+          <option value="dev">Dev</option>
+        </select>
+        <button id="updateFromServer" class="danger">Update from Server</button>
       </div>
       <div id="updateProgressWrap" class="hidden updateProgress">
         <div class="small" id="updateProgressStep">Idle</div>
@@ -221,6 +225,7 @@ function renderUpdateStatus(st){
   const step = document.getElementById("updateProgressStep");
   const bar = document.getElementById("updateProgressBar");
   const btn = document.getElementById("updateFromServer");
+  const branchSelect = document.getElementById("updateBranch");
   const running = !!(st && st.running);
   const done = !!(st && st.done);
   const error = st && st.error ? String(st.error) : "";
@@ -231,13 +236,18 @@ function renderUpdateStatus(st){
   bar.style.width = `${percent}%`;
   step.textContent = error ? ("Update failed: " + error) : ((st && st.step) || "Idle");
   if (btn) btn.disabled = running || (done && !error);
+  if (branchSelect) branchSelect.disabled = running || (done && !error);
 
   if (error) toastId("toastPower", "Update failed: " + error, true, 7000);
-  else if (running) toastId("toastPower", "Updating from server...");
+  else if (running) toastId("toastPower", "Updating from " + updateBranchLabel(st && st.branch) + " branch...");
   else if (done){
     toastId("toastPower", "Update complete. Restarting program.", false, 5000);
     scheduleReturnToMainUi();
   }
+}
+
+function updateBranchLabel(branch){
+  return String(branch || "main").toLowerCase() === "dev" ? "Dev" : "Main";
 }
 
 async function returnToMainUiWhenReady(){
@@ -444,13 +454,15 @@ document.getElementById("restartProgram").addEventListener("click", async () => 
 });
 
 document.getElementById("updateFromServer").addEventListener("click", async () => {
-  const ok = window.confirm("Update from server now? Do not do this while TeleTool is in production. The service will restart after the update.");
+  const branch = document.getElementById("updateBranch").value || "main";
+  const branchLabel = updateBranchLabel(branch);
+  const ok = window.confirm(`Update from the ${branchLabel} branch now? Do not do this while TeleTool is in production. The service will restart after the update.`);
   if (!ok) return;
   const btn = document.getElementById("updateFromServer");
   btn.disabled = true;
-  renderUpdateStatus({ running: true, done: false, percent: 1, step: "Starting update" });
+  renderUpdateStatus({ running: true, done: false, percent: 1, step: "Starting update", branch });
   try{
-    await jpost("/api/system/update_from_server", { confirm: true });
+    await jpost("/api/system/update_from_server", { confirm: true, branch });
     await refreshUpdateStatus();
     scheduleUpdatePoll(1000);
   } catch(e){

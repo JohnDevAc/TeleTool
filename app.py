@@ -1669,7 +1669,10 @@ NETWORK_PRIVILEGE_HELP = (
     "tvh_ndi_bridge service user and nmcli/systemctl network commands."
 )
 
-GITHUB_UPDATE_ZIP_URL = "https://github.com/JohnDevAc/teletwat/archive/refs/heads/main.zip"
+GITHUB_UPDATE_BRANCHES = {
+    "main": "Main",
+    "dev": "Dev",
+}
 UPDATE_EXCLUDED_NAMES = {
     ".git",
     ".venv",
@@ -1691,6 +1694,7 @@ UPDATE_STATE: Dict[str, Any] = {
     "started_at": None,
     "finished_at": None,
     "stats": None,
+    "branch": "main",
 }
 
 
@@ -1726,9 +1730,18 @@ def _is_update_excluded(rel_path: Path) -> bool:
     return False
 
 
-def _download_github_update_archive(dest: Path) -> int:
+def _normalise_update_branch(branch: Optional[str]) -> str:
+    value = str(branch or "main").strip().lower()
+    if value not in GITHUB_UPDATE_BRANCHES:
+        allowed = ", ".join(GITHUB_UPDATE_BRANCHES.values())
+        raise ValueError(f"Unknown update branch. Choose one of: {allowed}")
+    return value
+
+
+def _download_github_update_archive(dest: Path, branch: str) -> int:
+    url = f"https://github.com/JohnDevAc/teletwat/archive/refs/heads/{branch}.zip"
     req = UrlRequest(
-        GITHUB_UPDATE_ZIP_URL,
+        url,
         headers={
             "User-Agent": "TeleTool updater",
             "Accept": "application/zip,application/octet-stream,*/*",
@@ -1801,15 +1814,16 @@ def _copy_update_files(source_dir: Path, project_dir: Path) -> Dict[str, Any]:
     return {"copied": copied, "skipped": skipped}
 
 
-def _run_program_update_worker() -> None:
+def _run_program_update_worker(branch: str) -> None:
     try:
-        _set_update_status(percent=8, step="Preparing update", error=None)
+        branch = _normalise_update_branch(branch)
+        _set_update_status(percent=8, step="Preparing update", error=None, branch=branch)
         with tempfile.TemporaryDirectory(prefix="teletool-update-") as tmp_s:
             tmp = Path(tmp_s)
             archive = tmp / "update.zip"
 
             _set_update_status(percent=20, step="Downloading update")
-            bytes_downloaded = _download_github_update_archive(archive)
+            bytes_downloaded = _download_github_update_archive(archive, branch)
 
             _set_update_status(percent=50, step="Preparing files")
             source_dir = _extract_github_archive(archive, tmp / "src")
@@ -1817,6 +1831,7 @@ def _run_program_update_worker() -> None:
             _set_update_status(percent=75, step="Installing update")
             copy_stats = _copy_update_files(source_dir, BASE_DIR)
             copy_stats["bytes_downloaded"] = bytes_downloaded
+            copy_stats["branch"] = branch
 
         _set_update_status(
             running=False,
@@ -1826,6 +1841,7 @@ def _run_program_update_worker() -> None:
             error=None,
             finished_at=int(time.time()),
             stats=copy_stats,
+            branch=branch,
         )
         _schedule_program_restart(1.0)
     except Exception as e:
@@ -2329,6 +2345,7 @@ def api_system_restart_program():
 
 class ProgramUpdateReq(BaseModel):
     confirm: bool = False
+    branch: str = "main"
 
 
 @app.get("/api/system/update_status")
@@ -2340,6 +2357,10 @@ def api_system_update_status():
 def api_system_update_from_server(req: ProgramUpdateReq):
     if not req.confirm:
         raise HTTPException(400, "Confirmation is required before updating from server")
+    try:
+        branch = _normalise_update_branch(req.branch)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     current = _update_status_snapshot()
     if current.get("running"):
         raise HTTPException(409, "Update is already running")
@@ -2353,8 +2374,9 @@ def api_system_update_from_server(req: ProgramUpdateReq):
         started_at=int(time.time()),
         finished_at=None,
         stats=None,
+        branch=branch,
     )
-    threading.Thread(target=_run_program_update_worker, name="program-update-worker", daemon=True).start()
+    threading.Thread(target=_run_program_update_worker, args=(branch,), name="program-update-worker", daemon=True).start()
     return {"ok": True, "message": "Update started.", "status": status}
 
 

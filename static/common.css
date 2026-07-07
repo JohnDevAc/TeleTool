@@ -553,6 +553,12 @@
 .updateProgress{
   margin-top:10px;
 }
+.updateBranchSelect{
+  width:auto;
+  min-width:110px;
+  flex:0 0 auto;
+  padding:10px 12px;
+}
 .pushRight{
   margin-left:auto;
 }

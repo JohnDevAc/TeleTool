@@ -126,4 +126,22 @@ async function setTvheadendLinks(){
     // ignore
   }
 }
-document.addEventListener('DOMContentLoaded', setTvheadendLinks);
+
+async function setDevelopmentReleaseBanner(){
+  try{
+    const info = await jget("/api/release");
+    if (!info || !info.development) return;
+    if (document.querySelector(".devReleaseBanner")) return;
+    const banner = document.createElement("div");
+    banner.className = "devReleaseBanner";
+    banner.textContent = "Development Release";
+    document.body.insertBefore(banner, document.body.firstChild);
+  }catch(e){
+    // Release metadata is non-critical UI decoration.
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  setDevelopmentReleaseBanner();
+  setTvheadendLinks();
+});

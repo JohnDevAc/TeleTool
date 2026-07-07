@@ -25,6 +25,7 @@ from tvh import TvheadendClient
 from gst_ndi import GstNDIBridge
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
+RELEASE_MARKER_PATH = BASE_DIR / ".teletool_release.json"
 CONFIG_LOCK = threading.Lock()
 
 
@@ -1673,6 +1674,7 @@ GITHUB_UPDATE_BRANCHES = {
     "main": "Main",
     "dev": "Dev",
 }
+DEFAULT_RELEASE_BRANCH = "main"
 UPDATE_EXCLUDED_NAMES = {
     ".git",
     ".venv",
@@ -1681,6 +1683,7 @@ UPDATE_EXCLUDED_NAMES = {
     "__pycache__",
     ".pytest_cache",
     "config.json",
+    ".teletool_release.json",
     ".env",
     ".env.local",
 }
@@ -1694,7 +1697,7 @@ UPDATE_STATE: Dict[str, Any] = {
     "started_at": None,
     "finished_at": None,
     "stats": None,
-    "branch": "main",
+    "branch": DEFAULT_RELEASE_BRANCH,
 }
 
 
@@ -1731,11 +1734,65 @@ def _is_update_excluded(rel_path: Path) -> bool:
 
 
 def _normalise_update_branch(branch: Optional[str]) -> str:
-    value = str(branch or "main").strip().lower()
+    value = str(branch or DEFAULT_RELEASE_BRANCH).strip().lower()
     if value not in GITHUB_UPDATE_BRANCHES:
         allowed = ", ".join(GITHUB_UPDATE_BRANCHES.values())
         raise ValueError(f"Unknown update branch. Choose one of: {allowed}")
     return value
+
+
+def _git_checkout_branch() -> Optional[str]:
+    head = BASE_DIR / ".git" / "HEAD"
+    try:
+        text = head.read_text(errors="ignore").strip()
+    except Exception:
+        return None
+    if text.startswith("ref: refs/heads/"):
+        branch = text.rsplit("/", 1)[-1].strip().lower()
+        return branch if branch in GITHUB_UPDATE_BRANCHES else None
+    return None
+
+
+def _read_release_marker_branch() -> Optional[str]:
+    try:
+        data = json.loads(RELEASE_MARKER_PATH.read_text(errors="ignore"))
+    except Exception:
+        return None
+    branch = str(data.get("branch") or "").strip().lower()
+    return branch if branch in GITHUB_UPDATE_BRANCHES else None
+
+
+def _current_release_branch() -> str:
+    env_branch = os.environ.get("TELETOOL_RELEASE_BRANCH")
+    if env_branch:
+        try:
+            return _normalise_update_branch(env_branch)
+        except ValueError:
+            pass
+    return _read_release_marker_branch() or _git_checkout_branch() or DEFAULT_RELEASE_BRANCH
+
+
+def _release_info() -> Dict[str, Any]:
+    branch = _current_release_branch()
+    return {
+        "branch": branch,
+        "label": GITHUB_UPDATE_BRANCHES.get(branch, branch.title()),
+        "development": branch == "dev",
+    }
+
+
+def _write_release_marker(branch: str) -> Dict[str, Any]:
+    branch = _normalise_update_branch(branch)
+    payload = {
+        "branch": branch,
+        "label": GITHUB_UPDATE_BRANCHES[branch],
+        "development": branch == "dev",
+        "updated_at": int(time.time()),
+    }
+    tmp = RELEASE_MARKER_PATH.with_suffix(RELEASE_MARKER_PATH.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2) + "\n")
+    tmp.replace(RELEASE_MARKER_PATH)
+    return payload
 
 
 def _download_github_update_archive(dest: Path, branch: str) -> int:
@@ -1832,6 +1889,10 @@ def _run_program_update_worker(branch: str) -> None:
             copy_stats = _copy_update_files(source_dir, BASE_DIR)
             copy_stats["bytes_downloaded"] = bytes_downloaded
             copy_stats["branch"] = branch
+            try:
+                copy_stats["release"] = _write_release_marker(branch)
+            except Exception as e:
+                copy_stats["release_marker_error"] = str(e)
 
         _set_update_status(
             running=False,
@@ -2345,7 +2406,12 @@ def api_system_restart_program():
 
 class ProgramUpdateReq(BaseModel):
     confirm: bool = False
-    branch: str = "main"
+    branch: str = DEFAULT_RELEASE_BRANCH
+
+
+@app.get("/api/release")
+def api_release():
+    return _release_info()
 
 
 @app.get("/api/system/update_status")

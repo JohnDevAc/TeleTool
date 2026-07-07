@@ -23,6 +23,17 @@
       color: var(--text);
     }
     .wrap{ max-width: 980px; margin: 0 auto; padding: 28px 18px 40px; }
+    .devReleaseBanner{
+      width:100%;
+      padding:9px 14px;
+      border-bottom:1px solid rgba(245,197,66,.32);
+      background:rgba(245,197,66,.14);
+      color:#fff1c2;
+      font-size:13px;
+      font-weight:750;
+      text-align:center;
+      letter-spacing:.04em;
+    }
     header{
       display:flex; align-items:center; justify-content:space-between; gap:14px;
       margin-bottom: 18px;

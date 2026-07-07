@@ -26,6 +26,8 @@ from gst_ndi import GstNDIBridge
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 RELEASE_MARKER_PATH = BASE_DIR / ".teletool_release.json"
+VERSION_PATH = BASE_DIR / "VERSION"
+APP_VERSION_FALLBACK = "V1.5.01"
 CONFIG_LOCK = threading.Lock()
 
 
@@ -2058,12 +2060,21 @@ def _current_release_branch() -> str:
     return _read_release_marker_branch() or _git_checkout_branch() or DEFAULT_RELEASE_BRANCH
 
 
+def _app_version() -> str:
+    try:
+        version = VERSION_PATH.read_text(errors="ignore").strip()
+    except Exception:
+        version = ""
+    return version or APP_VERSION_FALLBACK
+
+
 def _release_info() -> Dict[str, Any]:
     branch = _current_release_branch()
     return {
         "branch": branch,
         "label": GITHUB_UPDATE_BRANCHES.get(branch, branch.title()),
         "development": branch == "dev",
+        "version": _app_version(),
     }
 
 

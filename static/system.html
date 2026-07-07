@@ -36,6 +36,7 @@
       <div class="row">
         <button id="restartProgram" class="primary">Restart program</button>
         <button id="rebootPi" class="danger">Reboot Pi</button>
+        <span id="appVersionBadge" class="badge">Version -</span>
         <span id="toastPower" class="toast"></span>
         <select id="updateBranch" class="updateBranchSelect pushRight" aria-label="Update branch">
           <option value="main">Main</option>
@@ -375,8 +376,22 @@ async function refreshConfig(){
   }
 }
 
+async function refreshReleaseInfo(){
+  try{
+    const info = await jget("/api/release");
+    const badge = document.getElementById("appVersionBadge");
+    if (!badge) return;
+    const version = info && info.version ? String(info.version) : "-";
+    badge.textContent = `Version ${version}`;
+    if (info && info.label) badge.title = `${info.label} branch`;
+  } catch(e){
+    const badge = document.getElementById("appVersionBadge");
+    if (badge) badge.textContent = "Version -";
+  }
+}
+
 async function refreshAll(){
-  await Promise.all([refreshHostname(), refreshNetwork(), refreshConfig()]);
+  await Promise.all([refreshHostname(), refreshNetwork(), refreshConfig(), refreshReleaseInfo()]);
 }
 
 document.getElementById("mode").addEventListener("change", () => {

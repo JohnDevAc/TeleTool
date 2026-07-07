@@ -173,6 +173,8 @@
 <script src="/static/common.js"></script>
 <script>
 let updatePollTimer = null;
+let updateReturnTimer = null;
+let updateReturnStarted = false;
 
 function netFieldFocused(){
   const a = document.activeElement;
@@ -232,7 +234,30 @@ function renderUpdateStatus(st){
 
   if (error) toastId("toastPower", "Update failed: " + error, true, 7000);
   else if (running) toastId("toastPower", "Updating from server...");
-  else if (done) toastId("toastPower", "Update complete. Restarting program.", false, 5000);
+  else if (done){
+    toastId("toastPower", "Update complete. Restarting program.", false, 5000);
+    scheduleReturnToMainUi();
+  }
+}
+
+async function returnToMainUiWhenReady(){
+  try{
+    const r = await fetch("/", { cache: "no-store" });
+    if (r.ok){
+      window.location.replace("/");
+      return;
+    }
+  }catch(e){
+    // Service may still be restarting; try again shortly.
+  }
+  updateReturnTimer = setTimeout(returnToMainUiWhenReady, 1500);
+}
+
+function scheduleReturnToMainUi(){
+  if (updateReturnStarted) return;
+  updateReturnStarted = true;
+  if (updateReturnTimer) clearTimeout(updateReturnTimer);
+  updateReturnTimer = setTimeout(returnToMainUiWhenReady, 4500);
 }
 
 function scheduleUpdatePoll(delayMs=1000){

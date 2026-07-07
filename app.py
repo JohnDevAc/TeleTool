@@ -183,6 +183,19 @@ def _channel_summary_for_uuid(channel_uuid: Optional[str]) -> Dict[str, Any]:
     return {}
 
 
+RF_STATUS_LOCK = threading.Lock()
+RF_STATUS_CACHE: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+RF_STATUS_DEFAULT_TTL_S = 20.0
+
+
+def _rf_status_cache_ttl_s() -> float:
+    try:
+        value = float(cfg.get("rf_status_ttl_s", RF_STATUS_DEFAULT_TTL_S))
+    except Exception:
+        value = RF_STATUS_DEFAULT_TTL_S
+    return max(5.0, min(120.0, value))
+
+
 def _rf_number(value: Any) -> Optional[float]:
     if value in (None, ""):
         return None
@@ -225,6 +238,16 @@ def _rf_kind(percent: Optional[int], *, snr: Any = None) -> str:
     return "bad"
 
 
+def _rf_kind_from_dbm(dbm: Optional[float], percent: Optional[int], *, snr: Any = None) -> str:
+    if dbm is not None:
+        if dbm >= -65.0:
+            return "good"
+        if dbm >= -80.0:
+            return "warn"
+        return "bad"
+    return _rf_kind(percent, snr=snr)
+
+
 def _rf_text(value: Any) -> Optional[str]:
     if value in (None, ""):
         return None
@@ -233,18 +256,57 @@ def _rf_text(value: Any) -> Optional[str]:
     return str(value)
 
 
+def _rf_dbm_from_signal(signal: Any, signal_percent: Optional[int]) -> Tuple[Optional[float], bool]:
+    if signal in (None, ""):
+        return None, False
+    text = str(signal or "").strip().lower()
+    n = _rf_number(signal)
+    if n is None:
+        return None, False
+
+    if "mdbm" in text and -130000.0 <= n <= 20000.0:
+        return round(n / 1000.0, 1), False
+    if "dbm" in text and -130.0 <= n <= 20.0:
+        return round(n, 1), False
+    if -130.0 <= n < 0.0:
+        return round(n, 1), False
+
+    if signal_percent is not None:
+        # TVHeadend often exposes DVB signal as a percentage/raw 0-65535 value.
+        # DVB drivers do not all report calibrated power, so this is a conservative
+        # display estimate for a cable-fed DVB-T/T2 receiver.
+        return round(-95.0 + (signal_percent / 100.0) * 60.0, 1), True
+    return None, False
+
+
+def _rf_dbm_label(dbm: Optional[float], estimated: bool) -> str:
+    if dbm is None:
+        return "N/A"
+    rounded = round(float(dbm), 1)
+    if abs(rounded - round(rounded)) < 0.05:
+        text = f"{int(round(rounded))} dBm"
+    else:
+        text = f"{rounded:.1f} dBm"
+    return f"~{text}" if estimated else text
+
+
 def _rf_status_from_mux(mux: Dict[str, Any], *, source: str) -> Dict[str, Any]:
     signal = mux.get("signal")
     snr = mux.get("snr")
     signal_percent = _rf_percent(signal)
     snr_percent = _rf_percent(snr)
     percent = signal_percent if signal_percent is not None else snr_percent
-    available = percent is not None or signal not in (None, "") or snr not in (None, "")
-    label = f"{percent}%" if percent is not None else (_rf_text(signal) or _rf_text(snr) or "N/A")
+    dbm, dbm_estimated = _rf_dbm_from_signal(signal, signal_percent)
+    dbm_label = _rf_dbm_label(dbm, dbm_estimated)
+    available = dbm is not None or percent is not None or signal not in (None, "") or snr not in (None, "")
+    label = dbm_label if dbm is not None else (f"{percent}%" if percent is not None else (_rf_text(signal) or _rf_text(snr) or "N/A"))
     return {
         "available": available,
-        "kind": _rf_kind(percent, snr=snr),
+        "kind": _rf_kind_from_dbm(dbm, percent, snr=snr),
         "label": label,
+        "dbm": dbm,
+        "dbm_estimated": dbm_estimated,
+        "dbm_label": dbm_label,
         "percent": percent,
         "signal": _rf_text(signal),
         "signal_percent": signal_percent,
@@ -312,11 +374,14 @@ def _best_rf_mux(muxes: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return best[1] if best else None
 
 
-def _rf_status_for_channel(channel_uuid: Optional[str] = None, channel_name: Optional[str] = None) -> Dict[str, Any]:
-    unavailable = {
+def _rf_unavailable() -> Dict[str, Any]:
+    return {
         "available": False,
         "kind": "bad",
         "label": "N/A",
+        "dbm": None,
+        "dbm_estimated": False,
+        "dbm_label": "N/A",
         "percent": None,
         "signal": None,
         "signal_percent": None,
@@ -324,6 +389,12 @@ def _rf_status_for_channel(channel_uuid: Optional[str] = None, channel_name: Opt
         "snr_percent": None,
         "mux": None,
         "source": "unavailable",
+    }
+
+
+def _rf_status_for_channel_uncached(channel_uuid: Optional[str] = None, channel_name: Optional[str] = None) -> Dict[str, Any]:
+    unavailable = {
+        **_rf_unavailable(),
     }
     try:
         network = _resolve_dvbt_network()
@@ -356,6 +427,39 @@ def _rf_status_for_channel(channel_uuid: Optional[str] = None, channel_name: Opt
     if mux:
         return _rf_status_from_mux(mux, source="best_mux")
     return unavailable
+
+
+def _rf_status_for_channel(channel_uuid: Optional[str] = None, channel_name: Optional[str] = None) -> Dict[str, Any]:
+    ttl = _rf_status_cache_ttl_s()
+    key = (
+        str(cfg.get("tvh_base_url") or ""),
+        str(cfg.get("tvh_dvbt_network_uuid") or cfg.get("tvh_dvbt_network_name") or ""),
+        str(channel_uuid or ""),
+        str(channel_name or "").strip().lower(),
+    )
+
+    with RF_STATUS_LOCK:
+        cached = RF_STATUS_CACHE.get(key)
+        now = time.monotonic()
+        if cached and (now - float(cached.get("monotonic_at") or 0.0)) < ttl:
+            out = deepcopy(cached.get("value") or _rf_unavailable())
+            out["cached"] = True
+            out["cache_ttl_s"] = ttl
+            return out
+
+        value = _rf_status_for_channel_uncached(channel_uuid=channel_uuid, channel_name=channel_name)
+        value["cached"] = False
+        value["cache_ttl_s"] = ttl
+        value["last_updated_at"] = int(time.time())
+        RF_STATUS_CACHE[key] = {
+            "monotonic_at": time.monotonic(),
+            "value": deepcopy(value),
+        }
+        if len(RF_STATUS_CACHE) > 32:
+            oldest = sorted(RF_STATUS_CACHE.items(), key=lambda item: float(item[1].get("monotonic_at") or 0.0))[:8]
+            for old_key, _ in oldest:
+                RF_STATUS_CACHE.pop(old_key, None)
+        return deepcopy(value)
 
 
 def _restore_desired_lineout(reason: str = "supervisor restore") -> None:

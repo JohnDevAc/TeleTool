@@ -54,6 +54,12 @@ function setBadge(el, kind, text){
 function rfSignalKind(rf){
   const kind = rf && rf.kind ? String(rf.kind) : "";
   if (kind === "good" || kind === "warn" || kind === "bad") return kind;
+  const dbm = Number(rf && rf.dbm);
+  if (Number.isFinite(dbm)){
+    if (dbm >= -65) return "good";
+    if (dbm >= -80) return "warn";
+    return "bad";
+  }
   const percent = Number(rf && rf.percent);
   if (Number.isFinite(percent)){
     if (percent >= 65) return "good";
@@ -64,6 +70,8 @@ function rfSignalKind(rf){
 
 function rfSignalLabel(rf){
   if (!rf || !rf.available) return "N/A";
+  if (rf.dbm_label && rf.dbm_label !== "N/A") return String(rf.dbm_label);
+  if (Number.isFinite(Number(rf.dbm))) return `${Math.round(Number(rf.dbm))} dBm`;
   if (Number.isFinite(Number(rf.percent))) return `${Math.round(Number(rf.percent))}%`;
   return String(rf.label || "N/A");
 }
@@ -71,6 +79,8 @@ function rfSignalLabel(rf){
 function rfSignalTitle(rf){
   if (!rf || !rf.available) return "RF signal unavailable";
   const parts = [`RF signal ${rfSignalLabel(rf)}`];
+  if (rf.dbm_estimated) parts.push("estimated from TVHeadend signal strength");
+  if (Number.isFinite(Number(rf.percent))) parts.push(`${Math.round(Number(rf.percent))}%`);
   if (rf.snr) parts.push(`SNR ${rf.snr}`);
   if (rf.mux) parts.push(String(rf.mux));
   return parts.join(" | ");

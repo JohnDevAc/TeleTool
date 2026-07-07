@@ -27,6 +27,11 @@ async function jpost(url, body) {
   if (!r.ok) throw await apiErrorFromResponse(r, await r.text());
   return r.json();
 }
+async function jdelete(url) {
+  const r = await fetch(url, { method:"DELETE" });
+  if (!r.ok) throw await apiErrorFromResponse(r, await r.text());
+  return r.json();
+}
 
 function fmtUptime(startedAtSec){
   if (!startedAtSec) return "—";

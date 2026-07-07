@@ -1,5 +1,6 @@
 {
   "tvh_base_url": "http://127.0.0.1:9981",
+  "manager_units": [],
   "tvh_stream_profile": "pass",
   "ndi_default_name": "TeleTool",
   "ndi_delay_ms": 500,

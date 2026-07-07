@@ -17,8 +17,9 @@
     </div>
 
     <div class="rightTop">
-            <a class="miniBtn" data-tvh-link href="#">TV-Headend</a>
-<a class="miniBtn" href="/">NDI</a>
+      <a class="miniBtn" data-tvh-link href="#">TV-Headend</a>
+      <a class="miniBtn" href="/manager">Manager</a>
+      <a class="miniBtn" href="/">NDI</a>
       <a class="miniBtn" href="/audio">Audio</a>
       <div class="pill" title="Backend/API health">
         <span id="dot" class="dot"></span>
@@ -34,12 +35,22 @@
       <h2>Power</h2>
       <div class="row">
         <button id="restartProgram" class="primary">Restart program</button>
+        <button id="updateFromServer" class="danger">Update from Server</button>
         <button id="rebootPi" class="danger">Reboot Pi</button>
         <span id="toastPower" class="toast"></span>
       </div>
       <div class="small" style="margin-top:8px;">
         “Restart program” will exit the current process so your service manager (systemd) can restart it.
         “Reboot Pi” requires the included sudoers helper so the service can run systemctl reboot/shutdown without a password.
+      </div>
+      <div class="small updateWarning">
+        Warning: do not update from server while in production. This replaces program files with the latest server version, preserves runtime config, and restarts the service.
+      </div>
+      <div id="updateProgressWrap" class="hidden updateProgress">
+        <div class="small" id="updateProgressStep">Idle</div>
+        <div class="progressTrack" aria-hidden="true">
+          <div id="updateProgressBar" class="progressBar"></div>
+        </div>
       </div>
     </div>
 
@@ -226,6 +237,8 @@
 // That caused JS errors (and therefore no values displayed).
 // The helpers below bridge that gap without changing other pages.
 
+let updatePollTimer = null;
+
 function netFieldFocused(){
   const a = document.activeElement;
   if (!a) return false;
@@ -264,6 +277,44 @@ function toastId(id, msg, isBad=false, ms=2600){
   el.classList.add(isBad ? "bad" : "good");
   el.classList.add("show");
   setTimeout(() => el.classList.remove("show"), ms);
+}
+
+function renderUpdateStatus(st){
+  const wrap = document.getElementById("updateProgressWrap");
+  const step = document.getElementById("updateProgressStep");
+  const bar = document.getElementById("updateProgressBar");
+  const btn = document.getElementById("updateFromServer");
+  const running = !!(st && st.running);
+  const done = !!(st && st.done);
+  const error = st && st.error ? String(st.error) : "";
+  const show = running || done || error;
+
+  wrap.classList.toggle("hidden", !show);
+  const percent = Math.max(0, Math.min(100, Number((st && st.percent) || 0)));
+  bar.style.width = `${percent}%`;
+  step.textContent = error ? ("Update failed: " + error) : ((st && st.step) || "Idle");
+  if (btn) btn.disabled = running || (done && !error);
+
+  if (error) toastId("toastPower", "Update failed: " + error, true, 7000);
+  else if (running) toastId("toastPower", "Updating from server...");
+  else if (done) toastId("toastPower", "Update complete. Restarting program.", false, 5000);
+}
+
+function scheduleUpdatePoll(delayMs=1000){
+  if (updatePollTimer) clearTimeout(updatePollTimer);
+  updatePollTimer = setTimeout(refreshUpdateStatus, delayMs);
+}
+
+async function refreshUpdateStatus(){
+  try{
+    const st = await jget("/api/system/update_status");
+    renderUpdateStatus(st);
+    if (st && st.running) scheduleUpdatePoll(1000);
+  }catch(e){
+    // During the final restart window this request may fail briefly; the service
+    // manager should bring the program back.
+    scheduleUpdatePoll(2500);
+  }
 }
 
 function prefixToSubnetMask(prefix){
@@ -477,12 +528,35 @@ document.getElementById("applyHostname").addEventListener("click", async () => {
 });
 
 document.getElementById("restartProgram").addEventListener("click", async () => {
+  const btn = document.getElementById("restartProgram");
+  btn.disabled = true;
   toastId("toastPower", "Restarting program…");
   try{
     const r = await jpost("/api/system/restart_program", {});
     toastId("toastPower", r.message || "Restart requested.");
   } catch(e){
-    toastId("toastPower", "Restart failed: " + e, true);
+    toastId("toastPower", "Restart requested. Waiting for service to return.", false, 5000);
+  }
+  setTimeout(async () => {
+    btn.disabled = false;
+    await refreshAll();
+  }, 8000);
+});
+
+document.getElementById("updateFromServer").addEventListener("click", async () => {
+  const ok = window.confirm("Update from server now? Do not do this while TeleTool is in production. The service will restart after the update.");
+  if (!ok) return;
+  const btn = document.getElementById("updateFromServer");
+  btn.disabled = true;
+  renderUpdateStatus({ running: true, done: false, percent: 1, step: "Starting update" });
+  try{
+    await jpost("/api/system/update_from_server", { confirm: true });
+    await refreshUpdateStatus();
+    scheduleUpdatePoll(1000);
+  } catch(e){
+    toastId("toastPower", "Update failed: " + e, true, 7000);
+    renderUpdateStatus({ running: false, done: true, percent: 100, step: "Update failed", error: String(e) });
+    btn.disabled = false;
   }
 });
 
@@ -522,6 +596,7 @@ document.getElementById("rebootPi").addEventListener("click", async () => {
 
 (async () => {
   await refreshAll();
+  await refreshUpdateStatus();
   setInterval(refreshNetwork, 10000);
 })();
 </script>

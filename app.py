@@ -5,15 +5,22 @@ import re
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import threading
+import uuid
+import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from urllib.parse import urlparse
+from urllib.request import Request as UrlRequest, urlopen
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+import requests
 from tvh import TvheadendClient
 from gst_ndi import GstNDIBridge
 BASE_DIR = Path(__file__).resolve().parent
@@ -75,6 +82,15 @@ def _update_config(patch: Dict[str, Any]) -> Dict[str, Any]:
         except NameError:
             pass
 
+        return deepcopy(cfg)
+
+
+def _update_stored_config(patch: Dict[str, Any]) -> Dict[str, Any]:
+    global cfg
+    with CONFIG_LOCK:
+        next_cfg = deepcopy(cfg)
+        next_cfg.update(patch)
+        cfg = _save_config(next_cfg)
         return deepcopy(cfg)
 
 
@@ -150,6 +166,22 @@ def _lineout_req_to_dict(req: "LineOutStartReq") -> Dict[str, Any]:
     }
 
 
+def _channel_summary_for_uuid(channel_uuid: Optional[str]) -> Dict[str, Any]:
+    if not channel_uuid:
+        return {}
+    try:
+        channels = tvh.list_channels(force_refresh=False)
+    except Exception:
+        return {}
+    for channel in channels:
+        if channel.get("uuid") == channel_uuid:
+            return {
+                "channel_name": channel.get("name"),
+                "channel_number": channel.get("number"),
+            }
+    return {}
+
+
 def _restore_desired_lineout(reason: str = "supervisor restore") -> None:
     with NDI_SUPERVISOR_LOCK:
         audio_req = deepcopy(NDI_SUPERVISOR_STATE.get("lineout_request"))
@@ -175,7 +207,12 @@ def _restore_desired_lineout(reason: str = "supervisor restore") -> None:
 def _start_ndi_pipeline_from_dict(req_d: Dict[str, Any], *, reason: str, force_refresh: bool = False) -> str:
     """Resolve a tvheadend URL and start/restart the NDI pipeline."""
     stream_url = tvh.get_stream_url_for_uuid(req_d["channel_uuid"], profile=req_d["profile"], force_refresh=force_refresh)
+    channel_summary = _channel_summary_for_uuid(req_d.get("channel_uuid"))
+    req_d.update(channel_summary)
     with NDI_SUPERVISOR_LOCK:
+        current_request = NDI_SUPERVISOR_STATE.get("request")
+        if isinstance(current_request, dict) and current_request.get("channel_uuid") == req_d.get("channel_uuid"):
+            current_request.update(channel_summary)
         NDI_SUPERVISOR_STATE["last_start_attempt_at"] = time.time()
         NDI_SUPERVISOR_STATE["last_restart_reason"] = reason
         NDI_SUPERVISOR_STATE["last_stream_url"] = stream_url
@@ -577,7 +614,7 @@ def _ensure_static_pages():
     To avoid surprises (and to make local dev easier), we also copy any root-level
     *.html into ./static if the static copy is missing.
     """
-    for name in ("index.html", "audio.html", "system.html", "common.css", "common.js"):
+    for name in ("index.html", "audio.html", "system.html", "manager.html", "common.css", "common.js"):
         dst = static_dir / name
         if dst.exists():
             continue
@@ -607,6 +644,17 @@ def system_page():
     if not page.exists():
         raise HTTPException(500, "static/system.html missing")
     return FileResponse(str(page))
+@app.get("/manager")
+def manager_page(request: Request):
+    adoption = _manager_adoption_snapshot()
+    manager_url = str(adoption.get("manager_url") or "").strip()
+    current_url = str(request.url).rstrip("/")
+    if adoption.get("adopted") and manager_url and manager_url.rstrip("/") != current_url:
+        return RedirectResponse(manager_url, status_code=302)
+    page = static_dir / "manager.html"
+    if not page.exists():
+        raise HTTPException(500, "static/manager.html missing")
+    return FileResponse(str(page))
 # ---------------- Existing API ----------------
 @app.get("/api/channels")
 def api_channels(force_refresh: bool = Query(False)):
@@ -630,6 +678,12 @@ def api_status(lite: bool = Query(False), logs: bool = Query(False), stats: bool
         sup = deepcopy(NDI_SUPERVISOR_STATE)
         req_d = sup.get("request") or {}
     st["auto_reconnect_enabled"] = _ndi_supervisor_config()["enabled"]
+    if st.get("running"):
+        st["active_channel_name"] = req_d.get("channel_name")
+        st["active_channel_number"] = req_d.get("channel_number")
+    else:
+        st["active_channel_name"] = None
+        st["active_channel_number"] = None
     st["supervisor"] = {
         "desired": bool(sup.get("desired")),
         "restart_count": int(sup.get("restart_count") or 0),
@@ -644,10 +698,527 @@ def api_status(lite: bool = Query(False), logs: bool = Query(False), stats: bool
         "lineout_desired": bool(sup.get("lineout_desired")),
         "lineout_last_restore_error": sup.get("lineout_last_restore_error"),
         "desired_channel_uuid": req_d.get("channel_uuid"),
+        "desired_channel_name": req_d.get("channel_name"),
+        "desired_channel_number": req_d.get("channel_number"),
         "desired_profile": req_d.get("profile"),
         "desired_ndi_name": req_d.get("ndi_name"),
     }
     return st
+
+
+MANAGER_CONFIG_KEY = "manager_units"
+MANAGER_ID_CONFIG_KEY = "manager_id"
+MANAGER_CONNECT_TIMEOUT_S = 0.7
+MANAGER_READ_TIMEOUT_S = 1.8
+MANAGER_ADOPTION_TTL_S = 20.0
+MANAGER_ADOPTION_LOCK = threading.Lock()
+MANAGER_ADOPTION_STATE: Dict[str, Any] = {
+    "manager_id": None,
+    "manager_url": None,
+    "manager_name": None,
+    "last_seen_at": None,
+    "expires_at": None,
+}
+
+
+def _manager_identity(manager_url: Optional[str] = None) -> Dict[str, str]:
+    manager_id = str(cfg.get(MANAGER_ID_CONFIG_KEY) or "").strip()
+    if not manager_id:
+        manager_id = uuid.uuid4().hex
+        _update_stored_config({MANAGER_ID_CONFIG_KEY: manager_id})
+    return {
+        "manager_id": manager_id,
+        "manager_url": str(manager_url or "").strip(),
+        "manager_name": socket.gethostname() or "TeleTool Manager",
+    }
+
+
+def _manager_adoption_snapshot() -> Dict[str, Any]:
+    now = time.time()
+    with MANAGER_ADOPTION_LOCK:
+        expires_at = float(MANAGER_ADOPTION_STATE.get("expires_at") or 0)
+        adopted = bool(MANAGER_ADOPTION_STATE.get("manager_id")) and expires_at > now
+        if not adopted:
+            MANAGER_ADOPTION_STATE.update({
+                "manager_id": None,
+                "manager_url": None,
+                "manager_name": None,
+                "last_seen_at": None,
+                "expires_at": None,
+            })
+        return {
+            "adopted": adopted,
+            "manager_id": MANAGER_ADOPTION_STATE.get("manager_id") if adopted else None,
+            "manager_url": MANAGER_ADOPTION_STATE.get("manager_url") if adopted else None,
+            "manager_name": MANAGER_ADOPTION_STATE.get("manager_name") if adopted else None,
+            "last_seen_at": MANAGER_ADOPTION_STATE.get("last_seen_at") if adopted else None,
+            "expires_at": MANAGER_ADOPTION_STATE.get("expires_at") if adopted else None,
+            "ttl_s": MANAGER_ADOPTION_TTL_S,
+        }
+
+
+def _manager_adoption_heartbeat(manager_id: str, manager_url: Optional[str], manager_name: Optional[str]) -> Tuple[bool, Dict[str, Any]]:
+    now = time.time()
+    manager_id = str(manager_id or "").strip()
+    if not manager_id:
+        raise ValueError("manager_id is required")
+    with MANAGER_ADOPTION_LOCK:
+        expires_at = float(MANAGER_ADOPTION_STATE.get("expires_at") or 0)
+        existing_id = str(MANAGER_ADOPTION_STATE.get("manager_id") or "")
+        if existing_id and existing_id != manager_id and expires_at > now:
+            return False, {
+                "adopted": True,
+                "manager_id": existing_id,
+                "manager_url": MANAGER_ADOPTION_STATE.get("manager_url"),
+                "manager_name": MANAGER_ADOPTION_STATE.get("manager_name"),
+                "last_seen_at": MANAGER_ADOPTION_STATE.get("last_seen_at"),
+                "expires_at": MANAGER_ADOPTION_STATE.get("expires_at"),
+                "ttl_s": MANAGER_ADOPTION_TTL_S,
+            }
+        MANAGER_ADOPTION_STATE.update({
+            "manager_id": manager_id,
+            "manager_url": str(manager_url or "").strip() or None,
+            "manager_name": str(manager_name or "").strip() or None,
+            "last_seen_at": now,
+            "expires_at": now + MANAGER_ADOPTION_TTL_S,
+        })
+        return True, {
+            "adopted": True,
+            "manager_id": manager_id,
+            "manager_url": MANAGER_ADOPTION_STATE.get("manager_url"),
+            "manager_name": MANAGER_ADOPTION_STATE.get("manager_name"),
+            "last_seen_at": MANAGER_ADOPTION_STATE.get("last_seen_at"),
+            "expires_at": MANAGER_ADOPTION_STATE.get("expires_at"),
+            "ttl_s": MANAGER_ADOPTION_TTL_S,
+        }
+
+
+def _manager_adoption_release(manager_id: str) -> Dict[str, Any]:
+    now = time.time()
+    manager_id = str(manager_id or "").strip()
+    with MANAGER_ADOPTION_LOCK:
+        existing_id = str(MANAGER_ADOPTION_STATE.get("manager_id") or "")
+        expires_at = float(MANAGER_ADOPTION_STATE.get("expires_at") or 0)
+        if not existing_id or expires_at <= now or existing_id == manager_id:
+            MANAGER_ADOPTION_STATE.update({
+                "manager_id": None,
+                "manager_url": None,
+                "manager_name": None,
+                "last_seen_at": None,
+                "expires_at": None,
+            })
+    return _manager_adoption_snapshot()
+
+
+def _validate_manager_hostname(hostname: str) -> None:
+    value = str(hostname or "").strip()
+    if not value:
+        raise ValueError("Host is required")
+    try:
+        ipaddress.ip_address(value)
+        return
+    except ValueError:
+        pass
+    if len(value) > 253:
+        raise ValueError("Hostname is too long")
+    labels = value.rstrip(".").split(".")
+    hostname_label_re = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+    if not labels or any(not hostname_label_re.match(label) for label in labels):
+        raise ValueError("Enter a valid IP address or hostname")
+
+
+def _normalise_manager_target(raw_host: str) -> Dict[str, Any]:
+    raw = str(raw_host or "").strip()
+    if not raw:
+        raise ValueError("IP address or hostname is required")
+
+    candidate = raw if re.match(r"^https?://", raw, flags=re.IGNORECASE) else f"http://{raw}"
+    parsed = urlparse(candidate)
+    scheme = (parsed.scheme or "http").lower()
+    if scheme not in ("http", "https"):
+        raise ValueError("Only http and https URLs are supported")
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Enter a valid IP address or hostname")
+    _validate_manager_hostname(hostname)
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError("Port must be between 1 and 65535")
+    port = int(port or 8000)
+    if port < 1 or port > 65535:
+        raise ValueError("Port must be between 1 and 65535")
+
+    url_host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+    return {
+        "host": hostname,
+        "port": port,
+        "scheme": scheme,
+        "address": f"{url_host}:{port}",
+        "base_url": f"{scheme}://{url_host}:{port}",
+    }
+
+
+def _manager_units_from_config() -> List[Dict[str, Any]]:
+    raw_units = cfg.get(MANAGER_CONFIG_KEY, [])
+    if not isinstance(raw_units, list):
+        return []
+    units: List[Dict[str, Any]] = []
+    seen = set()
+    for item in raw_units:
+        if not isinstance(item, dict):
+            continue
+        target = item.get("base_url") or item.get("address") or item.get("host")
+        try:
+            normalised = _normalise_manager_target(str(target or ""))
+        except ValueError:
+            continue
+        key = normalised["base_url"].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unit_id = str(item.get("id") or "").strip()
+        if not unit_id:
+            unit_id = "unit-" + re.sub(r"[^A-Za-z0-9]+", "-", key).strip("-")
+        units.append({
+            "id": unit_id,
+            "host": normalised["host"],
+            "address": normalised["address"],
+            "base_url": normalised["base_url"],
+            "scheme": normalised["scheme"],
+            "port": normalised["port"],
+        })
+    return units
+
+
+def _manager_channel_label(status: Dict[str, Any], base_url: str) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
+    channel_uuid = status.get("channel_uuid") or status.get("active_channel_uuid")
+    channel_name = status.get("active_channel_name")
+    channel_number = status.get("active_channel_number")
+    if channel_uuid and not channel_name:
+        try:
+            data = _manager_fetch_json(base_url, "/api/channels")
+            for channel in data.get("channels", []):
+                if channel.get("uuid") == channel_uuid:
+                    channel_name = channel.get("name")
+                    channel_number = channel.get("number")
+                    break
+        except Exception:
+            pass
+
+    if channel_name:
+        if channel_number not in (None, ""):
+            return str(channel_name), channel_number, f"{channel_number} {channel_name}"
+        return str(channel_name), channel_number, str(channel_name)
+    if channel_uuid:
+        return None, None, str(channel_uuid)
+    return None, None, None
+
+
+def _manager_fetch_json(base_url: str, path: str) -> Dict[str, Any]:
+    url = base_url.rstrip("/") + path
+    response = requests.get(
+        url,
+        timeout=(MANAGER_CONNECT_TIMEOUT_S, MANAGER_READ_TIMEOUT_S),
+        headers={"Accept": "application/json"},
+    )
+    response.raise_for_status()
+    try:
+        data = response.json()
+    except ValueError as e:
+        raise RuntimeError(f"{path} returned non-JSON: {e}")
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{path} returned an unexpected payload")
+    return data
+
+
+def _manager_post_json(base_url: str, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    url = base_url.rstrip("/") + path
+    response = requests.post(
+        url,
+        json=payload,
+        timeout=(MANAGER_CONNECT_TIMEOUT_S, MANAGER_READ_TIMEOUT_S),
+        headers={"Accept": "application/json"},
+    )
+    response.raise_for_status()
+    try:
+        data = response.json()
+    except ValueError as e:
+        raise RuntimeError(f"{path} returned non-JSON: {e}")
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{path} returned an unexpected payload")
+    return data
+
+
+def _manager_heartbeat_unit(unit: Dict[str, Any], manager_identity: Dict[str, str]) -> Dict[str, Any]:
+    try:
+        data = _manager_post_json(unit["base_url"], "/api/manager/adoption/heartbeat", manager_identity)
+        return {"ok": True, "adoption": data.get("adoption") or {}}
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code == 409:
+            return {"ok": False, "error": "Adopted by another active manager"}
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _manager_release_unit(unit: Dict[str, Any], manager_identity: Dict[str, str]) -> None:
+    try:
+        _manager_post_json(
+            unit["base_url"],
+            "/api/manager/adoption/release",
+            {"manager_id": manager_identity.get("manager_id", "")},
+        )
+    except Exception:
+        pass
+
+
+def _manager_status_for_unit(unit: Dict[str, Any], manager_identity: Dict[str, str]) -> Dict[str, Any]:
+    checked_at = int(time.time())
+    started = time.monotonic()
+    result: Dict[str, Any] = {
+        **unit,
+        "main_url": unit["base_url"].rstrip("/") + "/",
+        "online": False,
+        "system_status": "offline",
+        "stream_running": False,
+        "stream_status": "unknown",
+        "pipeline_state": None,
+        "pipeline_status": None,
+        "hostname": None,
+        "ndi_name": None,
+        "default_ndi_name": None,
+        "channel_uuid": None,
+        "channel_name": None,
+        "channel_number": None,
+        "channel_label": None,
+        "started_at": None,
+        "last_error": None,
+        "last_warning": None,
+        "adoption_ok": False,
+        "adoption_error": None,
+        "error": None,
+        "checked_at": checked_at,
+        "latency_ms": None,
+    }
+
+    try:
+        status = _manager_fetch_json(unit["base_url"], "/api/status?lite=1")
+    except Exception as e:
+        result["error"] = str(e)
+        result["latency_ms"] = int((time.monotonic() - started) * 1000)
+        return result
+
+    result["online"] = True
+    result["system_status"] = "online"
+    adoption = _manager_heartbeat_unit(unit, manager_identity)
+    result["adoption_ok"] = bool(adoption.get("ok"))
+    result["adoption_error"] = adoption.get("error")
+    supervisor = status.get("supervisor") if isinstance(status.get("supervisor"), dict) else {}
+    running = bool(status.get("running"))
+    result.update({
+        "stream_running": running,
+        "stream_status": "running" if running else "stopped",
+        "pipeline_state": status.get("pipeline_state"),
+        "pipeline_status": supervisor.get("pipeline_status"),
+        "channel_uuid": status.get("channel_uuid") or status.get("active_channel_uuid"),
+        "started_at": status.get("started_at"),
+        "last_error": status.get("last_error") or supervisor.get("last_error"),
+        "last_warning": status.get("last_warning"),
+    })
+
+    try:
+        host_info = _manager_fetch_json(unit["base_url"], "/api/system/hostname")
+        hostname = host_info.get("hostname")
+        if isinstance(hostname, str) and hostname.strip():
+            result["hostname"] = hostname.strip()
+    except Exception:
+        pass
+
+    try:
+        unit_config = _manager_fetch_json(unit["base_url"], "/api/config/ui")
+        default_ndi_name = unit_config.get("ndi_default_name")
+        if isinstance(default_ndi_name, str) and default_ndi_name.strip():
+            result["default_ndi_name"] = default_ndi_name.strip()
+    except Exception:
+        pass
+
+    ndi_name = status.get("ndi_name") or supervisor.get("desired_ndi_name") or result["default_ndi_name"]
+    if isinstance(ndi_name, str) and ndi_name.strip():
+        result["ndi_name"] = ndi_name.strip()
+
+    if running:
+        channel_name, channel_number, channel_label = _manager_channel_label(status, unit["base_url"])
+        result["channel_name"] = channel_name
+        result["channel_number"] = channel_number
+        result["channel_label"] = channel_label
+
+    result["latency_ms"] = int((time.monotonic() - started) * 1000)
+    return result
+
+
+def _manager_status_for_self(base_url: str) -> Dict[str, Any]:
+    checked_at = int(time.time())
+    parsed = urlparse(base_url)
+    hostname = socket.gethostname() or "TeleTool"
+    status = api_status(lite=True, logs=False, stats=False)
+    supervisor = status.get("supervisor") if isinstance(status.get("supervisor"), dict) else {}
+    running = bool(status.get("running"))
+    channel_name = status.get("active_channel_name")
+    channel_number = status.get("active_channel_number")
+    channel_uuid = status.get("channel_uuid") or status.get("active_channel_uuid")
+    channel_label = None
+    if running:
+        if channel_name:
+            channel_label = f"{channel_number} {channel_name}" if channel_number not in (None, "") else str(channel_name)
+        elif channel_uuid:
+            channel_label = str(channel_uuid)
+
+    default_ndi_name = str(cfg.get("ndi_default_name") or "").strip() or None
+    ndi_name = status.get("ndi_name") or supervisor.get("desired_ndi_name") or default_ndi_name
+
+    return {
+        "id": "__self__",
+        "is_self": True,
+        "removable": False,
+        "role": "primary",
+        "host": parsed.hostname or hostname,
+        "address": parsed.netloc or parsed.hostname or hostname,
+        "base_url": base_url,
+        "main_url": base_url.rstrip("/") + "/",
+        "scheme": parsed.scheme or "http",
+        "port": parsed.port,
+        "online": True,
+        "system_status": "online",
+        "stream_running": running,
+        "stream_status": "running" if running else "stopped",
+        "pipeline_state": status.get("pipeline_state"),
+        "pipeline_status": supervisor.get("pipeline_status"),
+        "hostname": hostname,
+        "ndi_name": str(ndi_name).strip() if ndi_name else None,
+        "default_ndi_name": default_ndi_name,
+        "channel_uuid": channel_uuid,
+        "channel_name": channel_name,
+        "channel_number": channel_number,
+        "channel_label": channel_label,
+        "started_at": status.get("started_at"),
+        "last_error": status.get("last_error") or supervisor.get("last_error"),
+        "last_warning": status.get("last_warning"),
+        "adoption_ok": True,
+        "adoption_error": None,
+        "error": None,
+        "checked_at": checked_at,
+        "latency_ms": 0,
+    }
+
+
+class ManagerAdoptionHeartbeatReq(BaseModel):
+    manager_id: str = Field(min_length=1, max_length=120)
+    manager_url: Optional[str] = Field(default=None, max_length=500)
+    manager_name: Optional[str] = Field(default=None, max_length=120)
+
+
+class ManagerAdoptionReleaseReq(BaseModel):
+    manager_id: str = Field(min_length=1, max_length=120)
+
+
+@app.get("/api/manager/units")
+def api_manager_units():
+    return {"units": _manager_units_from_config()}
+
+
+@app.get("/api/manager/adoption")
+def api_manager_adoption():
+    return _manager_adoption_snapshot()
+
+
+@app.post("/api/manager/adoption/heartbeat")
+def api_manager_adoption_heartbeat(req: ManagerAdoptionHeartbeatReq):
+    try:
+        ok, adoption = _manager_adoption_heartbeat(req.manager_id, req.manager_url, req.manager_name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not ok:
+        manager_name = adoption.get("manager_name") or adoption.get("manager_url") or "another active manager"
+        raise HTTPException(409, f"Already adopted by {manager_name}")
+    return {"ok": True, "adoption": adoption}
+
+
+@app.post("/api/manager/adoption/release")
+def api_manager_adoption_release(req: ManagerAdoptionReleaseReq):
+    return {"ok": True, "adoption": _manager_adoption_release(req.manager_id)}
+
+
+class ManagerUnitReq(BaseModel):
+    host: str = Field(min_length=1, max_length=300)
+
+
+@app.post("/api/manager/units")
+def api_manager_add_unit(req: ManagerUnitReq):
+    try:
+        target = _normalise_manager_target(req.host)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    units = _manager_units_from_config()
+    if any(unit["base_url"].lower() == target["base_url"].lower() for unit in units):
+        raise HTTPException(409, "That TeleTool unit is already listed")
+    new_unit = {
+        "id": uuid.uuid4().hex,
+        "host": target["host"],
+        "address": target["address"],
+        "base_url": target["base_url"],
+        "scheme": target["scheme"],
+        "port": target["port"],
+    }
+    _update_stored_config({MANAGER_CONFIG_KEY: units + [new_unit]})
+    return {"ok": True, "unit": new_unit, "units": _manager_units_from_config()}
+
+
+@app.delete("/api/manager/units/{unit_id}")
+def api_manager_delete_unit(unit_id: str):
+    units = _manager_units_from_config()
+    removed_units = [unit for unit in units if unit["id"] == unit_id]
+    next_units = [unit for unit in units if unit["id"] != unit_id]
+    if len(next_units) == len(units):
+        raise HTTPException(404, "TeleTool unit not found")
+    manager_identity = _manager_identity()
+    for unit in removed_units:
+        _manager_release_unit(unit, manager_identity)
+    _update_stored_config({MANAGER_CONFIG_KEY: next_units})
+    return {"ok": True, "units": _manager_units_from_config()}
+
+
+@app.get("/api/manager/status")
+def api_manager_status(request: Request):
+    base_url = str(request.base_url).rstrip("/")
+    self_status = _manager_status_for_self(base_url)
+    units = _manager_units_from_config()
+    if not units:
+        return {"units": [self_status], "checked_at": int(time.time())}
+
+    manager_identity = _manager_identity(base_url + "/manager")
+    statuses: List[Optional[Dict[str, Any]]] = [None] * len(units)
+    max_workers = min(12, max(1, len(units)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_index = {executor.submit(_manager_status_for_unit, unit, manager_identity): index for index, unit in enumerate(units)}
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                statuses[index] = future.result()
+            except Exception as e:
+                failed = dict(units[index])
+                failed.update({
+                    "main_url": failed["base_url"].rstrip("/") + "/",
+                    "online": False,
+                    "system_status": "offline",
+                    "stream_running": False,
+                    "stream_status": "unknown",
+                    "error": str(e),
+                    "checked_at": int(time.time()),
+                })
+                statuses[index] = failed
+
+    return {"units": [self_status] + [status for status in statuses if status is not None], "checked_at": int(time.time())}
 
 
 UI_CONFIG_KEYS = {
@@ -963,6 +1534,175 @@ NETWORK_PRIVILEGE_HELP = (
     "Run install_network_privileges.sh once, or configure passwordless sudo for the "
     "tvh_ndi_bridge service user and nmcli/systemctl network commands."
 )
+
+GITHUB_UPDATE_ZIP_URL = "https://github.com/JohnDevAc/teletwat/archive/refs/heads/main.zip"
+UPDATE_EXCLUDED_NAMES = {
+    ".git",
+    ".venv",
+    "venv",
+    "golden-images",
+    "__pycache__",
+    ".pytest_cache",
+    "config.json",
+    ".env",
+    ".env.local",
+}
+UPDATE_LOCK = threading.Lock()
+UPDATE_STATE: Dict[str, Any] = {
+    "running": False,
+    "done": False,
+    "percent": 0,
+    "step": "Idle",
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+    "stats": None,
+}
+
+
+def _set_update_status(**patch: Any) -> Dict[str, Any]:
+    with UPDATE_LOCK:
+        UPDATE_STATE.update(patch)
+        return deepcopy(UPDATE_STATE)
+
+
+def _update_status_snapshot() -> Dict[str, Any]:
+    with UPDATE_LOCK:
+        return deepcopy(UPDATE_STATE)
+
+
+def _schedule_program_restart(delay_s: float = 0.5, exit_code: int = 3) -> None:
+    def _do_exit():
+        time.sleep(delay_s)
+        os._exit(exit_code)
+    threading.Thread(target=_do_exit, daemon=True).start()
+
+
+def _is_update_excluded(rel_path: Path) -> bool:
+    parts = rel_path.parts
+    if not parts:
+        return True
+    if any(part in UPDATE_EXCLUDED_NAMES for part in parts):
+        return True
+    name = rel_path.name
+    if name.endswith(".pyc"):
+        return True
+    if name.startswith(".env."):
+        return True
+    return False
+
+
+def _download_github_update_archive(dest: Path) -> int:
+    req = UrlRequest(
+        GITHUB_UPDATE_ZIP_URL,
+        headers={
+            "User-Agent": "TeleTool updater",
+            "Accept": "application/zip,application/octet-stream,*/*",
+        },
+    )
+    with urlopen(req, timeout=30) as response:
+        total = 0
+        with dest.open("wb") as out:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                out.write(chunk)
+    return total
+
+
+def _extract_github_archive(archive_path: Path, dest_dir: Path) -> Path:
+    with zipfile.ZipFile(archive_path) as archive:
+        names = [n for n in archive.namelist() if n and not n.endswith("/")]
+        if not names:
+            raise RuntimeError("Downloaded update package was empty")
+        root = names[0].split("/", 1)[0]
+        source_dir = dest_dir / root
+        for info in archive.infolist():
+            name = info.filename.replace("\\", "/")
+            if not name or name.endswith("/"):
+                continue
+            parts = Path(name).parts
+            if not parts or parts[0] != root:
+                continue
+            rel = Path(*parts[1:])
+            if not rel.parts or rel.is_absolute() or ".." in rel.parts:
+                raise RuntimeError(f"Unsafe path in update package: {name}")
+            target = dest_dir / root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as src, target.open("wb") as out:
+                shutil.copyfileobj(src, out)
+        if not source_dir.exists():
+            raise RuntimeError("Downloaded update package did not contain a project folder")
+        return source_dir
+
+
+def _copy_update_files(source_dir: Path, project_dir: Path) -> Dict[str, Any]:
+    copied = 0
+    skipped = 0
+    for src in source_dir.rglob("*"):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(source_dir)
+        if _is_update_excluded(rel):
+            skipped += 1
+            continue
+        dst = project_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        copied += 1
+
+    for executable in (
+        project_dir / "scripts" / "pi_setup.sh",
+        project_dir / "scripts" / "pi_make_golden_image.sh",
+        project_dir / "install_network_privileges.sh",
+    ):
+        if executable.exists():
+            try:
+                executable.chmod(executable.stat().st_mode | 0o111)
+            except Exception:
+                pass
+
+    return {"copied": copied, "skipped": skipped}
+
+
+def _run_program_update_worker() -> None:
+    try:
+        _set_update_status(percent=8, step="Preparing update", error=None)
+        with tempfile.TemporaryDirectory(prefix="teletool-update-") as tmp_s:
+            tmp = Path(tmp_s)
+            archive = tmp / "update.zip"
+
+            _set_update_status(percent=20, step="Downloading update")
+            bytes_downloaded = _download_github_update_archive(archive)
+
+            _set_update_status(percent=50, step="Preparing files")
+            source_dir = _extract_github_archive(archive, tmp / "src")
+
+            _set_update_status(percent=75, step="Installing update")
+            copy_stats = _copy_update_files(source_dir, BASE_DIR)
+            copy_stats["bytes_downloaded"] = bytes_downloaded
+
+        _set_update_status(
+            running=False,
+            done=True,
+            percent=100,
+            step="Update complete. Restarting program.",
+            error=None,
+            finished_at=int(time.time()),
+            stats=copy_stats,
+        )
+        _schedule_program_restart(1.0)
+    except Exception as e:
+        _set_update_status(
+            running=False,
+            done=True,
+            percent=100,
+            step="Update failed",
+            error=str(e),
+            finished_at=int(time.time()),
+        )
 
 def _run_cmd(argv: List[str], sudo: bool = False, timeout_s: int = 8) -> Tuple[int, str, str]:
     """
@@ -1449,12 +2189,41 @@ def api_system_network_info():
 def api_system_restart_program():
     # Avoid permission issues: we don't try to call systemd here.
     # Instead, exit the process; if managed by systemd, it will restart.
-    def _do_exit():
-        time.sleep(0.25)
-        os._exit(0)
-    import threading
-    threading.Thread(target=_do_exit, daemon=True).start()
+    _schedule_program_restart(0.75)
     return {"ok": True, "message": "Program restart requested (process exiting)."}
+
+
+class ProgramUpdateReq(BaseModel):
+    confirm: bool = False
+
+
+@app.get("/api/system/update_status")
+def api_system_update_status():
+    return _update_status_snapshot()
+
+
+@app.post("/api/system/update_from_server")
+def api_system_update_from_server(req: ProgramUpdateReq):
+    if not req.confirm:
+        raise HTTPException(400, "Confirmation is required before updating from server")
+    current = _update_status_snapshot()
+    if current.get("running"):
+        raise HTTPException(409, "Update is already running")
+
+    status = _set_update_status(
+        running=True,
+        done=False,
+        percent=1,
+        step="Starting update",
+        error=None,
+        started_at=int(time.time()),
+        finished_at=None,
+        stats=None,
+    )
+    threading.Thread(target=_run_program_update_worker, name="program-update-worker", daemon=True).start()
+    return {"ok": True, "message": "Update started.", "status": status}
+
+
 @app.post("/api/system/reboot")
 def api_system_reboot():
     """Reboot the Pi using the same privilege fallback as network changes.

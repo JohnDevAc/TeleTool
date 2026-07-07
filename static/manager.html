@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>TeleTool Manager</title>
+  <link rel="stylesheet" href="/static/common.css">
+</head>
+
+<body>
+<div class="wrap managerWrap">
+  <header>
+    <div class="title">
+      <h1>TeleTool Manager</h1>
+      <div class="sub">Fleet overview</div>
+    </div>
+    <div class="rightTop">
+      <a class="miniBtn" href="/">NDI</a>
+      <a class="miniBtn" href="/audio">Audio</a>
+      <a class="miniBtn" href="/system">System</a>
+      <div class="pill" title="Manager polling state">
+        <span id="managerDot" class="dot"></span>
+        <span id="managerStatusText">CONNECTING</span>
+      </div>
+      <img class="brandLogo" src="/static/TeleTwat_V1_0_all_black_transparent.png" alt="TeleTwat logo" />
+    </div>
+  </header>
+
+  <div class="grid managerGrid">
+    <div class="card managerControls">
+      <h2>Units</h2>
+      <form id="addUnitForm" class="row">
+        <div class="field">
+          <label for="unitHost">IP address or hostname</label>
+          <input id="unitHost" placeholder="192.168.1.50" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="actions managerControlActions">
+          <button id="addUnit" class="primary" type="submit">Add Unit</button>
+          <button id="refreshUnits" class="miniBtn" type="button">Refresh</button>
+          <span id="toast" class="toast"></span>
+        </div>
+      </form>
+    </div>
+
+    <div id="adoptedNotice" class="card managerAdopted hidden">
+      <h2>Managed remotely</h2>
+      <div class="small">
+        This TeleTool is adopted by <a id="adoptedManagerLink" class="inlineLink" href="#" target="_blank" rel="noopener">another manager</a>.
+      </div>
+      <div id="adoptedExpiry" class="small mono"></div>
+    </div>
+
+    <div id="managerEmpty" class="card managerEmpty hidden">
+      <h2>No units</h2>
+      <div class="small">Add a TeleTool IP address or hostname to begin.</div>
+    </div>
+
+    <div id="unitsGrid" class="unitGrid" aria-live="polite"></div>
+  </div>
+</div>
+
+<script src="/static/common.js"></script>
+<script>
+let pollTimer = null;
+let refreshBusy = false;
+let managerAdopted = false;
+let latestUnits = [];
+
+function escapeHtml(value){
+  return String(value ?? "").replace(/[&<>"']/g, ch => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  }[ch]));
+}
+
+function textOrDash(value){
+  const text = String(value ?? "").trim();
+  return text || "-";
+}
+
+function badgeClass(kind){
+  return kind ? "badge " + kind : "badge";
+}
+
+function setManagerHealth(ok){
+  if (managerAdopted) return;
+  const dot = document.getElementById("managerDot");
+  const text = document.getElementById("managerStatusText");
+  dot.classList.toggle("ok", !!ok);
+  dot.classList.toggle("bad", ok === false);
+  text.textContent = ok ? "ONLINE" : "OFFLINE";
+}
+
+function unitTitle(unit){
+  return unit.hostname || unit.host || unit.address || "TeleTool";
+}
+
+function statusLine(unit){
+  if (!unit.online) return unit.error || "Unit is unreachable";
+  if (unit.adoption_error) return unit.adoption_error;
+  return unit.last_error || unit.last_warning || "";
+}
+
+function renderUnit(unit){
+  const isSelf = !!unit.is_self;
+  const systemKind = unit.online ? "good" : "bad";
+  const systemText = unit.online ? "Online" : "Offline";
+  const streamKind = !unit.online ? "bad" : (unit.stream_running ? "good" : "warn");
+  const streamText = !unit.online ? "Unavailable" : (unit.stream_running ? "Running" : "Stopped");
+  const pipeline = unit.pipeline_status || unit.pipeline_state || (unit.online ? "-" : "offline");
+  const channel = unit.stream_running ? textOrDash(unit.channel_label) : "-";
+  const ndiName = textOrDash(unit.ndi_name || unit.default_ndi_name);
+  const issue = statusLine(unit);
+  const uptime = unit.stream_running ? fmtUptime(unit.started_at) : "-";
+  const latency = Number.isFinite(Number(unit.latency_ms)) ? `${unit.latency_ms} ms` : "-";
+  const removeButton = unit.removable === false ? "" : `<button class="miniBtn" type="button" data-remove-unit="${escapeHtml(unit.id)}">Remove</button>`;
+
+  return `
+    <article class="card unitCard ${unit.online ? "" : "isOffline"} ${isSelf ? "isPrimary" : ""}">
+      <div class="unitTop">
+        <div class="unitIdentity">
+          <span class="dot ${unit.online ? "ok" : "bad"}" aria-hidden="true"></span>
+          <div>
+            <h2>${escapeHtml(unitTitle(unit))}</h2>
+            <div class="small mono">${escapeHtml(unit.address || unit.host || "-")}</div>
+          </div>
+        </div>
+        <div class="unitActions">
+          <a class="miniBtn" href="${escapeHtml(unit.main_url || unit.base_url || "#")}" target="_blank" rel="noopener">Open UI</a>
+          ${removeButton}
+        </div>
+      </div>
+
+      <div class="unitBadges">
+        ${isSelf ? `<span class="badge">Primary</span>` : ""}
+        <span class="${badgeClass(systemKind)}">${escapeHtml(systemText)}</span>
+        <span class="${badgeClass(streamKind)}">${escapeHtml(streamText)}</span>
+      </div>
+
+      <div class="unitStats">
+        <div class="stat">
+          <div class="k">IP / host</div>
+          <div class="v mono">${escapeHtml(unit.host || "-")}</div>
+        </div>
+        <div class="stat">
+          <div class="k">Hostname</div>
+          <div class="v mono">${escapeHtml(textOrDash(unit.hostname))}</div>
+        </div>
+        <div class="stat">
+          <div class="k">NDI stream name</div>
+          <div class="v mono">${escapeHtml(ndiName)}</div>
+        </div>
+        <div class="stat">
+          <div class="k">Channel</div>
+          <div class="v">${escapeHtml(channel)}</div>
+        </div>
+        <div class="stat">
+          <div class="k">Pipeline</div>
+          <div class="v mono">${escapeHtml(pipeline)}</div>
+        </div>
+        <div class="stat">
+          <div class="k">Uptime</div>
+          <div class="v mono">${escapeHtml(uptime)}</div>
+        </div>
+      </div>
+
+      <div class="unitFoot">
+        <span class="small">${escapeHtml(issue)}</span>
+        <span class="small mono">${escapeHtml(latency)}</span>
+      </div>
+    </article>
+  `;
+}
+
+function renderUnits(units){
+  const grid = document.getElementById("unitsGrid");
+  const empty = document.getElementById("managerEmpty");
+  const list = Array.isArray(units) ? units : [];
+  grid.classList.toggle("hidden", managerAdopted);
+  empty.classList.toggle("hidden", managerAdopted || list.length > 0);
+  if (managerAdopted){
+    grid.innerHTML = "";
+    return;
+  }
+  grid.innerHTML = list.map(renderUnit).join("");
+}
+
+function setManagerAdoption(adoption){
+  managerAdopted = !!(adoption && adoption.adopted);
+  const notice = document.getElementById("adoptedNotice");
+  const link = document.getElementById("adoptedManagerLink");
+  const expiry = document.getElementById("adoptedExpiry");
+  const addBtn = document.getElementById("addUnit");
+  const refreshBtn = document.getElementById("refreshUnits");
+  const hostInput = document.getElementById("unitHost");
+
+  if (addBtn) addBtn.disabled = managerAdopted;
+  if (refreshBtn) refreshBtn.disabled = managerAdopted;
+  if (hostInput) hostInput.disabled = managerAdopted;
+
+  notice.classList.toggle("hidden", !managerAdopted);
+  if (managerAdopted){
+    const managerUrl = String(adoption.manager_url || "").trim();
+    const managerName = String(adoption.manager_name || managerUrl || "another manager").trim();
+    link.textContent = managerName;
+    if (managerUrl){
+      link.href = managerUrl;
+      link.classList.remove("disabledLink");
+    } else {
+      link.href = "#";
+      link.classList.add("disabledLink");
+    }
+    const expiresAt = Number(adoption.expires_at || 0);
+    expiry.textContent = expiresAt ? "Lease expires " + new Date(expiresAt * 1000).toLocaleTimeString() : "";
+    const dot = document.getElementById("managerDot");
+    const text = document.getElementById("managerStatusText");
+    dot.classList.remove("ok", "bad");
+    text.textContent = "ADOPTED";
+  }
+  renderUnits(latestUnits);
+}
+
+async function refreshAdoption(){
+  try{
+    const adoption = await jget("/api/manager/adoption");
+    setManagerAdoption(adoption);
+    return adoption;
+  }catch(e){
+    console.warn("Adoption status failed", e);
+    return null;
+  }
+}
+
+function schedulePoll(delayMs=5000){
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(refreshUnits, delayMs);
+}
+
+async function refreshUnits(){
+  if (document.visibilityState === "hidden") return;
+  if (refreshBusy) return;
+  refreshBusy = true;
+  try{
+    const adoption = await refreshAdoption();
+    if (adoption && adoption.adopted){
+      latestUnits = [];
+      renderUnits(latestUnits);
+      return;
+    }
+    const data = await jget("/api/manager/status");
+    latestUnits = data.units || [];
+    renderUnits(latestUnits);
+    setManagerHealth(true);
+  }catch(e){
+    setManagerHealth(false);
+    toast("Manager refresh failed: " + String(e.message || e), "bad", 3500);
+  }finally{
+    refreshBusy = false;
+    schedulePoll(5000);
+  }
+}
+
+document.getElementById("addUnitForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await refreshAdoption();
+  if (managerAdopted){
+    toast("Management is disabled while this TeleTool is adopted.", "warn", 3500);
+    return;
+  }
+  const input = document.getElementById("unitHost");
+  const host = input.value.trim();
+  if (!host){
+    toast("Enter an IP address or hostname.", "warn");
+    return;
+  }
+  document.getElementById("addUnit").disabled = true;
+  try{
+    await jpost("/api/manager/units", { host });
+    input.value = "";
+    toast("Unit added.", "good");
+    await refreshUnits();
+  }catch(e){
+    toast("Add failed: " + String(e.message || e), "bad", 4500);
+  }finally{
+    document.getElementById("addUnit").disabled = false;
+  }
+});
+
+document.getElementById("refreshUnits").addEventListener("click", async () => {
+  await refreshAdoption();
+  if (!managerAdopted) await refreshUnits();
+});
+
+document.getElementById("unitsGrid").addEventListener("click", async (event) => {
+  if (managerAdopted) return;
+  const button = event.target.closest("[data-remove-unit]");
+  if (!button) return;
+  const unitId = button.getAttribute("data-remove-unit");
+  if (!unitId) return;
+  if (!window.confirm("Remove this TeleTool unit?")) return;
+  button.disabled = true;
+  try{
+    await jdelete("/api/manager/units/" + encodeURIComponent(unitId));
+    toast("Unit removed.", "good");
+    await refreshUnits();
+  }catch(e){
+    toast("Remove failed: " + String(e.message || e), "bad", 4500);
+    button.disabled = false;
+  }
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refreshUnits();
+  else if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+});
+
+refreshUnits();
+</script>
+</body>
+</html>

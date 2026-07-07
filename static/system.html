@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>TeleTwat v1.0</title>
+  <title>Tvheadend → System</title>
   <link rel="stylesheet" href="/static/common.css">
   
 </head>
@@ -19,7 +19,7 @@
     <div class="rightTop">
             <a class="miniBtn" data-tvh-link href="#">TV-Headend</a>
 <a class="miniBtn" href="/">NDI</a>
-      <a class="miniBtn" href="/aes67">AES67</a>
+      <a class="miniBtn" href="/audio">Audio</a>
       <div class="pill" title="Backend/API health">
         <span id="dot" class="dot"></span>
         <span id="statusText">CONNECTING</span>
@@ -31,7 +31,7 @@
   <div class="grid">
 
     <div class="card">
-      <h2>System</h2>
+      <h2>Power</h2>
       <div class="row">
         <button id="restartProgram" class="primary">Restart program</button>
         <button id="rebootPi" class="danger">Reboot Pi</button>
@@ -39,7 +39,7 @@
       </div>
       <div class="small" style="margin-top:8px;">
         “Restart program” will exit the current process so your service manager (systemd) can restart it.
-        “Reboot Pi” requires passwordless sudo for the reboot command.
+        “Reboot Pi” requires the included sudoers helper so the service can run systemctl reboot/shutdown without a password.
       </div>
     </div>
 
@@ -74,8 +74,9 @@
 
       <div class="row" style="margin-top:12px;">
         <div class="field">
-          <label for="iface">Interface (advanced)</label>
-          <input id="iface" placeholder="e.g. eth0" />
+          <label>Interface</label>
+          <div class="mono" style="padding:10px 12px; border:1px solid #2a2a2a; border-radius:12px; background:#141414;">eth0</div>
+          <div class="small" style="margin-top:6px;">TeleTool edits eth0 only.</div>
         </div>
         <div class="field">
           <label for="mode">Addressing</label>
@@ -88,12 +89,16 @@
 
       <div id="manualFields" class="row hidden" style="margin-top:4px;">
         <div class="field">
-          <label for="ip">Static IPv4 (CIDR)</label>
-          <input id="ip" placeholder="e.g. 192.168.1.50/24" />
+          <label for="ip">IP address</label>
+          <input id="ip" placeholder="e.g. 192.168.1.50" inputmode="decimal" />
+        </div>
+        <div class="field">
+          <label for="subnet">Subnet mask</label>
+          <input id="subnet" placeholder="e.g. 255.255.255.0" inputmode="decimal" />
         </div>
         <div class="field">
           <label for="gw">Gateway</label>
-          <input id="gw" placeholder="e.g. 192.168.1.1" />
+          <input id="gw" placeholder="e.g. 192.168.1.1" inputmode="decimal" />
         </div>
         <div class="field">
           <label for="dns">DNS (space-separated)</label>
@@ -109,6 +114,7 @@
 
       <div class="small" style="margin-top:8px;">
         Note: applying network settings may briefly drop this web UI if the IP changes.
+        If the apply action reports a sudo permission error, run <span class="mono">sudo ./install_network_privileges.sh</span> once from the TeleTool folder.
       </div>
     </div>
 
@@ -136,6 +142,81 @@
       </div>
     </div>
 
+
+    <div class="card">
+      <h2>App config</h2>
+
+      <div class="row">
+        <div class="field">
+          <label for="cfg_tvh_base_url">TVHeadend base URL</label>
+          <input id="cfg_tvh_base_url" placeholder="http://127.0.0.1:9981" />
+        </div>
+        <div class="field">
+          <label for="cfg_tvh_stream_profile">Stream profile</label>
+          <input id="cfg_tvh_stream_profile" placeholder="pass" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <label for="cfg_ndi_default_name">Default NDI name</label>
+          <input id="cfg_ndi_default_name" placeholder="TeleTool" />
+        </div>
+        <div class="field">
+          <label for="cfg_ndi_delay_ms">NDI delay (ms)</label>
+          <input id="cfg_ndi_delay_ms" inputmode="numeric" placeholder="500" />
+        </div>
+        <div class="field">
+          <label for="cfg_ndi_buffer_extra_ms">NDI jitter buffer extra (ms)</label>
+          <input id="cfg_ndi_buffer_extra_ms" inputmode="numeric" placeholder="0" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <label for="cfg_ndi_auto_reconnect_enabled">Auto reconnect</label>
+          <select id="cfg_ndi_auto_reconnect_enabled">
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="cfg_ndi_startup_grace_s">Startup grace (s)</label>
+          <input id="cfg_ndi_startup_grace_s" inputmode="decimal" placeholder="10" />
+        </div>
+        <div class="field">
+          <label for="cfg_ndi_stall_timeout_s">Stall timeout (s)</label>
+          <input id="cfg_ndi_stall_timeout_s" inputmode="decimal" placeholder="5" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <div class="labelRow">
+            <label for="cfg_lineout_volume">Line output level</label>
+            <span id="cfg_lineout_volume_readout" class="small mono">80% (-1.9 dB)</span>
+          </div>
+          <input id="cfg_lineout_volume" type="range" min="0" max="100" step="1" value="80" />
+        </div>
+        <div class="field">
+          <label for="cfg_lineout_sink_sync">Clock output to sink</label>
+          <select id="cfg_lineout_sink_sync">
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="cfg_lineout_queue_time_ms">Audio queue (ms)</label>
+          <input id="cfg_lineout_queue_time_ms" inputmode="numeric" placeholder="200" />
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="saveAppConfig" class="primary">Save app config</button>
+        <span id="toastConfig" class="toast"></span>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -148,7 +229,7 @@
 function netFieldFocused(){
   const a = document.activeElement;
   if (!a) return false;
-  return ["iface","mode","ip","gw","dns"].includes(a.id);
+  return ["mode","ip","subnet","gw","dns"].includes(a.id);
 }
 
 
@@ -185,15 +266,76 @@ function toastId(id, msg, isBad=false, ms=2600){
   setTimeout(() => el.classList.remove("show"), ms);
 }
 
+function prefixToSubnetMask(prefix){
+  const p = Number(prefix);
+  if (!Number.isInteger(p) || p < 0 || p > 32) return "";
+  const mask = p === 0 ? 0 : (0xffffffff << (32 - p)) >>> 0;
+  return [24,16,8,0].map(shift => (mask >>> shift) & 255).join(".");
+}
+
+function splitIpv4Cidr(cidr){
+  const v = String(cidr || "").trim();
+  if (!v) return { ip: "", subnetMask: "" };
+  const parts = v.split("/");
+  return { ip: parts[0] || "", subnetMask: parts.length > 1 ? prefixToSubnetMask(parts[1]) : "" };
+}
+
 function setManualVisible(){
   const mode = document.getElementById("mode").value;
   document.getElementById("manualFields").classList.toggle("hidden", mode !== "manual");
 }
 
+const DEFAULT_LINEOUT_VOLUME = 0.8;
+
+function clampLineoutVolume(value){
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_LINEOUT_VOLUME;
+  return Math.max(0, Math.min(1, n));
+}
+
+function lineoutVolumePercent(value){
+  return Math.round(clampLineoutVolume(value) * 100);
+}
+
+function lineoutVolumeFromPercent(value){
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_LINEOUT_VOLUME;
+  return Math.max(0, Math.min(100, n)) / 100;
+}
+
+function lineoutVolumeDb(value){
+  const scalar = clampLineoutVolume(value);
+  if (scalar <= 0) return "-inf dB";
+  return (20 * Math.log10(scalar)).toFixed(1) + " dB";
+}
+
+function formatLineoutVolume(value){
+  const scalar = clampLineoutVolume(value);
+  return lineoutVolumePercent(scalar) + "% (" + lineoutVolumeDb(scalar) + ")";
+}
+
+function setLineoutVolumeSlider(value){
+  const slider = document.getElementById("cfg_lineout_volume");
+  if (!slider) return;
+  slider.value = String(lineoutVolumePercent(value));
+  updateLineoutVolumeReadout();
+}
+
+function getLineoutVolumeScalar(){
+  return lineoutVolumeFromPercent(document.getElementById("cfg_lineout_volume").value || 80);
+}
+
+function updateLineoutVolumeReadout(){
+  const slider = document.getElementById("cfg_lineout_volume");
+  const readout = document.getElementById("cfg_lineout_volume_readout");
+  if (!slider || !readout) return;
+  readout.textContent = formatLineoutVolume(lineoutVolumeFromPercent(slider.value));
+}
+
 
 // Lock network form when user interacts, so background refresh doesn't overwrite selections.
 
-["mode","iface","ip","gw","dns"].forEach(id => {
+["mode","ip","subnet","gw","dns"].forEach(id => {
   const el = document.getElementById(id);
   if (!el) return;
   el.addEventListener("change", () => {
@@ -231,9 +373,10 @@ async function refreshNetwork(){
     document.getElementById("st_dns").textContent = (n.dns && n.dns.length) ? n.dns.join(" ") : "—";
 
     if (!isNetworkFormLocked() && !netFieldFocused()){
-      document.getElementById("iface").value = n.iface || "";
+      const ipParts = splitIpv4Cidr(n.ipv4 || "");
       document.getElementById("mode").value = n.mode || "dhcp";
-      document.getElementById("ip").value = n.ipv4 || "";
+      document.getElementById("ip").value = ipParts.ip;
+      document.getElementById("subnet").value = ipParts.subnetMask;
       document.getElementById("gw").value = n.gateway || "";
       document.getElementById("dns").value = (n.dns && n.dns.length) ? n.dns.join(" ") : "";
       setManualVisible();
@@ -250,8 +393,27 @@ async function refreshNetwork(){
   }
 }
 
+async function refreshConfig(){
+  try{
+    const cfg = await jget("/api/config/ui");
+    document.getElementById("cfg_tvh_base_url").value = cfg.tvh_base_url || "";
+    document.getElementById("cfg_tvh_stream_profile").value = cfg.tvh_stream_profile || "pass";
+    document.getElementById("cfg_ndi_default_name").value = cfg.ndi_default_name || "TeleTool";
+    document.getElementById("cfg_ndi_delay_ms").value = String(cfg.ndi_delay_ms ?? 500);
+    document.getElementById("cfg_ndi_buffer_extra_ms").value = String(cfg.ndi_buffer_extra_ms ?? 0);
+    document.getElementById("cfg_ndi_auto_reconnect_enabled").value = String(cfg.ndi_auto_reconnect_enabled !== false);
+    document.getElementById("cfg_ndi_startup_grace_s").value = String(cfg.ndi_startup_grace_s ?? 10);
+    document.getElementById("cfg_ndi_stall_timeout_s").value = String(cfg.ndi_stall_timeout_s ?? 5);
+    setLineoutVolumeSlider(cfg.lineout_volume ?? DEFAULT_LINEOUT_VOLUME);
+    document.getElementById("cfg_lineout_sink_sync").value = String(cfg.lineout_sink_sync !== false);
+    document.getElementById("cfg_lineout_queue_time_ms").value = String(cfg.lineout_queue_time_ms ?? 200);
+  } catch(e){
+    toastId("toastConfig", "Config refresh failed", true);
+  }
+}
+
 async function refreshAll(){
-  await Promise.all([refreshHostname(), refreshNetwork()]);
+  await Promise.all([refreshHostname(), refreshNetwork(), refreshConfig()]);
 }
 
 document.getElementById("mode").addEventListener("change", () => {
@@ -259,27 +421,29 @@ document.getElementById("mode").addEventListener("change", () => {
   setManualVisible();
 });
 
-["iface","ip","gw","dns"].forEach(id => {
+["ip","subnet","gw","dns"].forEach(id => {
   const el = document.getElementById(id);
   el.addEventListener("input", () => lockNetworkFormFor(20000));
   el.addEventListener("focus", () => lockNetworkFormFor(20000));
 });
 
 document.getElementById("refreshNet").addEventListener("click", refreshAll);
+document.getElementById("cfg_lineout_volume").addEventListener("input", updateLineoutVolumeReadout);
+updateLineoutVolumeReadout();
 
 document.getElementById("applyNetwork").addEventListener("click", async () => {
   toastId("toastNet", "Applying…");
   const mode = document.getElementById("mode").value;
-  const iface = document.getElementById("iface").value.trim();
-  const payload = { mode, iface: iface || null };
+  const payload = { mode };
 
   if (mode === "manual"){
-    payload.ipv4 = document.getElementById("ip").value.trim();
+    payload.ip_address = document.getElementById("ip").value.trim();
+    payload.subnet_mask = document.getElementById("subnet").value.trim();
     payload.gateway = document.getElementById("gw").value.trim();
     payload.dns = document.getElementById("dns").value.trim();
 
-    if (!payload.ipv4){
-      toastId("toastNet", "Manual mode needs a static IPv4 address (CIDR), e.g. 192.168.1.50/24", true);
+    if (!payload.ip_address || !payload.subnet_mask){
+      toastId("toastNet", "Manual mode needs an IP address and subnet mask, e.g. 192.168.1.50 and 255.255.255.0", true);
       return;
     }
   }
@@ -319,6 +483,30 @@ document.getElementById("restartProgram").addEventListener("click", async () => 
     toastId("toastPower", r.message || "Restart requested.");
   } catch(e){
     toastId("toastPower", "Restart failed: " + e, true);
+  }
+});
+
+document.getElementById("saveAppConfig").addEventListener("click", async () => {
+  toastId("toastConfig", "Saving…");
+  try{
+    const payload = {
+      tvh_base_url: document.getElementById("cfg_tvh_base_url").value.trim(),
+      tvh_stream_profile: document.getElementById("cfg_tvh_stream_profile").value.trim() || "pass",
+      ndi_default_name: document.getElementById("cfg_ndi_default_name").value.trim() || "TeleTool",
+      ndi_delay_ms: Number(document.getElementById("cfg_ndi_delay_ms").value || 500),
+      ndi_buffer_extra_ms: Number(document.getElementById("cfg_ndi_buffer_extra_ms").value || 0),
+      ndi_auto_reconnect_enabled: document.getElementById("cfg_ndi_auto_reconnect_enabled").value === "true",
+      ndi_startup_grace_s: Number(document.getElementById("cfg_ndi_startup_grace_s").value || 10),
+      ndi_stall_timeout_s: Number(document.getElementById("cfg_ndi_stall_timeout_s").value || 5),
+      lineout_volume: getLineoutVolumeScalar(),
+      lineout_sink_sync: document.getElementById("cfg_lineout_sink_sync").value === "true",
+      lineout_queue_time_ms: Number(document.getElementById("cfg_lineout_queue_time_ms").value || 200),
+    };
+    const r = await jpost("/api/config/ui", payload);
+    toastId("toastConfig", r.ok ? "Config saved." : "Config save failed.", !r.ok);
+    await refreshConfig();
+  } catch(e){
+    toastId("toastConfig", "Config save failed: " + e, true);
   }
 });
 

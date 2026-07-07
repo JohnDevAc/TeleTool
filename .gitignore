@@ -1,22 +1,27 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-*.so
-*.egg-info/
-dist/
-build/
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
 .venv/
 venv/
-ENV/
+env/
+
+# Local/runtime state
 .env
 .env.*
+config.json
+*.log
 
-# OS
+# OS/editor noise
 .DS_Store
 Thumbs.db
 
-# IDE
-.vscode/
-.idea/
+# Sync/build scratch
+*.tar.gz
+*.zip
+golden-images/

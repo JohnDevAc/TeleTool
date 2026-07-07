@@ -1,5 +1,8 @@
 import time
-from typing import Dict, List, Optional, Tuple, Union
+import json
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -119,6 +122,27 @@ class TvheadendClient:
         except Exception:
             pass
 
+
+    def _post(self, url: str, *, data: Optional[Dict] = None) -> requests.Response:
+        """POST with the same self-healing approach as _get."""
+        try:
+            r = self._sess.post(url, data=data, timeout=self._timeout, auth=self._auth, verify=self._verify_tls)
+            r.raise_for_status()
+            return r
+        except requests.RequestException:
+            try:
+                self._sess.close()
+            except Exception:
+                pass
+            self._sess = self._build_session(
+                retries=self._retries,
+                backoff_s=self._backoff_s,
+                pool_maxsize=self._pool_maxsize,
+            )
+            r = self._sess.post(url, data=data, timeout=self._timeout, auth=self._auth, verify=self._verify_tls)
+            r.raise_for_status()
+            return r
+
     def _cache_valid(self, t: float) -> bool:
         return (time.time() - t) < self.cache_ttl_s
 
@@ -197,9 +221,9 @@ class TvheadendClient:
         self._m3u_cache[key] = (pairs, time.time())
         return list(pairs)
 
-    def get_stream_url_for_uuid(self, channel_uuid: str, profile: str = "pass") -> str:
+    def get_stream_url_for_uuid(self, channel_uuid: str, profile: str = "pass", force_refresh: bool = False) -> str:
         """Map channel UUID -> stream URL by matching channel name against channels.m3u."""
-        chans = self.list_channels()
+        chans = self.list_channels(force_refresh=force_refresh)
         chan = next((c for c in chans if c["uuid"] == channel_uuid), None)
         if not chan:
             # One retry with a forced refresh (useful if TVH changed quickly)
@@ -209,7 +233,7 @@ class TvheadendClient:
             raise RuntimeError(f"Channel UUID not found: {channel_uuid}")
 
         name = chan["name"]
-        pairs = self._get_playlist_pairs(profile=profile)
+        pairs = self._get_playlist_pairs(profile=profile, force_refresh=force_refresh)
 
         for disp, url in pairs:
             if disp == name:
@@ -225,3 +249,376 @@ class TvheadendClient:
                 return url
 
         raise RuntimeError(f"Stream URL not found in playlist for channel '{name}'")
+
+    def _post_jsonish(self, path: str, *, data: Optional[Dict] = None) -> Dict:
+        r = self._post(f"{self.base_url}{path}", data=data)
+        if not r.text:
+            return {}
+        try:
+            return r.json()
+        except ValueError:
+            return {"text": r.text}
+
+
+    def list_dvb_scanfiles(self, scan_type: str = "dvb-t") -> List[Dict]:
+        """Return Tvheadend's predefined mux/scanfile list for a delivery type.
+
+        This mirrors the Tvheadend web UI "Pre-defined muxes" dropdown. For
+        terrestrial setup use scan_type="dvb-t", which covers DVB-T and DVB-T2
+        scan tables where present.
+        """
+        r = self._get(f"{self.base_url}/api/dvb/scanfile/list", params={"type": scan_type})
+        data = r.json()
+        entries = data.get("entries", [])
+        out = []
+        for e in entries:
+            key = str(e.get("key") or "").strip()
+            val = str(e.get("val") or key).strip()
+            if key:
+                out.append({"key": key, "val": val})
+        out.sort(key=lambda e: (e.get("val") or "").lower())
+        return out
+
+    def _scanfile_roots(self) -> List[Path]:
+        roots = [
+            Path("/usr/share/tvheadend/data/dvb-scan"),
+            Path("/usr/local/share/tvheadend/data/dvb-scan"),
+            Path("/usr/share/dvb"),
+            Path("/usr/local/share/dvb"),
+        ]
+        env_root = os.environ.get("TVH_DVB_SCAN_ROOT")
+        if env_root:
+            roots.insert(0, Path(env_root))
+        return roots
+
+    def _scanfile_name_variants(self, scanfile_key: str) -> List[str]:
+        """Return likely local filenames for a Tvheadend scanfile key.
+
+        Tvheadend scanfile ids vary by build. Examples seen in the wild include
+        ``dvb-t/de/dvb-t_de-All``, ``dvb-t/de/de-All`` and local files named
+        ``All`` under ``dvb-t/de``. This also tolerates the Tvheadend API/browser
+        occasionally returning a truncated ``...-Al`` key by trying an ``l``
+        suffix as a fallback.
+        """
+        key = str(scanfile_key or "").strip().strip("/")
+        parts = [p for p in key.split("/") if p]
+        variants: List[str] = []
+
+        def add(v: str) -> None:
+            v = str(v or "").strip().strip("/")
+            if v and v not in variants:
+                variants.append(v)
+                if v.endswith("-Al") and (v + "l") not in variants:
+                    variants.append(v + "l")
+
+        if parts:
+            add(parts[-1])
+        if len(parts) >= 3:
+            delivery, country, base = parts[0], parts[1], parts[-1]
+            if base.startswith(delivery + "_"):
+                add(base.split("_", 1)[1])
+            if base.startswith(country + "-"):
+                add(base)
+            # Common local scanfile layouts use just "All" in dvb-t/de/All.
+            for prefix in (delivery + "_" + country + "-", country + "-"):
+                if base.startswith(prefix):
+                    add(base[len(prefix):])
+            # If the key is truncated to ...-Al, the local filename is usually All.
+            if base.endswith("-Al"):
+                add("All")
+        return variants
+
+    def _scanfile_candidate_paths(self, scanfile_key: str) -> List[Path]:
+        """Best-effort local paths for a Tvheadend scanfile key.
+
+        Tvheadend exposes keys like "dvb-t/de/dvb-t_de-All" but does not expose
+        scanfile contents over the JSON API. The scan files are normally present
+        under one of these data directories; parsing them lets us create muxes in
+        the existing, tuner-attached network rather than creating a detached new
+        network.
+        """
+        key = str(scanfile_key or "").strip().strip("/")
+        parts = [p for p in key.split("/") if p]
+        names = self._scanfile_name_variants(key)
+        candidates: List[Path] = []
+        for root in self._scanfile_roots():
+            for name in names:
+                if len(parts) >= 2:
+                    candidates.append(root / parts[0] / parts[1] / name)
+                    candidates.append(root / parts[0] / name)
+                candidates.append(root / name)
+        return list(dict.fromkeys(candidates))
+
+    def _find_scanfile_path(self, scanfile_key: str) -> Path:
+        candidates = self._scanfile_candidate_paths(scanfile_key)
+        for path in candidates:
+            if path.exists() and path.is_file():
+                return path
+
+        # Last-resort fuzzy lookup: if Tvheadend gave us a shortened key such as
+        # dvb-t/de/dvb-t_de-Al, search the country folder for a file that starts
+        # with one of the candidate stems. Keep this deliberately narrow so a
+        # wrong country/region is not selected accidentally.
+        key = str(scanfile_key or "").strip().strip("/")
+        parts = [p for p in key.split("/") if p]
+        names = self._scanfile_name_variants(key)
+        if len(parts) >= 2:
+            for root in self._scanfile_roots():
+                for base_dir in (root / parts[0] / parts[1], root / parts[0]):
+                    if not base_dir.exists() or not base_dir.is_dir():
+                        continue
+                    for name in names:
+                        prefix = name[:-1] if name.endswith("l") else name
+                        if not prefix:
+                            continue
+                        matches = sorted([p for p in base_dir.glob(prefix + "*") if p.is_file()])
+                        if len(matches) == 1:
+                            return matches[0]
+                        exact_all = base_dir / "All"
+                        if name in ("Al", "All") and exact_all.exists() and exact_all.is_file():
+                            return exact_all
+
+        tried = ", ".join(str(p) for p in candidates[:16])
+        raise RuntimeError(f"Could not find local Tvheadend scanfile for '{scanfile_key}'. Tried: {tried}")
+
+    @staticmethod
+    def _clean_scan_value(value: Any) -> str:
+        return str(value or "").strip().upper().replace(" ", "")
+
+    @staticmethod
+    def _bandwidth_to_tvh(value: Any) -> str:
+        s = str(value or "").strip().upper()
+        if not s:
+            return "AUTO"
+        try:
+            n = int(s)
+            if n >= 1000000:
+                return f"{int(n/1000000)}MHz"
+            if n >= 1000:
+                mhz = n / 1000.0
+                return f"{mhz:g}MHz"
+        except Exception:
+            pass
+        s = s.replace("HZ", "").replace(" ", "")
+        if s.isdigit():
+            return f"{int(s)}MHz"
+        return s
+
+    @staticmethod
+    def _modulation_to_tvh(value: Any) -> str:
+        s = str(value or "").strip().upper().replace(" ", "")
+        if s in ("QAM16", "QAM_16"):
+            return "QAM/16"
+        if s in ("QAM32", "QAM_32"):
+            return "QAM/32"
+        if s in ("QAM64", "QAM_64"):
+            return "QAM/64"
+        if s in ("QAM128", "QAM_128"):
+            return "QAM/128"
+        if s in ("QAM256", "QAM_256"):
+            return "QAM/256"
+        return s or "AUTO"
+
+    @staticmethod
+    def _mode_to_tvh(value: Any) -> str:
+        s = str(value or "").strip().upper().replace(" ", "")
+        if s.endswith("K") and s[:-1].isdigit():
+            return s[:-1] + "k"
+        return s or "AUTO"
+
+    @staticmethod
+    def _delivery_to_tvh(value: Any) -> str:
+        s = str(value or "").strip().upper().replace("-", "").replace("_", "")
+        if s in ("DVBT2", "DVB2T"):
+            return "DVB-T2"
+        return "DVB-T"
+
+    def _parse_dvbv5_scanfile(self, text: str) -> List[Dict[str, Any]]:
+        muxes: List[Dict[str, Any]] = []
+        current: Dict[str, str] = {}
+
+        def flush() -> None:
+            nonlocal current
+            if not current:
+                return
+            freq = current.get("FREQUENCY") or current.get("FREQUENCY_HZ")
+            delivery = current.get("DELIVERY_SYSTEM") or current.get("SYSTEM") or "DVBT"
+            try:
+                freq_i = int(str(freq).strip()) if freq is not None else 0
+            except Exception:
+                freq_i = 0
+            if freq_i > 0:
+                conf: Dict[str, Any] = {
+                    "enabled": 1,
+                    "epg": 1,
+                    "delsys": self._delivery_to_tvh(delivery),
+                    "frequency": freq_i,
+                    "bandwidth": self._bandwidth_to_tvh(current.get("BANDWIDTH_HZ") or current.get("BANDWIDTH")),
+                    "fec_hi": self._clean_scan_value(current.get("CODE_RATE_HP") or current.get("CODE_RATE") or "AUTO"),
+                    "fec_lo": self._clean_scan_value(current.get("CODE_RATE_LP") or "NONE"),
+                    "constellation": self._modulation_to_tvh(current.get("MODULATION") or "AUTO"),
+                    "transmission_mode": self._mode_to_tvh(current.get("TRANSMISSION_MODE") or "AUTO"),
+                    "guard_interval": self._clean_scan_value(current.get("GUARD_INTERVAL") or "AUTO"),
+                    "hierarchy": self._clean_scan_value(current.get("HIERARCHY") or "NONE"),
+                    "scan_state": 0,
+                    "tsid_zero": False,
+                    "pmt_06_ac3": 0,
+                    "eit_tsid_nocheck": False,
+                    "sid_filter": 0,
+                    "charset": "AUTO",
+                }
+                stream_id = current.get("STREAM_ID") or current.get("PLP_ID")
+                try:
+                    conf["plp_id"] = int(stream_id) if stream_id not in (None, "", "AUTO") else -1
+                except Exception:
+                    conf["plp_id"] = -1
+                muxes.append(conf)
+            current = {}
+
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                flush()
+                current = {}
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                current[k.strip().upper()] = v.strip()
+        flush()
+        return muxes
+
+    def _parse_legacy_dvbt_scanfile(self, text: str) -> List[Dict[str, Any]]:
+        muxes: List[Dict[str, Any]] = []
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or line.startswith("["):
+                continue
+            parts = line.split()
+            if not parts:
+                continue
+            prefix = parts.pop(0).upper()
+            if prefix not in ("T", "T2"):
+                continue
+            # Legacy TVH lines: T <freq> <bw> <fec_hi> <fec_lo> <qam> <mode> <guard> <hier> [plp]
+            if len(parts) < 8:
+                continue
+            try:
+                freq_i = int(parts[0])
+            except Exception:
+                continue
+            muxes.append({
+                "enabled": 1,
+                "epg": 1,
+                "delsys": "DVB-T2" if prefix == "T2" else "DVB-T",
+                "frequency": freq_i,
+                "bandwidth": self._bandwidth_to_tvh(parts[1]),
+                "fec_hi": self._clean_scan_value(parts[2]),
+                "fec_lo": self._clean_scan_value(parts[3]),
+                "constellation": self._modulation_to_tvh(parts[4]),
+                "transmission_mode": self._mode_to_tvh(parts[5]),
+                "guard_interval": self._clean_scan_value(parts[6]),
+                "hierarchy": self._clean_scan_value(parts[7]),
+                "plp_id": int(parts[8]) if len(parts) > 8 and parts[8].lstrip("-").isdigit() else -1,
+                "scan_state": 0,
+                "tsid_zero": False,
+                "pmt_06_ac3": 0,
+                "eit_tsid_nocheck": False,
+                "sid_filter": 0,
+                "charset": "AUTO",
+            })
+        return muxes
+
+    def load_scanfile_muxes(self, scanfile_key: str) -> List[Dict[str, Any]]:
+        path = self._find_scanfile_path(scanfile_key)
+        text = path.read_text(errors="replace")
+        muxes = self._parse_dvbv5_scanfile(text)
+        if not muxes:
+            muxes = self._parse_legacy_dvbt_scanfile(text)
+        if not muxes:
+            raise RuntimeError(f"No DVB-T/T2 muxes could be parsed from scanfile '{scanfile_key}' at {path}")
+        return muxes
+
+    def delete_muxes(self, uuids: List[str]) -> None:
+        if not uuids:
+            return
+        self._post_jsonish("/api/idnode/delete", data={"uuid": json.dumps(uuids)})
+        self._m3u_cache = {}
+
+    def create_mux(self, network_uuid: str, conf: Dict[str, Any]) -> Dict:
+        return self._post_jsonish("/api/mpegts/network/mux_create", data={"uuid": network_uuid, "conf": json.dumps(conf)})
+
+    def replace_muxes_from_scanfile(self, network_uuid: str, scanfile_key: str) -> Dict[str, Any]:
+        existing = self.list_muxes_for_network(network_uuid)
+        self.delete_muxes([m.get("uuid") for m in existing if m.get("uuid")])
+        muxes = self.load_scanfile_muxes(scanfile_key)
+        created = 0
+        errors: List[str] = []
+        for conf in muxes:
+            try:
+                self.create_mux(network_uuid, conf)
+                created += 1
+            except Exception as e:
+                errors.append(f"{conf.get('frequency')}: {e}")
+        if errors and created == 0:
+            raise RuntimeError("Failed to create muxes from selected scanfile: " + "; ".join(errors[:5]))
+        return {"deleted": len(existing), "created": created, "errors": errors[:10], "scanfile": scanfile_key}
+
+    def list_networks(self) -> List[Dict]:
+        r = self._get(f"{self.base_url}/api/mpegts/network/grid", params={"start": 0, "limit": 1000})
+        data = r.json()
+        return data.get("entries", [])
+
+    def list_services(self, *, hidemode: str = "none") -> List[Dict]:
+        r = self._get(
+            f"{self.base_url}/api/mpegts/service/grid",
+            params={"hidemode": hidemode, "start": 0, "limit": 100000},
+        )
+        data = r.json()
+        return data.get("entries", [])
+
+    def list_muxes_for_network(self, network_uuid: str) -> List[Dict]:
+        flt = json.dumps([{"field": "network_uuid", "type": "string", "value": network_uuid}])
+        r = self._get(
+            f"{self.base_url}/api/mpegts/mux/grid",
+            params={"start": 0, "limit": 100000, "filter": flt},
+        )
+        data = r.json()
+        return data.get("entries", [])
+
+    def delete_channels(self, uuids: List[str]) -> None:
+        if not uuids:
+            return
+        self._post_jsonish("/api/idnode/delete", data={"uuid": json.dumps(uuids)})
+        self._channels_cache = None
+        self._channels_cache_t = 0.0
+
+    def delete_services(self, uuids: List[str]) -> None:
+        if not uuids:
+            return
+        self._post_jsonish("/api/idnode/delete", data={"uuid": json.dumps(uuids)})
+        self._m3u_cache = {}
+
+    def scan_network(self, network_uuid: str) -> None:
+        self._post_jsonish("/api/mpegts/network/scan", data={"uuid": network_uuid})
+
+    def mapper_status(self) -> Dict:
+        r = self._get(f"{self.base_url}/api/service/mapper/status")
+        return r.json()
+
+    def map_services(self, service_uuids: List[str]) -> Dict:
+        node = {
+            "services": service_uuids,
+            "encrypted": True,
+            "merge_same_name": False,
+            "check_availability": False,
+            "type_tags": True,
+            "provider_tags": False,
+            "network_tags": False,
+        }
+        out = self._post_jsonish("/api/service/mapper/save", data={"node": json.dumps(node)})
+        self._channels_cache = None
+        self._channels_cache_t = 0.0
+        self._m3u_cache = {}
+        return out

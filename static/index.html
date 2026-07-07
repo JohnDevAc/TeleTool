@@ -3,26 +3,25 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>TeleTwat V1.0</title>
+  <title>Tvheadend → NDI Bridge</title>
   <link rel="stylesheet" href="/static/common.css">
-  
 </head>
 
 <body>
 <div class="wrap">
   <header>
     <div class="title">
-      <h1 class="srOnly">TeleTwat</h1>
+      <h1 class="srOnly">Tvheadend → NDI Bridge</h1>
       <div class="sub">Select a channel, name the NDI source, and publish it on your LAN.</div>
     </div>
-        <div class="rightTop">
-            <a class="miniBtn" data-tvh-link href="#">TV-Headend</a>
-<a class="miniBtn" href="/aes67">AES67</a>
-            <a class="miniBtn" href="/system">System</a>
-<div class="pill" title="NDI running state">
-      <span id="dot" class="dot"></span>
-      <span id="statusText">STOPPED</span>
-    </div>
+    <div class="rightTop">
+      <a class="miniBtn" data-tvh-link href="#">TV-Headend</a>
+      <a class="miniBtn" href="/audio">Audio</a>
+      <a class="miniBtn" href="/system">System</a>
+      <div class="pill" title="NDI running state">
+        <span id="dot" class="dot"></span>
+        <span id="statusText">STOPPED</span>
+      </div>
       <img class="brandLogo" src="/static/TeleTwat_V1_0_all_black_transparent.png" alt="TeleTwat logo" />
     </div>
   </header>
@@ -39,9 +38,10 @@
 
         <div class="field">
           <label for="ndiname">NDI source name</label>
-          <input id="ndiname" placeholder="e.g. BROADCASTPI 1" value="BROADCASTPI Test" />
+          <input id="ndiname" placeholder="e.g. TeleTool 1" value="" />
         </div>
       </div>
+
       <div class="actions">
         <button id="start" class="primary">Start NDI</button>
         <button id="stop" class="danger">Stop</button>
@@ -49,7 +49,36 @@
       </div>
 
       <div class="hint">
-        Tip: keep NDI names unique (e.g. <span class="mono">BROADCASTPI 1</span>, <span class="mono">BROADCASTPI 2</span>).
+        Tip: keep NDI names unique when running multiple devices.
+      </div>
+
+      <div class="tvSetupSection">
+        <h2 style="margin-top:16px;">TV Setup</h2>
+        <div class="small">
+          Deletes all current TVHeadend channels and services, applies the selected predefined DVB-T/T2 mux region, then runs a fresh scan and maps services back to channels.
+        </div>
+
+        <div class="field" style="margin-top:10px;">
+          <label for="tvSetupRegion">DVB-T/T2 region / predefined muxes</label>
+          <select id="tvSetupRegion">
+            <option value="">Loading TVHeadend regions…</option>
+          </select>
+          <div class="small" id="tvSetupRegionHint">This mirrors Tvheadend's “Pre-defined muxes” dropdown.</div>
+        </div>
+
+        <div class="actions">
+          <button id="runTvSetup" class="primary">Run TV Setup</button>
+          <button id="refreshTvSetupRegions" class="miniBtn" type="button">Refresh regions</button>
+          <span id="tvSetupInlineState" class="badge" style="display:none;"></span>
+        </div>
+
+        <div id="tvSetupProgressWrap" class="hidden" style="margin-top:10px;">
+          <div class="small" id="tvSetupStep">Idle</div>
+          <div class="progressTrack" aria-hidden="true">
+            <div id="tvSetupProgressBar" class="progressBar"></div>
+          </div>
+          <pre id="tvSetupLog">No activity yet.</pre>
+        </div>
       </div>
     </div>
 
@@ -58,35 +87,61 @@
         <h2 style="margin:0;">Live monitoring</h2>
         <div class="rightTop">
           <span id="alertBadge" class="badge" style="display:none;"></span>
-          <button id="refresh" class="miniBtn">Refresh</button>
+          <button id="refresh" class="miniBtn" type="button">Refresh</button>
         </div>
       </div>
 
       <div class="stats">
         <div class="stat">
-          <div class="k">Pipeline state</div>
+          <div class="k">Pipeline</div>
           <div id="st_state" class="v">NULL</div>
         </div>
         <div class="stat">
-          <div class="k">Uptime</div>
-          <div id="st_uptime" class="v">—</div>
+          <div class="k">NDI source</div>
+          <div id="st_ndi" class="v mono">-</div>
         </div>
-
-        <div class="stat" style="grid-column:1 / -1;">
-          <div class="k">NDI name</div>
-          <div id="st_ndi" class="v mono">—</div>
+        <div class="stat">
+          <div class="k">Uptime</div>
+          <div id="st_uptime" class="v mono">-</div>
         </div>
       </div>
     </div>
+
   </div>
 </div>
 
 <script src="/static/common.js"></script>
 <script>
-// Local UI timer used ONLY as a short-lived fallback immediately after the user
-// presses Start (before the backend returns a fresh started_at). It must NOT
-// be set on page load, otherwise uptime would reset on every visit.
-let _localStartedAt = null;
+let uiConfig = {};
+let ndiStreamRunning = false;
+let tvSetupRunning = false;
+let tvSetupRegionsLoading = false;
+
+function updateNdiControls(){
+  const busyWithSetup = !!tvSetupRunning;
+  for (const id of ["channel","ndiname"]){
+    const el = document.getElementById(id);
+    if (el) el.disabled = !!ndiStreamRunning || busyWithSetup;
+  }
+  const startBtn = document.getElementById("start");
+  const stopBtn = document.getElementById("stop");
+  if (startBtn) startBtn.disabled = !!ndiStreamRunning || busyWithSetup;
+  if (stopBtn) stopBtn.disabled = !ndiStreamRunning || busyWithSetup;
+}
+
+function updateTvSetupControls(){
+  const regionSel = document.getElementById("tvSetupRegion");
+  const runBtn = document.getElementById("runTvSetup");
+  const refreshBtn = document.getElementById("refreshTvSetupRegions");
+
+  const disabledByNdi = !!ndiStreamRunning;
+  const disabledBySetup = !!tvSetupRunning;
+  const disabledByLoading = !!tvSetupRegionsLoading;
+
+  if (regionSel) regionSel.disabled = disabledByNdi || disabledBySetup || disabledByLoading;
+  if (refreshBtn) refreshBtn.disabled = disabledByNdi || disabledBySetup || disabledByLoading;
+  if (runBtn) runBtn.disabled = disabledByNdi || disabledBySetup || disabledByLoading || !(regionSel && regionSel.value);
+}
 
 function setRunningUI(running){
   const dot = document.getElementById("dot");
@@ -95,20 +150,11 @@ function setRunningUI(running){
   statusText.textContent = running ? "RUNNING" : "STOPPED";
 }
 
-
-
 function setFormDisabled(disabled){
-  const ids = ["channel","ndiname"];
-  for (const id of ids){
-    const el = document.getElementById(id);
-    if (el) el.disabled = !!disabled;
-  }
-  // Start button should be disabled if already active
-  const startBtn = document.getElementById("start");
-  if (startBtn) startBtn.disabled = !!disabled;
+  ndiStreamRunning = !!disabled;
+  updateNdiControls();
+  updateTvSetupControls();
 }
-
-
 
 function populateFormFromStatus(st){
   if (!st || !st.running) return;
@@ -120,6 +166,7 @@ function populateFormFromStatus(st){
 
 function setAlertBadge(kind, text){
   const b = document.getElementById("alertBadge");
+  if (!b) return;
   if (!text){
     b.style.display = "none";
     b.textContent = "";
@@ -131,9 +178,184 @@ function setAlertBadge(kind, text){
   b.className = "badge " + (kind || "");
 }
 
-async function loadChannels() {
-  const data = await jget("/api/channels");
+function setTvSetupBadge(kind, text){
+  const b = document.getElementById("tvSetupInlineState");
+  if (!text){
+    b.style.display = "none";
+    b.textContent = "";
+    b.className = "badge";
+    return;
+  }
+  b.style.display = "inline-flex";
+  b.textContent = text;
+  b.className = "badge " + (kind || "");
+}
+
+function renderTvSetupStatus(st){
+  const wrap = document.getElementById("tvSetupProgressWrap");
+  const step = document.getElementById("tvSetupStep");
+  const bar = document.getElementById("tvSetupProgressBar");
+  const log = document.getElementById("tvSetupLog");
+
+  const show = !!(st && (st.running || st.done || (st.logs && st.logs.length)));
+  wrap.classList.toggle("hidden", !show);
+  step.textContent = (st && st.step) ? st.step : "Idle";
+  bar.style.width = `${Math.max(0, Math.min(100, Number((st && st.percent) || 0)))}%`;
+  log.textContent = (st && st.logs && st.logs.length) ? st.logs.join("\n") : "No activity yet.";
+  tvSetupRunning = !!(st && st.running);
+  updateNdiControls();
+  updateTvSetupControls();
+
+  if (st && st.running) setTvSetupBadge("warn", "Running");
+  else if (st && st.error) setTvSetupBadge("bad", "Failed");
+  else if (st && st.done) setTvSetupBadge("good", "Complete");
+  else setTvSetupBadge("", "");
+}
+
+async function loadUiConfig(){
+  uiConfig = await jget("/api/config/ui");
+  const ndiInput = document.getElementById("ndiname");
+  if (ndiInput && !ndiInput.value.trim()) {
+    ndiInput.value = uiConfig.ndi_default_name || "TeleTool";
+  }
+}
+
+
+async function loadTvSetupRegions(){
+  const sel = document.getElementById("tvSetupRegion");
+  const hint = document.getElementById("tvSetupRegionHint");
+  if (!sel) return;
+  tvSetupRegionsLoading = true;
+  updateTvSetupControls();
+  const previous = sel.value;
+  sel.innerHTML = "";
+  try {
+    const data = await jget("/api/tv/setup/regions");
+    const regions = data.regions || [];
+    if (!regions.length) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "No TVHeadend DVB-T/T2 regions found";
+      sel.appendChild(opt);
+      if (hint) hint.textContent = "TVHeadend did not return any DVB-T/T2 scanfiles. Check that its scanfile data package is installed.";
+      tvSetupRegionsLoading = false;
+      updateTvSetupControls();
+      return;
+    }
+    for (const r of regions) {
+      const opt = document.createElement("option");
+      opt.value = r.key;
+      opt.textContent = r.val || r.key;
+      sel.appendChild(opt);
+    }
+    const selected = previous || data.selected || "";
+    if (selected && Array.from(sel.options).some(o => o.value === selected)) sel.value = selected;
+    else if (data.selected && Array.from(sel.options).some(o => o.value === data.selected)) sel.value = data.selected;
+    if (hint) hint.textContent = "This mirrors TVHeadend's “Pre-defined muxes” dropdown and will replace muxes in the selected DVB-T network during setup.";
+    tvSetupRegionsLoading = false;
+    updateTvSetupControls();
+  } catch (e) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "Could not load TVHeadend regions";
+    sel.appendChild(opt);
+    if (hint) hint.textContent = String(e);
+    console.warn("TV setup region load failed", e);
+    tvSetupRegionsLoading = false;
+    updateTvSetupControls();
+  }
+}
+
+let tvSetupPollTimer = null;
+let lastTvSetupRefreshFinishedAt = null;
+
+async function refreshChannelsAfterTvSetup(){
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      await loadChannels(true);
+      const sel = document.getElementById("channel");
+      if (sel && sel.options.length > 0) {
+        toast("Channel list refreshed.", "good", 2500);
+        return true;
+      }
+    } catch (e) {
+      lastErr = e;
+      console.warn("Channel list refresh attempt failed", e);
+    }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  toast(lastErr ? "TV setup completed, but channel list refresh failed." : "TV setup completed, but no channels were returned yet.", "warn", 4000);
+  return false;
+}
+
+async function refreshTvSetupStatus(){
+  try {
+    const st = await jget("/api/tv/setup/status");
+    renderTvSetupStatus(st);
+    const finishedAt = st ? (st.finished_at || null) : null;
+    const completedRunNeedsRefresh = !!(st && st.done && !st.error && finishedAt && finishedAt !== lastTvSetupRefreshFinishedAt);
+    if (completedRunNeedsRefresh) {
+      const ok = await refreshChannelsAfterTvSetup();
+      if (ok) lastTvSetupRefreshFinishedAt = finishedAt;
+    }
+    if (tvSetupPollTimer) clearTimeout(tvSetupPollTimer);
+    if (st && (st.running || (st.done && !st.error && finishedAt !== lastTvSetupRefreshFinishedAt))) {
+      tvSetupPollTimer = setTimeout(refreshTvSetupStatus, 2000);
+    }
+  } catch (e) {
+    console.warn("TV setup status failed", e);
+  }
+}
+
+document.getElementById("tvSetupRegion").addEventListener("change", updateTvSetupControls);
+
+document.getElementById("runTvSetup").addEventListener("click", async () => {
+  const regionSel = document.getElementById("tvSetupRegion");
+  const scanfile = regionSel ? regionSel.value : "";
+  const regionText = regionSel && regionSel.selectedOptions.length ? regionSel.selectedOptions[0].textContent : "the selected region";
+  if (!scanfile) {
+    toast("Select a DVB-T/T2 region before running TV setup.", "warn", 4000);
+    return;
+  }
+  const ok = window.confirm(`This will stop any active NDI stream, delete all current TVHeadend channels and services, replace the DVB-T/T2 mux list with “${regionText}”, run a new scan, and map services back to channels. Continue?`);
+  if (!ok) return;
+  try {
+    tvSetupRunning = true;
+    updateNdiControls();
+    updateTvSetupControls();
+    if (ndiStreamRunning) {
+      toast("Stopping NDI before TV setup…");
+      await jpost("/api/stop", {});
+      await refreshStatus();
+    }
+    tvSetupRunning = true;
+    updateNdiControls();
+    updateTvSetupControls();
+    toast("Starting TV setup…");
+    await jpost("/api/tv/setup/run", { scanfile });
+    await refreshTvSetupStatus();
+  } catch (e) {
+    toast("TV setup failed to start: " + e, "bad", 4000);
+    await refreshTvSetupStatus();
+  }
+});
+
+document.getElementById("refreshTvSetupRegions").addEventListener("click", async () => {
+  if (ndiStreamRunning) {
+    toast("Stop the NDI stream before refreshing TV setup regions.", "warn", 4000);
+    await refreshStatus();
+    return;
+  }
+  await loadTvSetupRegions();
+  toast("TVHeadend regions refreshed.", "good", 2500);
+});
+
+async function loadChannels(forceRefresh=false) {
+  const url = forceRefresh ? "/api/channels?force_refresh=1" : "/api/channels";
+  const data = await jget(url);
   const sel = document.getElementById("channel");
+  const previousValue = sel.value;
   sel.innerHTML = "";
   for (const c of data.channels) {
     const opt = document.createElement("option");
@@ -142,47 +364,48 @@ async function loadChannels() {
     opt.textContent = num + c.name;
     sel.appendChild(opt);
   }
+  if (previousValue && Array.from(sel.options).some(o => o.value === previousValue)) sel.value = previousValue;
+}
+
+let statusPollTimer = null;
+let lastStatusKey = "";
+
+function scheduleStatusPoll(delayMs){
+  if (statusPollTimer) clearTimeout(statusPollTimer);
+  statusPollTimer = setTimeout(async () => { await refreshStatus(); }, delayMs);
 }
 
 async function refreshStatus() {
+  if (document.visibilityState === "hidden") return;
   const st = await jget("/api/status?lite=1");
   const running = !!st.running;
   setRunningUI(running);
   setFormDisabled(running);
   if (running) populateFormFromStatus(st);
 
-  document.getElementById("st_state").textContent = st.pipeline_state || (running ? "PLAYING" : "NULL");
+  const nextKey = JSON.stringify({
+    running,
+    pipeline_state: st.pipeline_state || (running ? "PLAYING" : "NULL"),
+    ndi_name: running ? (st.ndi_name || "—") : "—",
+    last_error: st.last_error || "",
+    last_warning: st.last_warning || ""
+  });
 
-  // Track *actual* stream uptime across page reloads using backend started_at.
-  // Only use the local fallback right after Start was pressed.
-  let startedAt = st.started_at;
-  let uptimeSec = st.uptime_sec;
-  if (running) {
-    if (_localStartedAt && (!startedAt || startedAt < (_localStartedAt - 2))) {
-      startedAt = _localStartedAt;
-    }
-  } else {
-    _localStartedAt = null;
+  if (nextKey !== lastStatusKey){
+    const stState = document.getElementById("st_state");
+    const stNdi = document.getElementById("st_ndi");
+    if (stState) stState.textContent = st.pipeline_state || (running ? "PLAYING" : "NULL");
+    if (stNdi) stNdi.textContent = running ? (st.ndi_name || "—") : "—";
+    lastStatusKey = nextKey;
   }
-  // Prefer server-computed uptime to avoid client/server clock skew.
-  let uptimeText = "—";
-  if (running) {
-    if (uptimeSec !== undefined && uptimeSec !== null) {
-      uptimeText = fmtDuration(uptimeSec);
-    } else {
-      uptimeText = fmtUptime(startedAt);
-    }
-  }
-  document.getElementById("st_uptime").textContent = uptimeText;
-  document.getElementById("st_ndi").textContent = running ? (st.ndi_name || "—") : "—";
+  const stUptime = document.getElementById("st_uptime");
+  if (stUptime) stUptime.textContent = running ? fmtUptime(st.started_at) : "—";
 
-  if (st.last_error){
-    setAlertBadge("bad", st.last_error);
-  } else if (st.last_warning){
-    setAlertBadge("warn", st.last_warning);
-  } else {
-    setAlertBadge("", "");
-  }
+  if (st.last_error) setAlertBadge("bad", st.last_error);
+  else if (st.last_warning) setAlertBadge("warn", st.last_warning);
+  else setAlertBadge("", "");
+
+  scheduleStatusPoll(running ? 5000 : 8000);
 }
 
 document.getElementById("start").addEventListener("click", async () => {
@@ -192,32 +415,46 @@ document.getElementById("start").addEventListener("click", async () => {
     toast("Please enter an NDI name.", "bad");
     return;
   }
-
-  // Reset uptime immediately in the UI.
-  _localStartedAt = Math.floor(Date.now()/1000);
-  document.getElementById("st_uptime").textContent = "00:00:00";
-  setRunningUI(true);
-  setFormDisabled(true);
-
+  if (tvSetupRunning) {
+    toast("TV setup is running. NDI controls are disabled until setup finishes.", "warn", 4000);
+    await refreshTvSetupStatus();
+    return;
+  }
+  if (document.getElementById("start").disabled){
+    toast("NDI is already running.", "warn");
+    await refreshStatus();
+    return;
+  }
   toast("Starting…");
   document.getElementById("start").disabled = true;
-
   try {
     await jpost("/api/start", {
       channel_uuid: uuid,
       ndi_name: ndi,
+      profile: uiConfig.tvh_stream_profile || "pass",
+      ndi_multicast_enabled: !!uiConfig.ndi_multicast_enabled,
+      ndi_multicast_addr: uiConfig.ndi_multicast_addr || "",
+      ndi_multicast_ttl: Number(uiConfig.ndi_multicast_ttl || 1),
+      deinterlace: !!uiConfig.ndi_deinterlace,
+      buffer_extra_ms: Number(uiConfig.ndi_buffer_extra_ms || 0),
+      ndi_qos: !!uiConfig.ndi_qos,
     });
     toast("NDI started.");
+    uiConfig.ndi_default_name = ndi;
   } catch (e) {
     toast("Start failed: " + e, "bad");
   } finally {
-    // refreshStatus() will re-apply the correct disabled state if the stream started.
-    document.getElementById("start").disabled = false;
+    updateNdiControls();
   }
   await refreshStatus();
 });
 
 document.getElementById("stop").addEventListener("click", async () => {
+  if (tvSetupRunning) {
+    toast("TV setup is running. NDI controls are disabled until setup finishes.", "warn", 4000);
+    await refreshTvSetupStatus();
+    return;
+  }
   toast("Stopping…");
   document.getElementById("stop").disabled = true;
   try {
@@ -226,18 +463,28 @@ document.getElementById("stop").addEventListener("click", async () => {
   } catch (e) {
     toast("Stop failed: " + e, "bad");
   } finally {
-    document.getElementById("stop").disabled = false;
+    updateNdiControls();
   }
   await refreshStatus();
 });
 
-document.getElementById("refresh").addEventListener("click", refreshStatus);
+const refreshBtn = document.getElementById("refresh");
+if (refreshBtn) refreshBtn.addEventListener("click", refreshStatus);
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refreshStatus();
+  else if (statusPollTimer) {
+    clearTimeout(statusPollTimer);
+    statusPollTimer = null;
+  }
+});
 
 (async () => {
+  await loadUiConfig();
   await loadChannels();
-
   await refreshStatus();
-  setInterval(refreshStatus, 2000);
+  await loadTvSetupRegions();
+  await refreshTvSetupStatus();
 })();
 </script>
 </body>

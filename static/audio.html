@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Tvheadend Line Audio Output</title>
+  <link rel="stylesheet" href="/static/common.css">
+</head>
+
+<body>
+<div class="wrap">
+  <header>
+    <div class="title">
+      <h1 class="srOnly">Tvheadend Line Audio Output</h1>
+      <div class="sub">Route the active TV audio to a local stereo output device.</div>
+    </div>
+    <div class="rightTop">
+      <a class="miniBtn" data-tvh-link href="#">TV-Headend</a>
+      <a class="miniBtn" href="/">NDI</a>
+      <a class="miniBtn" href="/system">System</a>
+      <div class="pill" title="Audio output running state">
+        <span id="dot" class="dot"></span>
+        <span id="statusText">STOPPED</span>
+      </div>
+      <img class="brandLogo" src="/static/TeleTwat_V1_0_all_black_transparent.png" alt="TeleTwat logo" />
+    </div>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Control</h2>
+
+      <div class="row">
+        <div class="field">
+          <label for="device">Audio output</label>
+          <select id="device"></select>
+        </div>
+
+        <div class="field">
+          <div class="labelRow">
+            <label for="volume">Output level</label>
+            <span id="volumeReadout" class="small mono">80% (-1.9 dB)</span>
+          </div>
+          <input id="volume" type="range" min="0" max="100" step="1" value="80" />
+          <div class="small mono">50% = -6.0 dB, 80% = -1.9 dB, 100% = 0.0 dB</div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="start" class="primary">Start Audio</button>
+        <button id="stop" class="danger">Stop</button>
+        <button id="refreshDevices" class="miniBtn" type="button">Refresh devices</button>
+        <span id="toast" class="toast"></span>
+      </div>
+
+      <div class="small" style="margin-top:8px;">
+        Audio output follows the active NDI stream, so start NDI first.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <h2 style="margin:0;">Live monitoring</h2>
+        <div class="rightTop">
+          <span id="alertBadge" class="badge" style="display:none;"></span>
+          <button id="refresh" class="miniBtn">Refresh</button>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat">
+          <div class="k">NDI status</div>
+          <div id="st_ndi" class="v">-</div>
+        </div>
+        <div class="stat">
+          <div class="k">Audio output</div>
+          <div id="st_state" class="v">NULL</div>
+        </div>
+        <div class="stat">
+          <div class="k">Selected interface</div>
+          <div id="st_device" class="v mono">-</div>
+        </div>
+        <div class="stat">
+          <div class="k">Output level</div>
+          <div id="st_volume" class="v mono">-</div>
+        </div>
+      </div>
+
+      <details>
+        <summary>
+          <span>Pipeline log</span>
+          <span class="small">last 120 lines</span>
+        </summary>
+        <pre id="log" class="mono"></pre>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script src="/static/common.js"></script>
+<script>
+let statusPollTimer = null;
+let lastStatusKey = "";
+let audioBusy = false;
+let devices = [];
+const DEFAULT_VOLUME = 0.8;
+
+function clampVolumeScalar(value){
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_VOLUME;
+  return Math.max(0, Math.min(1, n));
+}
+
+function volumePercentFromScalar(value){
+  return Math.round(clampVolumeScalar(value) * 100);
+}
+
+function volumeScalarFromPercent(value){
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_VOLUME;
+  return Math.max(0, Math.min(100, n)) / 100;
+}
+
+function volumeDbLabel(value){
+  const scalar = clampVolumeScalar(value);
+  if (scalar <= 0) return "-inf dB";
+  return (20 * Math.log10(scalar)).toFixed(1) + " dB";
+}
+
+function formatVolume(value){
+  const scalar = clampVolumeScalar(value);
+  return volumePercentFromScalar(scalar) + "% (" + volumeDbLabel(scalar) + ")";
+}
+
+function setVolumeSliderFromScalar(value){
+  const slider = document.getElementById("volume");
+  if (!slider) return;
+  slider.value = String(volumePercentFromScalar(value));
+  updateVolumeReadout();
+}
+
+function updateVolumeReadout(){
+  const slider = document.getElementById("volume");
+  const readout = document.getElementById("volumeReadout");
+  if (!slider || !readout) return;
+  readout.textContent = formatVolume(volumeScalarFromPercent(slider.value));
+}
+
+function setRunningUI(running){
+  const dot = document.getElementById("dot");
+  const statusText = document.getElementById("statusText");
+  dot.classList.toggle("ok", !!running);
+  statusText.textContent = running ? "RUNNING" : "STOPPED";
+}
+
+function setAlertBadge(kind, text){
+  const b = document.getElementById("alertBadge");
+  if (!b) return;
+  if (!text){
+    b.style.display = "none";
+    b.textContent = "";
+    b.className = "badge";
+    return;
+  }
+  b.style.display = "inline-flex";
+  b.textContent = text;
+  b.className = "badge " + (kind || "");
+}
+
+function scheduleStatusPoll(delayMs){
+  if (statusPollTimer) clearTimeout(statusPollTimer);
+  statusPollTimer = setTimeout(async () => {
+    await refreshStatus();
+  }, delayMs);
+}
+
+function selectedDeviceLabel(id){
+  const found = devices.find(d => d.id === id);
+  return found ? found.label : (id || "-");
+}
+
+async function loadDevices(){
+  const sel = document.getElementById("device");
+  const previous = sel.value;
+  sel.innerHTML = "";
+  try{
+    const data = await jget("/api/audio/devices");
+    devices = data.devices || [];
+    if (!devices.length){
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "No Pi analogue or Dante AVIO USB output detected";
+      sel.appendChild(opt);
+      if (Number.isFinite(Number(data.volume))) setVolumeSliderFromScalar(data.volume);
+      return;
+    }
+    for (const d of devices){
+      const opt = document.createElement("option");
+      opt.value = d.id;
+      opt.textContent = d.label || d.id;
+      sel.appendChild(opt);
+    }
+    const wanted = previous || data.selected || "";
+    if (wanted && Array.from(sel.options).some(o => o.value === wanted)) sel.value = wanted;
+    else if (data.selected && Array.from(sel.options).some(o => o.value === data.selected)) sel.value = data.selected;
+    if (Number.isFinite(Number(data.volume))) setVolumeSliderFromScalar(data.volume);
+  }catch(e){
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "Could not detect Pi analogue or Dante AVIO USB outputs";
+    sel.appendChild(opt);
+    toast("Audio device detection failed: " + String(e.message || e), "bad", 5000);
+  }
+}
+
+async function refreshStatus(){
+  if (document.visibilityState === "hidden") return;
+  let st = null;
+  try{
+    st = await jget("/api/audio/status?logs=1");
+  }catch(e){
+    toast("Failed to fetch audio status", "bad");
+    st = {running:false, ndi_running:false};
+  }
+
+  const ndiRunning = !!st.ndi_running;
+  const audioRunning = !!st.running;
+  setRunningUI(audioRunning);
+
+  const startBtn = document.getElementById("start");
+  const stopBtn = document.getElementById("stop");
+  const deviceSel = document.getElementById("device");
+  const volumeInput = document.getElementById("volume");
+  if (startBtn) startBtn.disabled = audioBusy || !ndiRunning || audioRunning || !deviceSel.value;
+  if (stopBtn) stopBtn.disabled = audioBusy || !audioRunning;
+  if (deviceSel) deviceSel.disabled = audioBusy || audioRunning;
+  if (volumeInput) volumeInput.disabled = audioBusy || audioRunning;
+
+  const nextKey = JSON.stringify({
+    ndiRunning,
+    audioRunning,
+    pipeline_state: st.pipeline_state || (audioRunning ? "PLAYING" : "NULL"),
+    device: st.device_label || st.device_id || "",
+    volume: Number.isFinite(Number(st.volume)) ? formatVolume(st.volume) : "",
+    log: (st.last_log || []).join("\n"),
+    error: st.last_error || ""
+  });
+
+  if (nextKey !== lastStatusKey){
+    document.getElementById("st_ndi").textContent = ndiRunning ? "RUNNING" : "STOPPED";
+    document.getElementById("st_state").textContent = st.pipeline_state || (audioRunning ? "PLAYING" : "NULL");
+    document.getElementById("st_device").textContent = audioRunning ? (st.device_label || selectedDeviceLabel(st.device_id)) : "-";
+    document.getElementById("st_volume").textContent = audioRunning && Number.isFinite(Number(st.volume)) ? formatVolume(st.volume) : "-";
+    document.getElementById("log").textContent = (st.last_log || []).join("\n");
+    lastStatusKey = nextKey;
+  }
+
+  if (st.last_error) setAlertBadge("bad", st.last_error);
+  else if (!ndiRunning) setAlertBadge("warn", "Start an NDI stream first");
+  else if (audioRunning) setAlertBadge("good", "Audio running");
+  else setAlertBadge("", "");
+
+  scheduleStatusPoll(audioRunning ? 2000 : (ndiRunning ? 5000 : 8000));
+}
+
+function wireUI(){
+  updateVolumeReadout();
+  document.getElementById("volume").addEventListener("input", updateVolumeReadout);
+
+  document.getElementById("refresh").addEventListener("click", refreshStatus);
+  document.getElementById("refreshDevices").addEventListener("click", async () => {
+    await loadDevices();
+    await refreshStatus();
+  });
+
+  document.getElementById("start").addEventListener("click", async () => {
+    if (audioBusy) return;
+    const deviceId = document.getElementById("device").value;
+    const volume = volumeScalarFromPercent(document.getElementById("volume").value || 80);
+    if (!deviceId){
+      toast("Select an audio output first.", "warn");
+      return;
+    }
+    if (!Number.isFinite(volume) || volume < 0 || volume > 1){
+      toast("Output level must be between 0% and 100%.", "bad");
+      return;
+    }
+    audioBusy = true;
+    toast("Starting audio...");
+    try{
+      await jpost("/api/audio/start", { device_id: deviceId, volume });
+      toast("Audio started", "good");
+    }catch(e){
+      toast("Audio start failed: " + String(e.message || e), "bad", 6000);
+    }finally{
+      audioBusy = false;
+      await refreshStatus();
+    }
+  });
+
+  document.getElementById("stop").addEventListener("click", async () => {
+    if (audioBusy) return;
+    audioBusy = true;
+    toast("Stopping audio...");
+    try{
+      await jpost("/api/audio/stop", {});
+      toast("Audio stopped", "good");
+    }catch(e){
+      toast("Audio stop failed: " + String(e.message || e), "bad", 4500);
+    }finally{
+      audioBusy = false;
+      await refreshStatus();
+    }
+  });
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    refreshStatus();
+  } else if (statusPollTimer) {
+    clearTimeout(statusPollTimer);
+    statusPollTimer = null;
+  }
+});
+
+(async () => {
+  await loadDevices();
+  wireUI();
+  await refreshStatus();
+})();
+</script>
+</body>
+</html>

@@ -3,9 +3,19 @@
 function $(sel, root=document){ return root.querySelector(sel); }
 function $all(sel, root=document){ return Array.from(root.querySelectorAll(sel)); }
 
+async function apiErrorFromResponse(r, text) {
+  let msg = text || `${r.status} ${r.statusText}`;
+  try {
+    const data = JSON.parse(text);
+    if (data && data.detail) msg = Array.isArray(data.detail) ? data.detail.map(x => x.msg || JSON.stringify(x)).join("; ") : String(data.detail);
+    else if (data && data.error) msg = String(data.error);
+  } catch (_) {}
+  return new Error(msg);
+}
+
 async function jget(url) {
   const r = await fetch(url);
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok) throw await apiErrorFromResponse(r, await r.text());
   return r.json();
 }
 async function jpost(url, body) {
@@ -14,24 +24,19 @@ async function jpost(url, body) {
     headers:{"Content-Type":"application/json"},
     body: JSON.stringify(body || {})
   });
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok) throw await apiErrorFromResponse(r, await r.text());
   return r.json();
 }
 
 function fmtUptime(startedAtSec){
   if (!startedAtSec) return "—";
   const s = Math.max(0, Math.floor(Date.now()/1000 - startedAtSec));
-  return fmtDuration(s);
-}
-
-// Format a duration in seconds as HH:MM:SS.
-function fmtDuration(seconds){
-  const s = Math.max(0, Math.floor(seconds || 0));
   const hh = Math.floor(s/3600);
   const mm = Math.floor((s%3600)/60);
   const ss = s%60;
-  const pad = (n)=>String(n).padStart(2,'0');
-  return `${pad(hh)}:${pad(mm)}:${pad(ss)}`;
+  if (hh>0) return `${hh}h ${mm}m ${ss}s`;
+  if (mm>0) return `${mm}m ${ss}s`;
+  return `${ss}s`;
 }
 
 function setBadge(el, kind, text){

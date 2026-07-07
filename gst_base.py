@@ -7,8 +7,7 @@ import gi
 
 gi.require_version("Gst", "1.0")
 gi.require_version("GLib", "2.0")
-gi.require_version("GstNet", "1.0")
-from gi.repository import Gst, GLib, GstNet  # type: ignore
+from gi.repository import Gst, GLib  # type: ignore
 
 Gst.init(None)
 
@@ -75,22 +74,18 @@ class GstPipelineBase:
             # pipeline isn't always observed (GI wrapper differences), which can
             # leave _pipeline_state stuck at NULL even though the pipeline is
             # PLAYING. The UI uses `running` to decide whether to show live stats.
-            #
-            # We therefore expose BOTH:
-            #   - pipeline_state_raw: the last state observed from the GST bus (may be stale)
-            #   - pipeline_state: an "effective" state used for UI gating (may be adjusted)
-            raw_state = self._pipeline_state
-            state_for_ui = raw_state
+            # If we have a pipeline object but never observed STATE_CHANGED on the
+            # top-level pipeline (some GI builds), keep the UI sensible.
+            state_for_ui = self._pipeline_state
             if self._pipeline is not None and state_for_ui in ("NULL", "READY"):
                 state_for_ui = "PLAYING"
 
-            # Treat PLAYING/PAUSED as "running" for UI + AES67 gating.
+            # Treat PLAYING/PAUSED as "running" for UI + secondary-output gating.
             running = self._pipeline is not None and state_for_ui in ("PAUSED", "PLAYING")
 
             d = {
                 "running": running,
                 "pipeline_state": state_for_ui,
-                "pipeline_state_raw": raw_state,
                 "last_error": self._last_error,
                 "last_warning": self._last_warning,
             }
@@ -127,22 +122,41 @@ class GstPipelineBase:
         except Exception:
             return False
 
-    def _set_element_property(self, element_name: str, prop: str, value) -> bool:
-        """Thread-safe element property setter by element name."""
+    def _call_in_gst_context_sync(self, fn, timeout_s: float = 2.0):
+        """Run fn in the GStreamer context and propagate its exception/result.
 
-        def _do():
-            with self._lock:
-                pipeline = self._pipeline
-            if pipeline is None:
-                return
-            el = pipeline.get_by_name(element_name)
-            if el is None:
-                raise RuntimeError(f"Element not found: {element_name}")
-            el.set_property(prop, value)
+        This is used for configuration changes where the caller must know whether
+        the change actually succeeded before advertising traffic or returning API
+        success.
+        """
+        with self._lock:
+            ctx = self._context
+        if ctx is None:
+            raise RuntimeError("GStreamer context is not running")
+        done = threading.Event()
+        box = {"ok": False, "result": None, "error": None}
 
-        return self._call_in_gst_context(_do)
+        def _cb(_data=None):
+            try:
+                box["result"] = fn()
+                box["ok"] = True
+            except Exception as e:
+                box["error"] = e
+                self._push_warn(f"GST context callback failed: {e}")
+            finally:
+                done.set()
+            return False
 
-    def _start_pipeline(self, pipeline_desc: str, poll_cb: Optional[Callable[[], bool]] = None, ptp_domain: Optional[int] = None):
+        src = GLib.idle_source_new()
+        src.set_callback(_cb, None)
+        src.attach(ctx)
+        if not done.wait(timeout=max(0.1, float(timeout_s))):
+            raise RuntimeError("Timed out waiting for GStreamer context callback")
+        if box["error"] is not None:
+            raise box["error"]
+        return box["result"]
+
+    def _start_pipeline(self, pipeline_desc: str, poll_cb: Optional[Callable[[], bool]] = None):
         GstPipelineBase.stop(self)
 
         with self._lock:
@@ -162,6 +176,7 @@ class GstPipelineBase:
             context = self._context
             bus_watch_id = self._bus_watch_id
             poll_id = self._poll_id
+            thread = self._thread
 
         if pipeline is not None:
             try:
@@ -184,8 +199,14 @@ class GstPipelineBase:
         if loop is not None and loop.is_running():
             try:
                 loop.quit()
-            except Exception:
-                pass
+            except Exception as e:
+                self._push_warn(f"Failed to quit GStreamer loop: {e}")
+
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            try:
+                thread.join(timeout=2.0)
+            except Exception as e:
+                self._push_warn(f"Failed to join GStreamer thread: {e}")
 
         with self._lock:
             self._pipeline = None
@@ -193,6 +214,7 @@ class GstPipelineBase:
             self._context = None
             self._bus_watch_id = None
             self._poll_id = None
+            self._thread = None
             self._pipeline_state = "NULL"
 
     # ---------- GStreamer thread ----------
@@ -234,6 +256,14 @@ class GstPipelineBase:
                 pipeline.set_state(Gst.State.NULL)
             except Exception:
                 pass
+            with self._lock:
+                if self._pipeline is pipeline:
+                    self._pipeline = None
+                    self._loop = None
+                    self._context = None
+                    self._bus_watch_id = None
+                    self._poll_id = None
+                    self._pipeline_state = "NULL"
             return
 
         try:
@@ -252,6 +282,15 @@ class GstPipelineBase:
                 context.pop_thread_default()
             except Exception:
                 pass
+
+            with self._lock:
+                if self._pipeline is pipeline:
+                    self._pipeline = None
+                    self._loop = None
+                    self._context = None
+                    self._bus_watch_id = None
+                    self._poll_id = None
+                    self._pipeline_state = "NULL"
 
     def _on_bus_message(self, _bus: Gst.Bus, msg: Gst.Message):
         t = msg.type

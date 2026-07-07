@@ -1,12 +1,15 @@
 import json
+import ipaddress
 import os
 import re
 import shutil
 import socket
 import subprocess
 import time
+import threading
+from copy import deepcopy
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,24 +18,69 @@ from tvh import TvheadendClient
 from gst_ndi import GstNDIBridge
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
-if not CONFIG_PATH.exists():
-    raise RuntimeError("Missing config.json (create it and set tvh_base_url).")
-cfg = json.loads(CONFIG_PATH.read_text())
+CONFIG_LOCK = threading.Lock()
 
-# Tvheadend HTTP client reliability settings (all optional in config.json)
-tvh_auth = None
-if cfg.get("tvh_username") and cfg.get("tvh_password") is not None:
-    tvh_auth = (str(cfg.get("tvh_username")), str(cfg.get("tvh_password")))
 
-tvh = TvheadendClient(
-    base_url=cfg.get("tvh_base_url", "http://127.0.0.1:9981"),
-    timeout_s=float(cfg.get("tvh_read_timeout_s", 10)),
-    connect_timeout_s=float(cfg.get("tvh_connect_timeout_s", 3)),
-    retries=int(cfg.get("tvh_retries", 3)),
-    backoff_s=float(cfg.get("tvh_backoff_s", 0.4)),
-    verify_tls=bool(cfg.get("tvh_verify_tls", True)),
-    auth=tvh_auth,
-)
+def _load_config() -> Dict[str, Any]:
+    if not CONFIG_PATH.exists():
+        raise RuntimeError("Missing config.json (create it and set tvh_base_url).")
+    return json.loads(CONFIG_PATH.read_text())
+
+
+def _save_config(next_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    CONFIG_PATH.write_text(json.dumps(next_cfg, indent=2) + "\n")
+    return next_cfg
+
+
+def _build_tvh_client(config: Dict[str, Any]) -> TvheadendClient:
+    tvh_auth = None
+    if config.get("tvh_username") and config.get("tvh_password") is not None:
+        tvh_auth = (str(config.get("tvh_username")), str(config.get("tvh_password")))
+    return TvheadendClient(
+        base_url=config.get("tvh_base_url", "http://127.0.0.1:9981"),
+        timeout_s=float(config.get("tvh_read_timeout_s", 10)),
+        connect_timeout_s=float(config.get("tvh_connect_timeout_s", 3)),
+        retries=int(config.get("tvh_retries", 3)),
+        backoff_s=float(config.get("tvh_backoff_s", 0.4)),
+        verify_tls=bool(config.get("tvh_verify_tls", True)),
+        auth=tvh_auth,
+    )
+
+
+def _update_config(patch: Dict[str, Any]) -> Dict[str, Any]:
+    global cfg, _active_profile, NDI_DELAY_DEFAULT_MS, tvh, ndi_bridge
+    with CONFIG_LOCK:
+        next_cfg = deepcopy(cfg)
+        next_cfg.update(patch)
+        cfg = _save_config(next_cfg)
+        _active_profile = str(cfg.get("tvh_stream_profile", "pass"))
+        NDI_DELAY_DEFAULT_MS = int(cfg.get("ndi_delay_ms", 250))
+
+        # Keep live runtime objects coherent with the saved config. Future stream
+        # starts/line-output operations use the new bridge defaults immediately, and
+        # tvheadend API calls use the new base URL/auth/retry settings without
+        # requiring an application restart.
+        try:
+            old_tvh = tvh
+        except NameError:
+            old_tvh = None
+        tvh = _build_tvh_client(cfg)
+        if old_tvh is not None:
+            try:
+                old_tvh.close()
+            except Exception:
+                pass
+        try:
+            ndi_bridge.update_config(cfg)
+        except NameError:
+            pass
+
+        return deepcopy(cfg)
+
+
+cfg = _load_config()
+
+tvh = _build_tvh_client(cfg)
 ndi_bridge = GstNDIBridge(config=cfg)
 
 # TVH stream profile used to resolve the current channel's stream URL.
@@ -40,7 +88,485 @@ _active_profile: str = cfg.get("tvh_stream_profile", "pass")
 
 # Default (fixed) NDI delay applied when starting the pipeline
 NDI_DELAY_DEFAULT_MS: int = int(cfg.get("ndi_delay_ms", 250))
-app = FastAPI(title="Tvheadend → NDI/AES67 Bridge")
+
+
+# ---------------- NDI supervision / auto-reconnect ----------------
+# The live tvheadend stream is consumed by GStreamer, not by TvheadendClient.
+# If tvheadend drops/stalls the HTTP stream, GStreamer can post ERROR/EOS or
+# simply stop rendering frames. This supervisor owns the desired channel state
+# and restarts the NDI pipeline with a freshly resolved tvheadend URL.
+NDI_SUPERVISOR_LOCK = threading.RLock()
+NDI_SUPERVISOR_STATE: Dict[str, Any] = {
+    "desired": False,
+    "request": None,
+    "last_start_attempt_at": None,
+    "last_success_at": None,
+    "last_stop_at": None,
+    "was_running": False,
+    "restart_count": 0,
+    "last_restart_reason": None,
+    "last_stream_url": None,
+    "last_error": None,
+    "last_rendered": None,
+    "last_rendered_change_at": None,
+    "healthy_since": None,
+    "pipeline_status": "stopped",
+    "lineout_desired": False,
+    "lineout_request": None,
+    "lineout_last_restore_error": None,
+}
+
+
+def _ndi_supervisor_config() -> Dict[str, Any]:
+    """Read reconnect/stall settings from the current config dict."""
+    return {
+        "enabled": bool(cfg.get("ndi_auto_reconnect_enabled", True)),
+        "poll_s": max(0.25, float(cfg.get("ndi_supervisor_poll_s", 1.0))),
+        "startup_grace_s": max(1.0, float(cfg.get("ndi_startup_grace_s", 10.0))),
+        "stall_timeout_s": max(1.0, float(cfg.get("ndi_stall_timeout_s", 5.0))),
+        "initial_backoff_s": max(0.25, float(cfg.get("ndi_reconnect_initial_backoff_s", 1.0))),
+        "max_backoff_s": max(1.0, float(cfg.get("ndi_reconnect_max_backoff_s", 15.0))),
+    }
+
+
+def _ndi_req_to_dict(req: "StartReq") -> Dict[str, Any]:
+    return {
+        "channel_uuid": req.channel_uuid,
+        "ndi_name": req.ndi_name,
+        "profile": req.profile,
+        "deinterlace": bool(req.deinterlace),
+        "buffer_extra_ms": int(req.buffer_extra_ms),
+        "ndi_qos": bool(req.ndi_qos),
+        "ndi_multicast_enabled": bool(req.ndi_multicast_enabled),
+        "ndi_multicast_addr": str(req.ndi_multicast_addr or ""),
+        "ndi_multicast_ttl": int(req.ndi_multicast_ttl),
+    }
+
+
+def _lineout_req_to_dict(req: "LineOutStartReq") -> Dict[str, Any]:
+    return {
+        "device_id": req.device_id,
+        "volume": float(req.volume),
+    }
+
+
+def _restore_desired_lineout(reason: str = "supervisor restore") -> None:
+    with NDI_SUPERVISOR_LOCK:
+        audio_req = deepcopy(NDI_SUPERVISOR_STATE.get("lineout_request"))
+        desired = bool(NDI_SUPERVISOR_STATE.get("lineout_desired"))
+    if not desired or not audio_req:
+        return
+    try:
+        current = ndi_bridge.lineout_status(include_logs=False)
+        if current.get("running"):
+            return
+    except Exception:
+        pass
+    try:
+        ndi_bridge.lineout_start(**audio_req)
+        with NDI_SUPERVISOR_LOCK:
+            NDI_SUPERVISOR_STATE["lineout_last_restore_error"] = None
+        ndi_bridge._push_log(f"Line output restored after NDI restart: {reason}")
+    except Exception as e:
+        with NDI_SUPERVISOR_LOCK:
+            NDI_SUPERVISOR_STATE["lineout_last_restore_error"] = str(e)
+
+
+def _start_ndi_pipeline_from_dict(req_d: Dict[str, Any], *, reason: str, force_refresh: bool = False) -> str:
+    """Resolve a tvheadend URL and start/restart the NDI pipeline."""
+    stream_url = tvh.get_stream_url_for_uuid(req_d["channel_uuid"], profile=req_d["profile"], force_refresh=force_refresh)
+    with NDI_SUPERVISOR_LOCK:
+        NDI_SUPERVISOR_STATE["last_start_attempt_at"] = time.time()
+        NDI_SUPERVISOR_STATE["last_restart_reason"] = reason
+        NDI_SUPERVISOR_STATE["last_stream_url"] = stream_url
+        NDI_SUPERVISOR_STATE["last_error"] = None
+        NDI_SUPERVISOR_STATE["last_rendered"] = None
+        NDI_SUPERVISOR_STATE["last_rendered_change_at"] = time.time()
+        NDI_SUPERVISOR_STATE["pipeline_status"] = "starting"
+        NDI_SUPERVISOR_STATE["healthy_since"] = None
+
+    ndi_bridge.start_with_delay(
+        input_url=stream_url,
+        ndi_name=req_d["ndi_name"],
+        channel_uuid=req_d["channel_uuid"],
+        delay_ms=NDI_DELAY_DEFAULT_MS,
+        deinterlace=req_d["deinterlace"],
+        buffer_extra_ms=req_d["buffer_extra_ms"],
+        ndi_qos=req_d["ndi_qos"],
+        ndi_multicast_enabled=req_d["ndi_multicast_enabled"],
+        ndi_multicast_addr=req_d["ndi_multicast_addr"],
+        ndi_multicast_ttl=req_d["ndi_multicast_ttl"],
+    )
+    return stream_url
+
+
+def _restart_ndi_pipeline(reason: str) -> None:
+    with NDI_SUPERVISOR_LOCK:
+        req_d = deepcopy(NDI_SUPERVISOR_STATE.get("request"))
+        if not NDI_SUPERVISOR_STATE.get("desired") or not req_d:
+            return
+        NDI_SUPERVISOR_STATE["restart_count"] = int(NDI_SUPERVISOR_STATE.get("restart_count") or 0) + 1
+        NDI_SUPERVISOR_STATE["last_restart_reason"] = reason
+    try:
+        _start_ndi_pipeline_from_dict(req_d, reason=reason, force_refresh=True)
+        ndi_bridge._push_log(f"Supervisor restart requested: {reason}")
+    except Exception as e:
+        # Leave desired=True so the supervisor keeps trying with backoff.
+        with NDI_SUPERVISOR_LOCK:
+            NDI_SUPERVISOR_STATE["last_error"] = str(e)
+            NDI_SUPERVISOR_STATE["last_start_attempt_at"] = time.time()
+            NDI_SUPERVISOR_STATE["pipeline_status"] = "failed"
+        try:
+            ndi_bridge._push_err(f"Supervisor restart failed: {e}")
+        except Exception:
+            pass
+
+
+def _ndi_supervisor_loop() -> None:
+    while True:
+        cfg_s = _ndi_supervisor_config()
+        time.sleep(cfg_s["poll_s"])
+        if not cfg_s["enabled"]:
+            continue
+
+        with NDI_SUPERVISOR_LOCK:
+            desired = bool(NDI_SUPERVISOR_STATE.get("desired"))
+            req_d = deepcopy(NDI_SUPERVISOR_STATE.get("request"))
+            last_attempt = NDI_SUPERVISOR_STATE.get("last_start_attempt_at") or 0
+            restart_count = int(NDI_SUPERVISOR_STATE.get("restart_count") or 0)
+            was_running = bool(NDI_SUPERVISOR_STATE.get("was_running"))
+        if not desired or not req_d:
+            continue
+
+        try:
+            st = ndi_bridge.status_lite(include_logs=False, include_stats=True)
+        except Exception as e:
+            with NDI_SUPERVISOR_LOCK:
+                NDI_SUPERVISOR_STATE["last_error"] = f"status failed: {e}"
+            continue
+
+        now = time.time()
+        running = bool(st.get("running"))
+        if running:
+            rendered = st.get("ndi_rendered")
+            stats_available = bool(st.get("ndi_stats_available"))
+            try:
+                rendered_i = int(rendered) if rendered is not None else None
+            except Exception:
+                rendered_i = None
+
+            should_restart = False
+            restart_reason = ""
+            with NDI_SUPERVISOR_LOCK:
+                NDI_SUPERVISOR_STATE["was_running"] = True
+                NDI_SUPERVISOR_STATE["pipeline_status"] = "running"
+                prev = NDI_SUPERVISOR_STATE.get("last_rendered")
+                last_change = NDI_SUPERVISOR_STATE.get("last_rendered_change_at") or now
+                started_at = st.get("started_at") or NDI_SUPERVISOR_STATE.get("last_start_attempt_at") or now
+
+                if stats_available and rendered_i is not None:
+                    if prev is None or rendered_i != int(prev):
+                        NDI_SUPERVISOR_STATE["last_rendered"] = rendered_i
+                        NDI_SUPERVISOR_STATE["last_rendered_change_at"] = now
+                        last_change = now
+                        if NDI_SUPERVISOR_STATE.get("healthy_since") is None:
+                            NDI_SUPERVISOR_STATE["healthy_since"] = now
+                        if NDI_SUPERVISOR_STATE.get("last_success_at") is None:
+                            NDI_SUPERVISOR_STATE["last_success_at"] = now
+                    if (now - float(started_at)) >= cfg_s["startup_grace_s"] and (now - float(last_change)) >= cfg_s["stall_timeout_s"]:
+                        should_restart = True
+                        restart_reason = f"stall: no NDI frames rendered for {cfg_s['stall_timeout_s']:.1f}s"
+                else:
+                    # Some ndisink builds do not expose stats. In that case avoid false stall
+                    # restarts and mark the pipeline healthy once it survives startup grace.
+                    if (now - float(started_at)) >= cfg_s["startup_grace_s"]:
+                        if NDI_SUPERVISOR_STATE.get("healthy_since") is None:
+                            NDI_SUPERVISOR_STATE["healthy_since"] = now
+                        if NDI_SUPERVISOR_STATE.get("last_success_at") is None:
+                            NDI_SUPERVISOR_STATE["last_success_at"] = now
+
+                healthy_since = NDI_SUPERVISOR_STATE.get("healthy_since")
+                if healthy_since and (now - float(healthy_since)) >= 60 and int(NDI_SUPERVISOR_STATE.get("restart_count") or 0) != 0:
+                    NDI_SUPERVISOR_STATE["restart_count"] = 0
+
+            if should_restart:
+                _restart_ndi_pipeline(restart_reason)
+                continue
+
+            _restore_desired_lineout("NDI pipeline healthy")
+            continue
+
+        with NDI_SUPERVISOR_LOCK:
+            NDI_SUPERVISOR_STATE["pipeline_status"] = "stopped"
+
+        # Pipeline is not running while the user still wants it. Reconnect after backoff.
+        if not was_running and (now - float(last_attempt)) < cfg_s["startup_grace_s"]:
+            continue
+        backoff = min(cfg_s["max_backoff_s"], cfg_s["initial_backoff_s"] * (2 ** min(restart_count, 5)))
+        if (now - float(last_attempt)) >= backoff:
+            _restart_ndi_pipeline("pipeline stopped unexpectedly")
+
+
+threading.Thread(target=_ndi_supervisor_loop, name="ndi-supervisor", daemon=True).start()
+
+TV_SETUP_STATE: Dict[str, Any] = {
+    "running": False,
+    "done": False,
+    "percent": 0,
+    "step": "Idle",
+    "logs": [],
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+    "selected_scanfile": None,
+}
+TV_SETUP_LOCK = threading.Lock()
+
+def _tv_setup_snapshot() -> Dict[str, Any]:
+    with TV_SETUP_LOCK:
+        return dict(TV_SETUP_STATE)
+
+def _tv_setup_set(**patch: Any) -> None:
+    with TV_SETUP_LOCK:
+        TV_SETUP_STATE.update(patch)
+
+def _tv_setup_log(message: str) -> None:
+    ts = time.strftime("%H:%M:%S")
+    with TV_SETUP_LOCK:
+        logs = list(TV_SETUP_STATE.get("logs", []))
+        logs.append(f"[{ts}] {message}")
+        TV_SETUP_STATE["logs"] = logs[-300:]
+
+def _resolve_dvbt_network() -> Dict[str, Any]:
+    want_uuid = str(cfg.get("tvh_dvbt_network_uuid") or "").strip()
+    want_name = str(cfg.get("tvh_dvbt_network_name") or "").strip().lower()
+    networks = tvh.list_networks()
+    if want_uuid:
+        for net in networks:
+            if str(net.get("uuid") or "") == want_uuid:
+                return net
+        raise RuntimeError(f"Configured DVB-T network uuid not found: {want_uuid}")
+    if want_name:
+        for net in networks:
+            if str(net.get("name") or "").strip().lower() == want_name:
+                return net
+        raise RuntimeError(f"Configured DVB-T network name not found: {want_name}")
+    for net in networks:
+        combined = " ".join(str(net.get(k) or "") for k in ("name", "networkname", "scanfile", "class")).lower()
+        if "dvb-t" in combined or "dvbt" in combined or "terrestrial" in combined:
+            return net
+    if len(networks) == 1:
+        return networks[0]
+    raise RuntimeError("Could not determine the DVB-T network. Set tvh_dvbt_network_uuid or tvh_dvbt_network_name in config.json.")
+
+def _coerce_int(value: Any) -> Optional[int]:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def _mux_label(mux: Dict[str, Any]) -> str:
+    name = str(mux.get("name") or mux.get("muxname") or "").strip()
+    freq = _coerce_int(mux.get("frequency") or mux.get("freq"))
+    parts: List[str] = []
+    if name:
+        parts.append(name)
+    if freq:
+        if freq >= 1_000_000:
+            parts.append(f"{freq / 1_000_000:.3f} MHz")
+        elif freq >= 1_000:
+            parts.append(f"{freq / 1_000:.0f} kHz")
+        else:
+            parts.append(str(freq))
+    if not parts:
+        uuid = str(mux.get("uuid") or "unknown")
+        return f"mux {uuid[:8]}"
+    return " / ".join(parts)
+
+
+def _scan_state_label(mux: Dict[str, Any]) -> str:
+    for key in ("scan_result", "scan_status", "status"):
+        value = mux.get(key)
+        if value not in (None, ""):
+            return str(value)
+    state = _coerce_int(mux.get("scan_state"))
+    return f"scan_state={state if state is not None else '?'}"
+
+
+def _log_mux_diagnostics(muxes: List[Dict[str, Any]], *, prefix: str = "Mux") -> None:
+    if not muxes:
+        _tv_setup_log(f"{prefix}: no muxes were returned for the selected network.")
+        return
+    for mux in muxes:
+        label = _mux_label(mux)
+        scan_state = _scan_state_label(mux)
+        num_svc = _coerce_int(mux.get("num_svc"))
+        pids = _coerce_int(mux.get("num_pmt"))
+        sig = mux.get("signal")
+        snr = mux.get("snr")
+        ber = mux.get("ber")
+        unc = mux.get("unc")
+        extra: List[str] = [scan_state]
+        if num_svc is not None:
+            extra.append(f"services={num_svc}")
+        if pids is not None:
+            extra.append(f"pmts={pids}")
+        if sig not in (None, ""):
+            extra.append(f"signal={sig}")
+        if snr not in (None, ""):
+            extra.append(f"snr={snr}")
+        if ber not in (None, ""):
+            extra.append(f"ber={ber}")
+        if unc not in (None, ""):
+            extra.append(f"unc={unc}")
+        _tv_setup_log(f"{prefix}: {label} -> " + ", ".join(extra))
+
+
+def _wait_for_scan(network_uuid: str, timeout_s: int = 600) -> List[Dict[str, Any]]:
+    deadline = time.time() + timeout_s
+    stable = 0
+    last_summary = None
+    diag_every = 0
+    while time.time() < deadline:
+        muxes = tvh.list_muxes_for_network(network_uuid)
+        active = 0
+        total_services = 0
+        complete = 0
+        for mux in muxes:
+            scan_state = int(mux.get("scan_state") or 0)
+            if scan_state != 0:
+                active += 1
+            else:
+                complete += 1
+            total_services += int(mux.get("num_svc") or 0)
+        summary = (len(muxes), active, complete, total_services)
+        if summary != last_summary:
+            _tv_setup_log(f"Scan progress: muxes={len(muxes)} active={active} complete={complete} services={total_services}")
+            last_summary = summary
+            diag_every += 1
+            if diag_every >= 3 or (muxes and active == 0):
+                _log_mux_diagnostics(muxes, prefix="Mux status")
+                diag_every = 0
+        if muxes and active == 0:
+            stable += 1
+            if stable >= 3:
+                return muxes
+        else:
+            stable = 0
+        time.sleep(3)
+    raise RuntimeError("Timed out waiting for DVB-T scan to finish")
+
+def _wait_for_mapper(timeout_s: int = 300) -> Dict[str, Any]:
+    deadline = time.time() + timeout_s
+    last_summary = None
+    while time.time() < deadline:
+        status = tvh.mapper_status()
+        total = int(status.get("total") or 0)
+        done = int(status.get("ok") or 0) + int(status.get("fail") or 0) + int(status.get("ignore") or 0)
+        summary = (total, done, int(status.get("ok") or 0), int(status.get("ignore") or 0), int(status.get("fail") or 0))
+        if summary != last_summary:
+            _tv_setup_log(f"Mapper progress: {done}/{total} processed (ok={summary[2]}, ignore={summary[3]}, fail={summary[4]})")
+            last_summary = summary
+        if total == 0 or done >= total:
+            return status
+        time.sleep(2)
+    raise RuntimeError("Timed out waiting for TVHeadend service mapper")
+
+def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
+    try:
+        scanfile_key = str(scanfile_key or cfg.get("tvh_dvbt_scanfile") or "").strip() or None
+        _tv_setup_set(running=True, done=False, percent=2, step="Stopping NDI before TV Setup…", error=None, selected_scanfile=scanfile_key)
+        if _stop_ndi_for_tv_setup():
+            _tv_setup_log("Stopped active NDI/audio pipeline before TV Setup.")
+        else:
+            _tv_setup_log("Confirmed NDI pipeline is stopped before TV Setup.")
+        _tv_setup_set(percent=4, step="Loading current TVHeadend data…")
+        if scanfile_key:
+            _tv_setup_log(f"Selected predefined DVB-T/T2 mux region: {scanfile_key}")
+        channels = tvh.list_channels(force_refresh=True)
+        _tv_setup_log(f"Found {len(channels)} existing channel(s).")
+
+        _tv_setup_set(percent=14, step="Deleting channels…")
+        tvh.delete_channels([c["uuid"] for c in channels if c.get("uuid")])
+        time.sleep(1)
+        channels_after = tvh.list_channels(force_refresh=True)
+        _tv_setup_log(f"Channels remaining after delete: {len(channels_after)}")
+
+        _tv_setup_set(percent=28, step="Loading existing services…")
+        services = tvh.list_services(hidemode="none")
+        _tv_setup_log(f"Found {len(services)} existing service(s).")
+
+        _tv_setup_set(percent=40, step="Deleting services…")
+        tvh.delete_services([s["uuid"] for s in services if s.get("uuid")])
+        time.sleep(1)
+        services_after = tvh.list_services(hidemode="none")
+        _tv_setup_log(f"Services remaining after delete: {len(services_after)}")
+
+        _tv_setup_set(percent=50, step="Resolving DVB-T network…")
+        network = _resolve_dvbt_network()
+        network_uuid = str(network.get("uuid") or "")
+        network_name = str(network.get("name") or network_uuid)
+        if not network_uuid:
+            raise RuntimeError("Resolved DVB-T network is missing a uuid")
+        _tv_setup_log(f"Using DVB-T network: {network_name} ({network_uuid})")
+
+        if scanfile_key:
+            _tv_setup_set(percent=55, step="Applying selected predefined muxes…")
+            mux_result = tvh.replace_muxes_from_scanfile(network_uuid, scanfile_key)
+            _tv_setup_log(
+                f"Applied predefined muxes: deleted {mux_result.get('deleted', 0)} existing mux(es), "
+                f"created {mux_result.get('created', 0)} mux(es)."
+            )
+            for err in mux_result.get("errors", []):
+                _tv_setup_log(f"Mux create warning: {err}")
+            _update_config({"tvh_dvbt_scanfile": scanfile_key})
+        else:
+            _tv_setup_log("No predefined mux region selected; scanning the existing mux list.")
+
+        _tv_setup_set(percent=58, step="Starting DVB-T scan…")
+        tvh.scan_network(network_uuid)
+        _tv_setup_log("Requested DVB-T network scan.")
+
+        _tv_setup_set(percent=68, step="Scanning muxes and discovering services…")
+        muxes = _wait_for_scan(network_uuid)
+        _tv_setup_log(f"Scan finished across {len(muxes)} mux(es).")
+
+        _tv_setup_set(percent=82, step="Loading discovered services…")
+        scanned_services = tvh.list_services(hidemode="none")
+        service_uuids = [s.get("uuid") for s in scanned_services if s.get("uuid")]
+        _tv_setup_log(f"Discovered {len(service_uuids)} service(s) available for mapping.")
+        if scanned_services:
+            preview = ", ".join(str(s.get("svcname") or s.get("name") or s.get("channelname") or s.get("uuid")) for s in scanned_services[:10])
+            if preview:
+                _tv_setup_log(f"Service preview: {preview}")
+        if not service_uuids:
+            _tv_setup_log("No services were returned immediately after scan; waiting 10 seconds and checking again.")
+            time.sleep(10)
+            scanned_services = tvh.list_services(hidemode="none")
+            service_uuids = [s.get("uuid") for s in scanned_services if s.get("uuid")]
+            _tv_setup_log(f"Second service check found {len(service_uuids)} service(s).")
+        if not service_uuids:
+            _tv_setup_log("Detailed mux results after scan:")
+            _log_mux_diagnostics(muxes, prefix="Mux result")
+            raise RuntimeError("No services were discovered after the DVB-T scan")
+
+        _tv_setup_set(percent=90, step="Mapping services to channels…")
+        tvh.map_services(service_uuids)
+        _wait_for_mapper()
+
+        _tv_setup_set(percent=97, step="Refreshing channel list…")
+        mapped_channels = tvh.list_channels(force_refresh=True)
+        _tv_setup_log(f"Mapped {len(mapped_channels)} channel(s).")
+
+        _tv_setup_set(running=False, done=True, percent=100, step="TV Setup complete", finished_at=int(time.time()))
+    except Exception as e:
+        _tv_setup_log(f"ERROR: {e}")
+        _tv_setup_set(running=False, done=True, percent=100, step="TV Setup failed", error=str(e), finished_at=int(time.time()))
+
+app = FastAPI(title="Tvheadend to NDI/Line Audio Bridge")
 static_dir = BASE_DIR / "static"
 static_dir.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -51,7 +577,7 @@ def _ensure_static_pages():
     To avoid surprises (and to make local dev easier), we also copy any root-level
     *.html into ./static if the static copy is missing.
     """
-    for name in ("index.html", "aes67.html", "system.html", "common.css", "common.js"):
+    for name in ("index.html", "audio.html", "system.html", "common.css", "common.js"):
         dst = static_dir / name
         if dst.exists():
             continue
@@ -69,11 +595,11 @@ def root():
     if not index.exists():
         raise HTTPException(500, "static/index.html missing")
     return FileResponse(str(index))
-@app.get("/aes67")
-def aes67_page():
-    page = static_dir / "aes67.html"
+@app.get("/audio")
+def audio_page():
+    page = static_dir / "audio.html"
     if not page.exists():
-        raise HTTPException(500, "static/aes67.html missing")
+        raise HTTPException(500, "static/audio.html missing")
     return FileResponse(str(page))
 @app.get("/system")
 def system_page():
@@ -83,9 +609,9 @@ def system_page():
     return FileResponse(str(page))
 # ---------------- Existing API ----------------
 @app.get("/api/channels")
-def api_channels():
+def api_channels(force_refresh: bool = Query(False)):
     try:
-        return {"channels": tvh.list_channels()}
+        return {"channels": tvh.list_channels(force_refresh=force_refresh)}
     except Exception as e:
         raise HTTPException(500, f"Failed to list channels: {e}")
 @app.get("/api/status")
@@ -100,7 +626,90 @@ def api_status(lite: bool = Query(False), logs: bool = Query(False), stats: bool
     # Backwards-compat for the existing UI: expose active_channel_uuid.
     st["active_channel_uuid"] = st.get("channel_uuid")
     st["active_profile"] = _active_profile
+    with NDI_SUPERVISOR_LOCK:
+        sup = deepcopy(NDI_SUPERVISOR_STATE)
+        req_d = sup.get("request") or {}
+    st["auto_reconnect_enabled"] = _ndi_supervisor_config()["enabled"]
+    st["supervisor"] = {
+        "desired": bool(sup.get("desired")),
+        "restart_count": int(sup.get("restart_count") or 0),
+        "last_restart_reason": sup.get("last_restart_reason"),
+        "last_start_attempt_at": sup.get("last_start_attempt_at"),
+        "last_success_at": sup.get("last_success_at"),
+        "last_stop_at": sup.get("last_stop_at"),
+        "last_error": sup.get("last_error"),
+        "last_stream_url": sup.get("last_stream_url"),
+        "pipeline_status": sup.get("pipeline_status"),
+        "healthy_since": sup.get("healthy_since"),
+        "lineout_desired": bool(sup.get("lineout_desired")),
+        "lineout_last_restore_error": sup.get("lineout_last_restore_error"),
+        "desired_channel_uuid": req_d.get("channel_uuid"),
+        "desired_profile": req_d.get("profile"),
+        "desired_ndi_name": req_d.get("ndi_name"),
+    }
     return st
+
+
+UI_CONFIG_KEYS = {
+    "tvh_base_url",
+    "tvh_stream_profile",
+    "ndi_default_name",
+    "ndi_delay_ms",
+    "ndi_deinterlace",
+    "ndi_buffer_extra_ms",
+    "ndi_qos",
+    "ndi_auto_reconnect_enabled",
+    "ndi_supervisor_poll_s",
+    "ndi_startup_grace_s",
+    "ndi_stall_timeout_s",
+    "ndi_reconnect_initial_backoff_s",
+    "ndi_reconnect_max_backoff_s",
+    "ndi_multicast_enabled",
+    "ndi_multicast_addr",
+    "ndi_multicast_ttl",
+    "lineout_default_device",
+    "lineout_volume",
+    "lineout_sink_sync",
+    "lineout_queue_time_ms",
+}
+
+
+class UIConfigUpdateReq(BaseModel):
+    tvh_base_url: Optional[str] = None
+    tvh_stream_profile: Optional[str] = None
+    ndi_default_name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    ndi_delay_ms: Optional[int] = Field(default=None, ge=0, le=5000)
+    ndi_deinterlace: Optional[bool] = None
+    ndi_buffer_extra_ms: Optional[int] = Field(default=None, ge=0, le=5000)
+    ndi_qos: Optional[bool] = None
+    ndi_auto_reconnect_enabled: Optional[bool] = None
+    ndi_supervisor_poll_s: Optional[float] = Field(default=None, ge=0.25, le=30)
+    ndi_startup_grace_s: Optional[float] = Field(default=None, ge=1, le=120)
+    ndi_stall_timeout_s: Optional[float] = Field(default=None, ge=1, le=120)
+    ndi_reconnect_initial_backoff_s: Optional[float] = Field(default=None, ge=0.25, le=300)
+    ndi_reconnect_max_backoff_s: Optional[float] = Field(default=None, ge=1, le=600)
+    ndi_multicast_enabled: Optional[bool] = None
+    ndi_multicast_addr: Optional[str] = None
+    ndi_multicast_ttl: Optional[int] = Field(default=None, ge=0, le=255)
+    lineout_default_device: Optional[str] = None
+    lineout_volume: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    lineout_sink_sync: Optional[bool] = None
+    lineout_queue_time_ms: Optional[int] = Field(default=None, ge=20, le=5000)
+
+
+@app.get("/api/config/ui")
+def api_config_ui():
+    live_cfg = deepcopy(cfg)
+    return {k: live_cfg.get(k) for k in sorted(UI_CONFIG_KEYS)}
+
+
+@app.post("/api/config/ui")
+def api_config_ui_update(req: UIConfigUpdateReq):
+    patch = req.model_dump(exclude_none=True)
+    if not patch:
+        return {"ok": True, "config": api_config_ui()}
+    updated = _update_config(patch)
+    return {"ok": True, "config": {k: updated.get(k) for k in sorted(UI_CONFIG_KEYS)}}
 
 class StartReq(BaseModel):
     channel_uuid: str
@@ -113,9 +722,9 @@ class StartReq(BaseModel):
     )
 
     buffer_extra_ms: int = Field(
-        default_factory=lambda: int(cfg.get("ndi_buffer_extra_ms", 1000)),
+        default_factory=lambda: int(cfg.get("ndi_buffer_extra_ms", 0)),
         ge=0,
-        le=3000,
+        le=5000,
         description="Extra buffering headroom (ms) for the delayed NDI A/V queues to absorb input jitter.",
     )
 
@@ -124,116 +733,282 @@ class StartReq(BaseModel):
         description="If true, enable QoS on ndisink (may drop late frames).",
     )
 
+
+    ndi_multicast_enabled: bool = Field(
+        default_factory=lambda: bool(cfg.get("ndi_multicast_enabled", False)),
+        description="Enable NDI multicast for this stream.",
+    )
+
+    ndi_multicast_addr: str = Field(
+        default_factory=lambda: str(cfg.get("ndi_multicast_addr", "")),
+        description="NDI multicast address (required if multicast is enabled).",
+    )
+
+    ndi_multicast_ttl: int = Field(
+        default_factory=lambda: int(cfg.get("ndi_multicast_ttl", 1)),
+        ge=0,
+        le=255,
+        description="NDI multicast TTL (default 1).",
+    )
+
 @app.post("/api/start")
 def api_start(req: StartReq):
     global _active_profile
+    if _tv_setup_snapshot().get("running"):
+        raise HTTPException(409, "TV Setup is running; NDI cannot be started until setup finishes")
     try:
-        stream_url = tvh.get_stream_url_for_uuid(req.channel_uuid, profile=req.profile)
+        if req.ndi_multicast_enabled and not str(req.ndi_multicast_addr or "").strip():
+            raise HTTPException(400, "Multicast is enabled but no multicast address was provided")
+        req_d = _ndi_req_to_dict(req)
+        # Mark this as the desired live stream before starting. If GStreamer later
+        # receives ERROR/EOS or stops rendering frames, the supervisor will rebuild
+        # the pipeline and re-resolve the tvheadend stream URL from this request.
+        with NDI_SUPERVISOR_LOCK:
+            NDI_SUPERVISOR_STATE.update({
+                "desired": True,
+                "request": deepcopy(req_d),
+                "was_running": False,
+                "restart_count": 0,
+                "last_restart_reason": "manual start",
+                "last_error": None,
+                "last_rendered": None,
+                "last_rendered_change_at": time.time(),
+                "healthy_since": None,
+                "pipeline_status": "starting",
+            })
+        stream_url = _start_ndi_pipeline_from_dict(req_d, reason="manual start")
+    except HTTPException:
+        with NDI_SUPERVISOR_LOCK:
+            NDI_SUPERVISOR_STATE["desired"] = False
+        raise
     except Exception as e:
-        raise HTTPException(400, f"Could not resolve stream URL: {e}")
-    try:
-        # NDI delay is fixed via config (ndi_delay_ms) and clamped in the pipeline layer (defence in depth).
-        ndi_bridge.start_with_delay(
-            input_url=stream_url,
-            ndi_name=req.ndi_name,
-            channel_uuid=req.channel_uuid,
-            delay_ms=NDI_DELAY_DEFAULT_MS,
-            deinterlace=req.deinterlace,
-            buffer_extra_ms=req.buffer_extra_ms,
-            ndi_qos=req.ndi_qos,
-        )
-    except FileNotFoundError:
-        raise HTTPException(500, "gst-launch-1.0 not found. Install gstreamer.")
-    except Exception as e:
+        with NDI_SUPERVISOR_LOCK:
+            NDI_SUPERVISOR_STATE["desired"] = False
+            NDI_SUPERVISOR_STATE["last_error"] = str(e)
         raise HTTPException(500, f"Failed to start pipeline: {e}")
     _active_profile = req.profile
-    return {"ok": True, "stream_url": stream_url, "ndi_name": req.ndi_name}
+    _update_config({"ndi_default_name": req.ndi_name, "tvh_stream_profile": req.profile})
+    return {"ok": True, "stream_url": stream_url, "ndi_name": req.ndi_name, "auto_reconnect": _ndi_supervisor_config()["enabled"]}
 @app.post("/api/stop")
 def api_stop():
-    # If NDI stops, AES67 must stop too.
+    # Disable the desired stream first so the supervisor does not auto-restart a deliberate stop.
+    with NDI_SUPERVISOR_LOCK:
+        NDI_SUPERVISOR_STATE.update({
+            "desired": False,
+            "request": None,
+            "last_stop_at": time.time(),
+            "was_running": False,
+            "last_restart_reason": "manual stop",
+            "pipeline_status": "stopped",
+            "lineout_desired": False,
+            "lineout_request": None,
+            "lineout_last_restore_error": None,
+        })
+    # If NDI stops, line output must stop too.
     try:
-        ndi_bridge.aes67_stop()
+        ndi_bridge.lineout_stop()
     except Exception:
         pass
     ndi_bridge.stop()
     return {"ok": True}
-# ---------------- AES67 ----------------
-class AES67StartReq(BaseModel):
-    multicast_addr: str = Field(default_factory=lambda: cfg.get("aes67_multicast_addr", "239.69.0.1"))
-    rtp_port: int = Field(default_factory=lambda: int(cfg.get("aes67_rtp_port", 5004)))
-    ttl: int = Field(default_factory=lambda: int(cfg.get("aes67_ttl", 16)))
-    sap_mcast: str = Field(default_factory=lambda: cfg.get("aes67_sap_mcast", "239.255.255.255"))
-    sap_port: int = Field(default_factory=lambda: int(cfg.get("aes67_sap_port", 9875)))
-    ptime_ms: int = Field(default_factory=lambda: int(cfg.get("aes67_ptime_ms", 1)))
-@app.get("/api/aes67/status")
-def api_aes67_status():
-    return ndi_bridge.aes67_status()
-@app.get("/api/aes67/defaults")
-def api_aes67_defaults():
+
+def _stop_ndi_for_tv_setup() -> bool:
+    """Stop any active or desired NDI/audio pipeline before TV setup mutates Tvheadend."""
+    was_running = False
+    try:
+        st = ndi_bridge.status_lite(include_logs=False, include_stats=False)
+        was_running = bool(st.get("running"))
+    except Exception:
+        was_running = False
+    with NDI_SUPERVISOR_LOCK:
+        desired_before = bool(NDI_SUPERVISOR_STATE.get("desired"))
+        was_running = was_running or desired_before
+        NDI_SUPERVISOR_STATE.update({
+            "desired": False,
+            "request": None,
+            "last_stop_at": time.time(),
+            "was_running": False,
+            "last_restart_reason": "tv setup",
+            "pipeline_status": "stopped for tv setup",
+            "lineout_desired": False,
+            "lineout_request": None,
+            "lineout_last_restore_error": None,
+        })
+    try:
+        ndi_bridge.lineout_stop()
+    except Exception:
+        pass
+    try:
+        ndi_bridge.stop()
+    except Exception:
+        pass
+    return was_running
+
+@app.get("/api/tv/setup/status")
+def api_tv_setup_status():
+    return _tv_setup_snapshot()
+
+@app.get("/api/tv/setup/regions")
+def api_tv_setup_regions():
+    try:
+        regions = tvh.list_dvb_scanfiles("dvb-t")
+        selected = str(cfg.get("tvh_dvbt_scanfile") or "")
+        return {"regions": regions, "selected": selected}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to load Tvheadend predefined mux regions: {e}")
+
+class TVSetupRunReq(BaseModel):
+    scanfile: Optional[str] = None
+
+@app.post("/api/tv/setup/run")
+def api_tv_setup_run(req: TVSetupRunReq):
+    snap = _tv_setup_snapshot()
+    if snap.get("running"):
+        raise HTTPException(409, "TV Setup is already running")
+    scanfile_key = str(req.scanfile or "").strip() or None
+    if scanfile_key:
+        try:
+            valid = {str(r.get("key") or "") for r in tvh.list_dvb_scanfiles("dvb-t")}
+        except Exception as e:
+            raise HTTPException(500, f"Could not validate selected region with Tvheadend: {e}")
+        if scanfile_key not in valid:
+            raise HTTPException(400, f"Unknown Tvheadend DVB-T/T2 predefined mux region: {scanfile_key}")
+    _tv_setup_set(
+        running=True,
+        done=False,
+        percent=1,
+        step="Starting TV Setup…",
+        error=None,
+        logs=[],
+        started_at=int(time.time()),
+        finished_at=None,
+        selected_scanfile=scanfile_key,
+    )
+    t = threading.Thread(target=_run_tv_setup_worker, args=(scanfile_key,), name="tv-setup-worker", daemon=True)
+    t.start()
+    return {"ok": True, "scanfile": scanfile_key}
+# ---------------- Line output ----------------
+class LineOutStartReq(BaseModel):
+    device_id: Optional[str] = Field(default_factory=lambda: cfg.get("lineout_default_device"))
+    volume: float = Field(default_factory=lambda: float(cfg.get("lineout_volume", 0.8)), ge=0.0, le=1.0)
+
+
+@app.get("/api/audio/status")
+def api_audio_status(logs: bool = Query(True)):
+    return ndi_bridge.lineout_status(include_logs=logs)
+
+
+@app.get("/api/audio/devices")
+def api_audio_devices():
+    devices = ndi_bridge.audio_output_devices()
+    selected = str(cfg.get("lineout_default_device") or "")
+    if not selected and devices:
+        selected = str(devices[0].get("id") or "")
     return {
-        "multicast_addr": cfg.get("aes67_multicast_addr", "239.69.0.1"),
-        "rtp_port": int(cfg.get("aes67_rtp_port", 5004)),
-        "ttl": int(cfg.get("aes67_ttl", 16)),
-        "sap_mcast": cfg.get("aes67_sap_mcast", "239.255.255.255"),
-        "sap_port": int(cfg.get("aes67_sap_port", 9875)),
-        "ptime_ms": int(cfg.get("aes67_ptime_ms", 1)),
+        "devices": devices,
+        "selected": selected,
+        "volume": float(cfg.get("lineout_volume", 0.8)),
     }
-@app.post("/api/aes67/start")
-def api_aes67_start(req: AES67StartReq):
-    # Enforce: AES67 only when NDI is active, and uses the same channel selection.
-    ndi_st = ndi_bridge.status()
+
+
+@app.get("/api/audio/defaults")
+def api_audio_defaults():
+    devices = ndi_bridge.audio_output_devices()
+    selected = str(cfg.get("lineout_default_device") or "")
+    if not selected and devices:
+        selected = str(devices[0].get("id") or "")
+    return {
+        "device_id": selected,
+        "volume": float(cfg.get("lineout_volume", 0.8)),
+        "sink_sync": bool(cfg.get("lineout_sink_sync", True)),
+    }
+
+
+@app.post("/api/audio/start")
+def api_audio_start(req: LineOutStartReq):
+    if TV_SETUP_STATE.get("running"):
+        raise HTTPException(409, "TV Setup is running; audio output cannot be started until setup finishes")
+    ndi_st = ndi_bridge.status_lite()
     if not ndi_st.get("running"):
-        raise HTTPException(400, "NDI stream must be running before AES67 can be started.")
+        raise HTTPException(400, "NDI stream must be running before audio output can be started.")
 
     try:
-        ndi_bridge.aes67_start(
-            multicast_addr=req.multicast_addr,
-            rtp_port=req.rtp_port,
-            sap_mcast=req.sap_mcast,
-            sap_port=req.sap_port,
-            ttl=req.ttl,
-            ptime_ms=req.ptime_ms,
-        )
+        ndi_bridge.lineout_start(device_id=req.device_id, volume=req.volume)
     except Exception as e:
-        raise HTTPException(500, f"Failed to start AES67: {e}")
-    st = ndi_bridge.aes67_status()
+        raise HTTPException(500, f"Failed to start audio output: {e}")
+    with NDI_SUPERVISOR_LOCK:
+        NDI_SUPERVISOR_STATE["lineout_desired"] = True
+        NDI_SUPERVISOR_STATE["lineout_request"] = _lineout_req_to_dict(req)
+        NDI_SUPERVISOR_STATE["lineout_last_restore_error"] = None
+    _update_config({
+        "lineout_default_device": req.device_id,
+        "lineout_volume": req.volume,
+    })
+    st = ndi_bridge.lineout_status()
     return {"ok": True, "status": st}
-@app.post("/api/aes67/stop")
-def api_aes67_stop():
-    ndi_bridge.aes67_stop()
+
+
+@app.post("/api/audio/stop")
+def api_audio_stop():
+    with NDI_SUPERVISOR_LOCK:
+        NDI_SUPERVISOR_STATE["lineout_desired"] = False
+        NDI_SUPERVISOR_STATE["lineout_request"] = None
+        NDI_SUPERVISOR_STATE["lineout_last_restore_error"] = None
+    ndi_bridge.lineout_stop()
     return {"ok": True}
 # ---------------- System helpers + API ----------------
+NETWORK_PRIVILEGE_HELP = (
+    "Network changes need root privileges. The web service tried to run the required "
+    "network command directly and with sudo -n, but the operating system did not allow it. "
+    "Run install_network_privileges.sh once, or configure passwordless sudo for the "
+    "tvh_ndi_bridge service user and nmcli/systemctl network commands."
+)
+
 def _run_cmd(argv: List[str], sudo: bool = False, timeout_s: int = 8) -> Tuple[int, str, str]:
     """
     Run a command safely.
-    - If sudo=True, we use `sudo -n` to avoid blocking on password prompts (permission-safe).
+    - If sudo=True and this process is not already root, use `sudo -n` so we never block.
+    - If the service is running as root, do not prepend sudo; this avoids false sudo failures.
     """
-    cmd = (["sudo", "-n"] + argv) if sudo else argv
+    use_sudo = bool(sudo and hasattr(os, "geteuid") and os.geteuid() != 0)
+    cmd = (["sudo", "-n"] + argv) if use_sudo else argv
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
         return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
     except FileNotFoundError:
-        return 127, "", f"Command not found: {argv[0]}"
+        missing = "sudo" if use_sudo else argv[0]
+        return 127, "", f"Command not found: {missing}"
     except subprocess.TimeoutExpired:
         return 124, "", "Command timed out"
-def _default_iface() -> Optional[str]:
-    rc, out, _ = _run_cmd(["ip", "route", "show", "default"])
-    if rc == 0 and out:
-        # default via 192.168.1.1 dev eth0 proto dhcp src 192.168.1.10 metric 202
-        m = re.search(r"\bdev\s+(\S+)", out)
-        if m:
-            return m.group(1)
-    # fallback: first non-lo device with an ipv4
-    rc, out, _ = _run_cmd(["ip", "-4", "-o", "addr", "show"])
+
+def _run_privileged(argv: List[str], timeout_s: int = 12) -> Tuple[int, str, str]:
+    """Try a mutating system command in the safest practical order.
+
+    Some Raspberry Pi images allow the service user to call NetworkManager over
+    D-Bus without sudo. Others require sudo. Trying direct first avoids the
+    previous failure mode where a valid non-root nmcli call was never attempted
+    because `sudo -n` failed immediately.
+    """
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return _run_cmd(argv, sudo=False, timeout_s=timeout_s)
+
+    rc, out, err = _run_cmd(argv, sudo=False, timeout_s=timeout_s)
     if rc == 0:
-        for ln in out.splitlines():
-            # 2: eth0    inet 192.168.1.10/24 ...
-            parts = ln.split()
-            if len(parts) >= 4:
-                dev = parts[1]
-                if dev != "lo":
-                    return dev
-    return None
+        return rc, out, err
+
+    direct_err = err or out
+    rc2, out2, err2 = _run_cmd(argv, sudo=True, timeout_s=timeout_s)
+    if rc2 == 0:
+        return rc2, out2, err2
+
+    combined = "; ".join(x for x in [direct_err, err2 or out2] if x)
+    return rc2, out2, combined or NETWORK_PRIVILEGE_HELP
+
+def _raise_privileged_error(err: str, context: str) -> None:
+    text = (err or "").strip()
+    if "password is required" in text.lower() or "not in the sudoers" in text.lower() or "permission denied" in text.lower() or "not authorized" in text.lower():
+        raise RuntimeError(f"{context}: {text}\n\n{NETWORK_PRIVILEGE_HELP}")
+    raise RuntimeError(text or context)
 # ---------------- System helpers: network live status ----------------
 def _live_ipv4_for_iface(iface: str) -> Optional[str]:
     """Return first global IPv4 address in CIDR form for iface (best effort)."""
@@ -416,7 +1191,8 @@ def _dhcpcd_get_network(iface: str) -> Dict:
     return {"iface": iface, "mode": mode, "ipv4": ipv4, "gateway": gateway, "dns": dns}
 def _get_network_info() -> Tuple[Dict, List[str]]:
     warnings: List[str] = []
-    iface = _default_iface() or "eth0"
+    # TeleTool exposes only eth0 in the web UI; keep discovery/status focused there.
+    iface = "eth0"
     # Prefer NetworkManager if available
     if shutil.which("nmcli"):
         nm = _nmcli_get_network(iface)
@@ -430,32 +1206,46 @@ def _set_network_nmcli(iface: str, mode: str, ipv4: Optional[str], gateway: Opti
     if not conn:
         raise RuntimeError(f"No active NetworkManager connection found for {iface}")
     if mode == "dhcp":
-        cmds = [
-            (["nmcli", "con", "mod", conn, "ipv4.method", "auto"], True),
-            (["nmcli", "con", "mod", conn, "ipv4.addresses", ""], True),
-            (["nmcli", "con", "mod", conn, "ipv4.gateway", ""], True),
-            (["nmcli", "con", "mod", conn, "ipv4.dns", ""], True),
-        ]
+        # Apply the DHCP transition as ONE NetworkManager transaction.
+        # Splitting this into several `nmcli con mod` calls can fail because
+        # NetworkManager validates each intermediate state. For example:
+        # - clearing addresses while a stale gateway remains is invalid
+        # - changing to manual while addresses are empty is invalid
+        # A single command lets NM validate the final DHCP state instead.
+        cmds = [[
+            "nmcli", "con", "mod", conn,
+            "ipv4.method", "auto",
+            "ipv4.addresses", "",
+            "ipv4.gateway", "",
+            "ipv4.dns", "",
+            "ipv4.ignore-auto-dns", "no",
+        ]]
     else:
         if not ipv4 or "/" not in ipv4:
-            raise RuntimeError("Manual mode requires ipv4 in CIDR form, e.g. 192.168.1.50/24")
-        cmds = [
-            (["nmcli", "con", "mod", conn, "ipv4.method", "manual"], True),
-            (["nmcli", "con", "mod", conn, "ipv4.addresses", ipv4], True),
-        ]
-        if gateway:
-            cmds.append((["nmcli", "con", "mod", conn, "ipv4.gateway", gateway], True))
-        if dns:
-            cmds.append((["nmcli", "con", "mod", conn, "ipv4.dns", ",".join(dns)], True))
-    for argv, sudo in cmds:
-        rc, _, err = _run_cmd(argv, sudo=sudo, timeout_s=12)
+            raise RuntimeError("Manual mode requires IPv4 address and subnet mask, e.g. 192.168.1.50 with subnet 255.255.255.0")
+        # Apply the static transition as ONE transaction too, so NM never sees
+        # a transient `manual` connection without an address/route.
+        cmds = [[
+            "nmcli", "con", "mod", conn,
+            "ipv4.method", "manual",
+            "ipv4.addresses", ipv4,
+            "ipv4.gateway", gateway or "",
+            "ipv4.dns", ",".join(dns) if dns else "",
+            "ipv4.ignore-auto-dns", "yes" if dns else "no",
+        ]]
+    for argv in cmds:
+        rc, _, err = _run_privileged(argv, timeout_s=12)
         if rc != 0:
-            raise RuntimeError(err or "nmcli failed")
-    # bring it up (may momentarily drop HTTP)
-    rc, _, err = _run_cmd(["nmcli", "con", "up", conn], sudo=True, timeout_s=20)
+            _raise_privileged_error(err, "NetworkManager update failed")
+
+    # Apply to the currently active device. `device reapply` is less disruptive;
+    # if it is unavailable/unsupported, fall back to bringing the connection up.
+    rc, _, err = _run_privileged(["nmcli", "device", "reapply", iface], timeout_s=20)
     if rc != 0:
-        raise RuntimeError(err or "nmcli con up failed")
-    return f"Updated NetworkManager connection '{conn}'"
+        rc, _, err = _run_privileged(["nmcli", "con", "up", conn], timeout_s=25)
+        if rc != 0:
+            _raise_privileged_error(err, "NetworkManager apply failed")
+    return f"Updated NetworkManager connection '{conn}' and applied it to {iface}"
 def _set_network_dhcpcd(iface: str, mode: str, ipv4: Optional[str], gateway: Optional[str], dns: List[str]) -> str:
     conf = _dhcpcd_conf_path()
     try:
@@ -469,7 +1259,7 @@ def _set_network_dhcpcd(iface: str, mode: str, ipv4: Optional[str], gateway: Opt
         txt = (pre.rstrip() + "\n\n" + post.lstrip()).strip() + "\n"
     if mode == "manual":
         if not ipv4 or "/" not in ipv4:
-            raise RuntimeError("Manual mode requires ipv4 in CIDR form, e.g. 192.168.1.50/24")
+            raise RuntimeError("Manual mode requires IPv4 address and subnet mask, e.g. 192.168.1.50 with subnet 255.255.255.0")
         block = "\n".join(
             [
                 _MANAGED_START,
@@ -490,11 +1280,11 @@ def _set_network_dhcpcd(iface: str, mode: str, ipv4: Optional[str], gateway: Opt
     # Write using sudo to avoid permission issues (won't hang due to -n)
     tmp = Path("/tmp/tvh_bridge_dhcpcd.conf")
     tmp.write_text(txt)
-    rc, _, err = _run_cmd(["cp", str(tmp), str(conf)], sudo=True, timeout_s=8)
+    rc, _, err = _run_privileged(["cp", str(tmp), str(conf)], timeout_s=8)
     if rc != 0:
-        raise RuntimeError(err or f"Failed to write {conf} (sudo required)")
+        _raise_privileged_error(err, f"Failed to write {conf}")
     # restart service (best effort)
-    rc, _, err = _run_cmd(["systemctl", "restart", "dhcpcd"], sudo=True, timeout_s=20)
+    rc, _, err = _run_privileged(["systemctl", "restart", "dhcpcd"], timeout_s=20)
     if rc != 0:
         # Don't hard-fail; config may still apply on next boot
         return f"Wrote {conf}, but failed to restart dhcpcd: {err or 'unknown error'}"
@@ -578,9 +1368,16 @@ def _update_hosts_127001(new_hostname: str) -> None:
     _sudo_write_text(hosts, "\n".join(out_lines) + "\n", "hosts.tmp")
 class NetworkUpdateReq(BaseModel):
     mode: str = Field(pattern="^(dhcp|manual)$")
+    # Interface is intentionally not exposed in the UI; TeleTool manages eth0 only.
+    # Keep iface/ipv4 for backwards-compatible API callers, but api_system_network
+    # always applies to eth0.
     iface: Optional[str] = None
-    # only required in manual mode
-    ipv4: Optional[str] = None  # CIDR e.g. 192.168.1.50/24
+    # New UI fields for manual mode
+    ip_address: Optional[str] = None  # e.g. 192.168.1.50
+    subnet_prefix: Optional[int] = None  # legacy UI/API, e.g. 24
+    subnet_mask: Optional[str] = None  # e.g. 255.255.255.0
+    # Backwards-compatible CIDR form
+    ipv4: Optional[str] = None  # e.g. 192.168.1.50/24
     gateway: Optional[str] = None
     dns: Optional[str] = None  # space/comma separated
 class HostnameReq(BaseModel):
@@ -660,33 +1457,100 @@ def api_system_restart_program():
     return {"ok": True, "message": "Program restart requested (process exiting)."}
 @app.post("/api/system/reboot")
 def api_system_reboot():
-    # Permission-safe: `sudo -n` so we never block waiting for a password.
-    rc, _, err = _run_cmd(["reboot"], sudo=True, timeout_s=4)
-    if rc != 0:
-        raise HTTPException(
-            403,
-            "Reboot not permitted. Configure passwordless sudo for 'reboot' or 'shutdown -r now'. "
-            f"Details: {err or 'unknown error'}",
-        )
-    return {"ok": True, "message": "Reboot requested."}
+    """Reboot the Pi using the same privilege fallback as network changes.
+
+    The previous implementation only tried `sudo -n reboot`. That fails on many
+    Raspberry Pi installs because the TeleTool sudoers helper only granted
+    network commands, and some systems prefer `systemctl reboot`/`shutdown -r
+    now` over the bare `reboot` command. Try the common reboot commands in a
+    safe non-interactive order and return the real error if none are permitted.
+    """
+    attempts = [
+        ["systemctl", "reboot"],
+        ["shutdown", "-r", "now"],
+        ["reboot"],
+    ]
+    errors: List[str] = []
+    for argv in attempts:
+        rc, _, err = _run_privileged(argv, timeout_s=8)
+        if rc == 0:
+            return {"ok": True, "message": "Reboot requested."}
+        errors.append(f"{' '.join(argv)}: {err or 'failed'}")
+
+    detail = "; ".join(errors) or "unknown error"
+    raise HTTPException(
+        403,
+        "Reboot not permitted. Run install_network_privileges.sh once, or configure "
+        "passwordless sudo for systemctl reboot, shutdown -r now, or reboot. "
+        f"Details: {detail}",
+    )
+def _prefix_from_subnet_mask(mask: str) -> int:
+    """Convert dotted IPv4 subnet mask such as 255.255.255.0 to CIDR prefix length."""
+    mask_s = str(mask or "").strip()
+    try:
+        addr = ipaddress.IPv4Address(mask_s)
+    except Exception:
+        raise RuntimeError("Manual mode requires a valid subnet mask, e.g. 255.255.255.0")
+    bits = bin(int(addr))[2:].zfill(32)
+    if "01" in bits:
+        raise RuntimeError("Subnet mask must be contiguous, e.g. 255.255.255.0")
+    prefix = bits.count("1")
+    if prefix < 1 or prefix > 32:
+        raise RuntimeError("Subnet mask must represent a prefix between /1 and /32, e.g. 255.255.255.0")
+    return prefix
+
+def _cidr_from_network_request(req: NetworkUpdateReq) -> Optional[str]:
+    """Build validated CIDR from UI fields, falling back to legacy ipv4."""
+    if req.mode != "manual":
+        return None
+    ip_s = str(req.ip_address or "").strip()
+    mask_s = str(req.subnet_mask or "").strip()
+    prefix = req.subnet_prefix
+
+    if ip_s or mask_s or prefix is not None:
+        if not ip_s:
+            raise RuntimeError("Manual mode requires an IP address.")
+        try:
+            ipaddress.IPv4Address(ip_s)
+        except Exception:
+            raise RuntimeError("Manual mode requires a valid IPv4 address, e.g. 192.168.1.50")
+
+        if mask_s:
+            prefix_i = _prefix_from_subnet_mask(mask_s)
+        else:
+            try:
+                prefix_i = int(prefix)
+            except Exception:
+                raise RuntimeError("Manual mode requires a subnet mask, e.g. 255.255.255.0")
+            if prefix_i < 1 or prefix_i > 32:
+                raise RuntimeError("Subnet mask converted to an invalid prefix; use a mask such as 255.255.255.0")
+        return f"{ip_s}/{prefix_i}"
+
+    legacy = str(req.ipv4 or "").strip()
+    if not legacy:
+        raise RuntimeError("Manual mode requires an IP address and subnet mask.")
+    try:
+        ipaddress.IPv4Interface(legacy)
+    except Exception:
+        raise RuntimeError("Manual mode requires IPv4 CIDR form, e.g. 192.168.1.50/24")
+    return legacy
+
+
 @app.post("/api/system/network")
 def api_system_network(req: NetworkUpdateReq):
-    iface = (req.iface or _default_iface() or "eth0").strip()
+    # TeleTool appliance networking is intentionally eth0-only. Ignore any legacy
+    # iface value from old clients so the UI cannot accidentally alter Wi-Fi/lo/etc.
+    iface = "eth0"
     dns_list: List[str] = []
     if req.dns:
         dns_list = [d.strip() for d in req.dns.replace(",", " ").split() if d.strip()]
-    # If DHCP, ignore manual fields
-    ipv4 = req.ipv4 if req.mode == "manual" else None
+    ipv4 = _cidr_from_network_request(req) if req.mode == "manual" else None
     gateway = req.gateway if req.mode == "manual" else None
     try:
         msg = _set_network(iface=iface, mode=req.mode, ipv4=ipv4, gateway=gateway, dns=dns_list)
         return {"ok": True, "message": msg}
     except Exception as e:
-        raise HTTPException(
-            403,
-            f"{e}\n\nTip: to avoid permission prompts, configure passwordless sudo for "
-            f"nmcli OR cp/systemctl (dhcpcd) depending on your OS.",
-        )
+        raise HTTPException(403, f"{e}")
 @app.post("/api/system/hostname")
 def api_system_hostname(req: HostnameReq):
     """
@@ -753,10 +1617,14 @@ def api_system_hostname(req: HostnameReq):
 @app.on_event("shutdown")
 def _shutdown():
     try:
-        ndi_bridge.aes67_stop()
+        ndi_bridge.lineout_stop()
     except Exception:
         pass
     try:
         ndi_bridge.stop()
+    except Exception:
+        pass
+    try:
+        tvh.close()
     except Exception:
         pass

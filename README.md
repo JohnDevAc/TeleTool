@@ -233,10 +233,10 @@ Current golden-master artifact:
 
 Current image details:
 
-- Created: `2026-07-07T19:12:52+01:00`
+- Created: `2026-07-07T20:01:15+01:00`
 - Decompressed image size: `12,868 MiB`
 - Compressed image size: about `1.9 GB`
-- SHA-256: `d8de0f2746610611f862c06f14092297b5bbb96cb5311a2405b047ab4ab21c20`
+- SHA-256: `1bf7f0b337c0f3d5fd876896c354d8a306724bcaa3ba990e400fe35f82aef315`
 
 Verify the image on Windows:
 

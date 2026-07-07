@@ -495,6 +495,17 @@
   display:block;
 }
 
+.brandLogoLink{
+  display:block;
+  line-height:0;
+  border-radius:12px;
+}
+
+.brandLogoLink:focus-visible{
+  outline:2px solid rgba(122,162,255,.8);
+  outline-offset:4px;
+}
+
 /* Small screens: keep it proportionate so it doesn't crowd the header */
 @media (max-width: 520px){
   .brandLogo{ height: 92px; }
@@ -539,14 +550,16 @@
   padding-top:14px;
   border-top:1px solid var(--border);
 }
-.updateWarning{
-  margin-top:10px;
-  padding-top:10px;
-  border-top:1px solid rgba(245,197,66,.28);
-  color:#fff1c2;
-}
 .updateProgress{
   margin-top:10px;
+}
+.pushRight{
+  margin-left:auto;
+}
+@media (max-width: 700px){
+  .pushRight{
+    margin-left:0;
+  }
 }
 
 /* Keep live logs and setup output inside their panels even when Tvheadend returns long mux/file strings. */

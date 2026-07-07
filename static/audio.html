@@ -12,10 +12,8 @@
   <header>
     <div class="title">
       <h1 class="srOnly">Tvheadend Line Audio Output</h1>
-      <div class="sub">Route the active TV audio to a local stereo output device.</div>
     </div>
     <div class="rightTop">
-      <a class="miniBtn" data-tvh-link href="#">TV-Headend</a>
       <a class="miniBtn" href="/manager">Manager</a>
       <a class="miniBtn" href="/">NDI</a>
       <a class="miniBtn" href="/system">System</a>
@@ -23,7 +21,9 @@
         <span id="dot" class="dot"></span>
         <span id="statusText">STOPPED</span>
       </div>
-      <img class="brandLogo" src="/static/TeleTwat_V1_0_all_black_transparent.png" alt="TeleTwat logo" />
+      <a class="brandLogoLink" data-tvh-link href="#">
+        <img class="brandLogo" src="/static/TeleTwat_V1_0_all_black_transparent.png" alt="TeleTwat logo" />
+      </a>
     </div>
   </header>
 
@@ -43,7 +43,6 @@
             <span id="volumeReadout" class="small mono">80% (-1.9 dB)</span>
           </div>
           <input id="volume" type="range" min="0" max="100" step="1" value="80" />
-          <div class="small mono">50% = -6.0 dB, 80% = -1.9 dB, 100% = 0.0 dB</div>
         </div>
       </div>
 
@@ -54,9 +53,6 @@
         <span id="toast" class="toast"></span>
       </div>
 
-      <div class="small" style="margin-top:8px;">
-        Audio output follows the active NDI stream, so start NDI first.
-      </div>
     </div>
 
     <div class="card">
@@ -90,7 +86,6 @@
       <details>
         <summary>
           <span>Pipeline log</span>
-          <span class="small">last 120 lines</span>
         </summary>
         <pre id="log" class="mono"></pre>
       </details>

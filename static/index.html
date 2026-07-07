@@ -12,10 +12,8 @@
   <header>
     <div class="title">
       <h1 class="srOnly">Tvheadend → NDI Bridge</h1>
-      <div class="sub">Select a channel, name the NDI source, and publish it on your LAN.</div>
     </div>
     <div class="rightTop">
-      <a class="miniBtn" data-tvh-link href="#">TV-Headend</a>
       <a class="miniBtn" href="/manager">Manager</a>
       <a class="miniBtn" href="/audio">Audio</a>
       <a class="miniBtn" href="/system">System</a>
@@ -23,7 +21,9 @@
         <span id="dot" class="dot"></span>
         <span id="statusText">STOPPED</span>
       </div>
-      <img class="brandLogo" src="/static/TeleTwat_V1_0_all_black_transparent.png" alt="TeleTwat logo" />
+      <a class="brandLogoLink" data-tvh-link href="#">
+        <img class="brandLogo" src="/static/TeleTwat_V1_0_all_black_transparent.png" alt="TeleTwat logo" />
+      </a>
     </div>
   </header>
 
@@ -49,22 +49,14 @@
         <span id="toast" class="toast"></span>
       </div>
 
-      <div class="hint">
-        Tip: keep NDI names unique when running multiple devices.
-      </div>
-
       <div class="tvSetupSection">
         <h2 style="margin-top:16px;">TV Setup</h2>
-        <div class="small">
-          Deletes all current TVHeadend channels and services, applies the selected predefined DVB-T/T2 mux region, then runs a fresh scan and maps services back to channels.
-        </div>
 
         <div class="field" style="margin-top:10px;">
           <label for="tvSetupRegion">DVB-T/T2 region / predefined muxes</label>
           <select id="tvSetupRegion">
             <option value="">Loading TVHeadend regions…</option>
           </select>
-          <div class="small" id="tvSetupRegionHint">This mirrors Tvheadend's “Pre-defined muxes” dropdown.</div>
         </div>
 
         <div class="actions">

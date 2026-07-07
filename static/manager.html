@@ -12,7 +12,6 @@
   <header>
     <div class="title">
       <h1>TeleTool Manager</h1>
-      <div class="sub">Fleet overview</div>
     </div>
     <div class="rightTop">
       <a class="miniBtn" href="/">NDI</a>
@@ -22,7 +21,9 @@
         <span id="managerDot" class="dot"></span>
         <span id="managerStatusText">CONNECTING</span>
       </div>
-      <img class="brandLogo" src="/static/TeleTwat_V1_0_all_black_transparent.png" alt="TeleTwat logo" />
+      <a class="brandLogoLink" data-tvh-link href="#">
+        <img class="brandLogo" src="/static/TeleTwat_V1_0_all_black_transparent.png" alt="TeleTwat logo" />
+      </a>
     </div>
   </header>
 
@@ -52,7 +53,6 @@
 
     <div id="managerEmpty" class="card managerEmpty hidden">
       <h2>No units</h2>
-      <div class="small">Add a TeleTool IP address or hostname to begin.</div>
     </div>
 
     <div id="unitsGrid" class="unitGrid" aria-live="polite"></div>

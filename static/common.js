@@ -87,18 +87,40 @@ function lockNetworkFormFor(ms){
 function isNetworkFormLocked(){
   return Date.now() < _netFormLockedUntil;
 }
-// Auto-wire TV-Headend button(s) to this device's hostname on port 9981.
-// Use: <a class="miniBtn" data-tvh-link href="#">TV-Headend</a>
-function setTvheadendLinks(){
+function fallbackTvheadendUrl(){
+  const host = window.location.hostname;
+  return host ? `http://${host}:9981/` : "#";
+}
+
+function normalizedTvheadendUrl(raw){
+  const fallback = fallbackTvheadendUrl();
+  const text = String(raw || "").trim();
+  if (!text) return fallback;
   try{
-    const host = window.location.hostname;
-    if (!host) return;
-    const url = `http://${host}:9981/`;
+    const url = new URL(text, window.location.href);
+    if (["127.0.0.1", "localhost", "0.0.0.0"].includes(url.hostname) && window.location.hostname){
+      url.hostname = window.location.hostname;
+    }
+    return url.toString();
+  }catch(e){
+    return fallback;
+  }
+}
+
+async function setTvheadendLinks(){
+  try{
+    let url = fallbackTvheadendUrl();
+    try{
+      const cfg = await jget("/api/config/ui");
+      url = normalizedTvheadendUrl(cfg && cfg.tvh_base_url);
+    }catch(e){
+      // Keep the header usable while the API is unavailable.
+    }
     document.querySelectorAll('[data-tvh-link]').forEach(a => {
       a.href = url;
       a.target = "_blank";
       a.rel = "noopener";
-      a.title = "Open TV-Headend";
+      a.title = "Open TVHeadend";
     });
   }catch(e){
     // ignore

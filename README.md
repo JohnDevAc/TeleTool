@@ -221,23 +221,28 @@ The builder creates a smaller two-partition Raspberry Pi image instead of clonin
 
 Generated image artifacts are intentionally ignored by git.
 
-Current local golden-master artifact from this workspace:
+Hosted golden-master download:
+
+[Download TeletoolBase.img.xz](https://www.johnlightfoot.biz/TeletoolBase.img.xz)
+
+Current golden-master artifact:
 
 ```text
-golden-images/teletool-pi5-golden-20260707-134453.img.xz
+/home/admin/golden-master/TeletoolBase.img.xz
 ```
 
 Current image details:
 
-- Decompressed image size: `13,756 MiB`
-- Compressed image size: about `1.91 GB`
-- SHA-256: `8eb8b64d17935414eac0cb3e19fbd1638d99afe8f31cef07ebb55bf663abdd0a`
+- Created: `2026-07-07T19:12:52+01:00`
+- Decompressed image size: `12,868 MiB`
+- Compressed image size: about `1.9 GB`
+- SHA-256: `d8de0f2746610611f862c06f14092297b5bbb96cb5311a2405b047ab4ab21c20`
 
 Verify the image on Windows:
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\golden-images\teletool-pi5-golden-20260707-134453.img.xz
-Get-Content .\golden-images\teletool-pi5-golden-20260707-134453.img.xz.sha256
+Get-FileHash -Algorithm SHA256 .\golden-images\TeletoolBase.img.xz
+Get-Content .\golden-images\TeletoolBase.img.xz.sha256
 ```
 
 The two hashes should match.
@@ -270,9 +275,9 @@ Images are created on the Pi under `/home/admin/golden-master/`.
 From Windows:
 
 ```powershell
-pscp admin@192.168.0.142:/home/admin/golden-master/teletool-pi5-golden-*.img.xz .\golden-images\
-pscp admin@192.168.0.142:/home/admin/golden-master/teletool-pi5-golden-*.sha256 .\golden-images\
-pscp admin@192.168.0.142:/home/admin/golden-master/teletool-pi5-golden-*.manifest .\golden-images\
+pscp admin@192.168.0.142:/home/admin/golden-master/TeletoolBase.img.xz .\golden-images\
+pscp admin@192.168.0.142:/home/admin/golden-master/TeletoolBase.img.xz.sha256 .\golden-images\
+pscp admin@192.168.0.142:/home/admin/golden-master/TeletoolBase.img.xz.manifest .\golden-images\
 ```
 
 If using SSH keys or a different username/host, adjust the command accordingly.

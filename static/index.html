@@ -184,6 +184,19 @@ function setTvSetupBadge(kind, text){
   b.className = "badge " + (kind || "");
 }
 
+function preferredTvSetupRegion(options, selected){
+  const normalized = value => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const isAutoDefault = value => {
+    const n = normalized(value);
+    return n === "auto-default" || n.endsWith("-auto-default") || n.includes("auto-default");
+  };
+  const selectedText = normalized(selected);
+  const selectedOption = options.find(o => o.value === selected || normalized(o.value) === selectedText || normalized(o.textContent) === selectedText);
+  if (selectedOption && selectedOption.value) return selectedOption.value;
+  const autoDefault = options.find(o => isAutoDefault(o.value) || isAutoDefault(o.textContent));
+  return autoDefault ? autoDefault.value : "";
+}
+
 function renderTvSetupStatus(st){
   const wrap = document.getElementById("tvSetupProgressWrap");
   const step = document.getElementById("tvSetupStep");
@@ -201,6 +214,7 @@ function renderTvSetupStatus(st){
 
   if (st && st.running) setTvSetupBadge("warn", "Running");
   else if (st && st.error) setTvSetupBadge("bad", "Failed");
+  else if (st && st.partial) setTvSetupBadge("warn", "Partial");
   else if (st && st.done) setTvSetupBadge("good", "Complete");
   else setTvSetupBadge("", "");
 }
@@ -241,9 +255,9 @@ async function loadTvSetupRegions(){
       opt.textContent = r.val || r.key;
       sel.appendChild(opt);
     }
-    const selected = previous || data.selected || "";
-    if (selected && Array.from(sel.options).some(o => o.value === selected)) sel.value = selected;
-    else if (data.selected && Array.from(sel.options).some(o => o.value === data.selected)) sel.value = data.selected;
+    const options = Array.from(sel.options);
+    const selected = previous || preferredTvSetupRegion(options, data.selected || "");
+    if (selected && options.some(o => o.value === selected)) sel.value = selected;
     if (hint) hint.textContent = "This mirrors TVHeadend's “Pre-defined muxes” dropdown and will replace muxes in the selected DVB-T network during setup.";
     tvSetupRegionsLoading = false;
     updateTvSetupControls();
@@ -262,14 +276,15 @@ async function loadTvSetupRegions(){
 let tvSetupPollTimer = null;
 let lastTvSetupRefreshFinishedAt = null;
 
-async function refreshChannelsAfterTvSetup(){
+async function refreshChannelsAfterTvSetup(st){
+  const partial = !!(st && st.partial);
   let lastErr = null;
   for (let attempt = 1; attempt <= 4; attempt++) {
     try {
       await loadChannels(true);
       const sel = document.getElementById("channel");
       if (sel && sel.options.length > 0) {
-        toast("Channel list refreshed.", "good", 2500);
+        toast(partial ? "TV setup partially complete. Channel list refreshed." : "Channel list refreshed.", partial ? "warn" : "good", 3000);
         return true;
       }
     } catch (e) {
@@ -278,7 +293,8 @@ async function refreshChannelsAfterTvSetup(){
     }
     await new Promise(r => setTimeout(r, 1500));
   }
-  toast(lastErr ? "TV setup completed, but channel list refresh failed." : "TV setup completed, but no channels were returned yet.", "warn", 4000);
+  const prefix = partial ? "TV setup partially complete" : "TV setup completed";
+  toast(lastErr ? `${prefix}, but channel list refresh failed.` : `${prefix}, but no channels were returned yet.`, "warn", 4000);
   return false;
 }
 
@@ -289,7 +305,7 @@ async function refreshTvSetupStatus(){
     const finishedAt = st ? (st.finished_at || null) : null;
     const completedRunNeedsRefresh = !!(st && st.done && !st.error && finishedAt && finishedAt !== lastTvSetupRefreshFinishedAt);
     if (completedRunNeedsRefresh) {
-      const ok = await refreshChannelsAfterTvSetup();
+      const ok = await refreshChannelsAfterTvSetup(st);
       if (ok) lastTvSetupRefreshFinishedAt = finishedAt;
     }
     if (tvSetupPollTimer) clearTimeout(tvSetupPollTimer);

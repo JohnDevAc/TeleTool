@@ -9,12 +9,13 @@ AES67/RTP output has been removed. The current audio workflow is local line outp
 - Select a Tvheadend channel and publish it as an NDI source.
 - Keep the NDI stream supervised and restart it if the live Tvheadend stream stalls.
 - Route the same active stream audio to a local stereo output device.
+- Manage multiple TeleTool units from the Fleet Manager page.
 - Detect only relevant audio output devices:
   - Dante AVIO or suitable USB audio output
   - Pi analogue/headphones output where present
 - Hide HDMI outputs and noisy ALSA aliases from the audio dropdown.
-- Configure network, hostname, Tvheadend URL/profile, NDI delay, and line output defaults from the web UI.
-- Run a guided Tvheadend DVB-T/T2 setup flow.
+- Configure network, hostname, power actions, updates, and advanced NDI settings from the web UI.
+- Run a guided Tvheadend DVB-T/T2 setup flow with stalled-scan handling.
 - Build a shrunk Raspberry Pi SD-card golden-master image for cloning.
 
 ## Web UI
@@ -29,6 +30,7 @@ Main pages:
 
 - `/` - NDI control and Tvheadend setup
 - `/audio` - local line-level audio output control
+- `/manager` - Fleet Manager for multiple TeleTool units
 - `/system` - hostname, network, power, and app configuration
 
 ## Normal Operation
@@ -54,11 +56,27 @@ The audio level slider is stored as a linear GStreamer volume value:
 - `50%` is about `-6.0 dB`.
 - `0%` is muted.
 
+## Fleet Manager
+
+Open `/manager` to monitor multiple TeleTool units from one primary unit. Add each unit by IP address or hostname. Each unit appears as a box showing system status, stream status, IP/hostname, NDI stream name, and the current channel when an NDI stream is running.
+
+The primary unit also appears in the Fleet Manager. If a TeleTool is adopted by an active Fleet Manager, its own management page is disabled and redirects back to the managing unit until the adoption lease expires.
+
 ## Tvheadend Setup Flow
 
 The TV Setup panel on `/` can rebuild Tvheadend channel data for a DVB-T/T2 region.
 
 Important: this flow is destructive. It deletes current Tvheadend channels/services, applies the selected predefined mux region, starts a scan, and maps services back to channels.
+
+When no previous region has been saved, the region dropdown prefers Tvheadend's preconfigured mux list labelled `Generic: auto-Default` where available.
+
+Some RF environments can cause Tvheadend to stall near the end of a scan. TeleTool monitors mux progress during TV Setup:
+
+- If the scan finishes normally, services are mapped and the setup shows `Complete`.
+- If scan progress stalls but services have been found, those services are mapped and the setup shows `Partial`.
+- If scan progress stalls and no services have been found, the setup shows `Failed`.
+
+The default stalled-scan threshold is `tvh_scan_stall_timeout_s = 120` seconds without mux progress. The overall scan timeout defaults to `tvh_scan_timeout_s = 600` seconds. These can be adjusted in `config.json` if a site needs longer scan windows.
 
 Use it when preparing a fresh Pi or when intentionally rebuilding the tuner/channel setup.
 
@@ -67,10 +85,11 @@ Use it when preparing a fresh Pi or when intentionally rebuilding the tuner/chan
 Open `/system` for:
 
 - Restarting the TeleTool service.
+- Updating the program from the latest server version.
 - Rebooting the Pi.
 - Changing hostname.
 - Viewing or applying network settings.
-- Editing app config such as Tvheadend URL/profile, NDI delay, reconnect settings, and default line output level.
+- Editing advanced NDI config such as delay, buffer, reconnect, startup grace, and stall timeout.
 
 Network changes can briefly disconnect the web UI if the Pi changes IP address.
 
@@ -117,7 +136,7 @@ NDI support still requires an ARM64 NDI runtime/GStreamer plugin that provides `
 gst-inspect-1.0 ndisink
 ```
 
-Tvheadend is expected at `http://127.0.0.1:9981` by default. Change `tvh_base_url` in the web UI or `config.json` if Tvheadend is elsewhere.
+Tvheadend is expected at `http://127.0.0.1:9981` by default. Change `tvh_base_url` in `config.json` if Tvheadend is elsewhere.
 
 For Dante AVIO USB output, connect the adapter to the Pi and open `/audio`. The Audio output dropdown only lists suitable line-output devices. If the dropdown is empty, check whether ALSA can see the adapter:
 

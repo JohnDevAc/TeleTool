@@ -349,6 +349,7 @@ threading.Thread(target=_ndi_supervisor_loop, name="ndi-supervisor", daemon=True
 TV_SETUP_STATE: Dict[str, Any] = {
     "running": False,
     "done": False,
+    "partial": False,
     "percent": 0,
     "step": "Idle",
     "logs": [],
@@ -356,6 +357,7 @@ TV_SETUP_STATE: Dict[str, Any] = {
     "started_at": None,
     "finished_at": None,
     "selected_scanfile": None,
+    "scan_note": None,
 }
 TV_SETUP_LOCK = threading.Lock()
 
@@ -373,6 +375,28 @@ def _tv_setup_log(message: str) -> None:
         logs = list(TV_SETUP_STATE.get("logs", []))
         logs.append(f"[{ts}] {message}")
         TV_SETUP_STATE["logs"] = logs[-300:]
+
+def _preferred_dvbt_scanfile(regions: List[Dict[str, Any]], configured: str = "") -> str:
+    valid = {str(r.get("key") or "").strip() for r in regions}
+    configured = str(configured or "").strip()
+    if configured and configured in valid:
+        return configured
+
+    def norm(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        return re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+
+    def is_auto_default(value: Any) -> bool:
+        normalized = norm(value)
+        return normalized == "auto-default" or normalized.endswith("-auto-default") or "auto-default" in normalized
+
+    for region in regions:
+        key = str(region.get("key") or "").strip()
+        val = str(region.get("val") or "").strip()
+        if is_auto_default(key) or is_auto_default(val):
+            return key
+
+    return configured
 
 def _resolve_dvbt_network() -> Dict[str, Any]:
     want_uuid = str(cfg.get("tvh_dvbt_network_uuid") or "").strip()
@@ -462,39 +486,101 @@ def _log_mux_diagnostics(muxes: List[Dict[str, Any]], *, prefix: str = "Mux") ->
         _tv_setup_log(f"{prefix}: {label} -> " + ", ".join(extra))
 
 
-def _wait_for_scan(network_uuid: str, timeout_s: int = 600) -> List[Dict[str, Any]]:
+def _config_int(name: str, default: int, *, min_value: int, max_value: int) -> int:
+    try:
+        value = int(float(cfg.get(name, default)))
+    except Exception:
+        value = default
+    return max(min_value, min(max_value, value))
+
+
+def _mux_is_active(mux: Dict[str, Any]) -> bool:
+    scan_state = _coerce_int(mux.get("scan_state"))
+    if scan_state is not None:
+        return scan_state != 0
+    text = " ".join(str(mux.get(k) or "") for k in ("scan_result", "scan_status", "status")).lower()
+    return any(word in text for word in ("active", "pending", "queued", "scanning"))
+
+
+def _scan_progress_key(muxes: List[Dict[str, Any]]) -> Tuple[Tuple[Any, ...], ...]:
+    key: List[Tuple[Any, ...]] = []
+    for mux in muxes:
+        scan_state = _coerce_int(mux.get("scan_state"))
+        num_svc = _coerce_int(mux.get("num_svc"))
+        num_pmt = _coerce_int(mux.get("num_pmt"))
+        key.append((
+            str(mux.get("uuid") or ""),
+            str(mux.get("frequency") or mux.get("freq") or ""),
+            scan_state if scan_state is not None else -1,
+            num_svc if num_svc is not None else -1,
+            num_pmt if num_pmt is not None else -1,
+            str(mux.get("scan_result") or mux.get("scan_status") or mux.get("status") or ""),
+        ))
+    return tuple(sorted(key))
+
+
+def _scan_mux_summary(muxes: List[Dict[str, Any]]) -> Dict[str, int]:
+    active = sum(1 for mux in muxes if _mux_is_active(mux))
+    total_services = sum(_coerce_int(mux.get("num_svc")) or 0 for mux in muxes)
+    return {
+        "muxes": len(muxes),
+        "active": active,
+        "complete": max(0, len(muxes) - active),
+        "services": total_services,
+    }
+
+
+def _wait_for_scan(network_uuid: str, timeout_s: int = 600, stall_timeout_s: int = 120) -> Tuple[List[Dict[str, Any]], bool, Optional[str]]:
     deadline = time.time() + timeout_s
     stable = 0
-    last_summary = None
+    last_progress_key = None
+    last_progress_at = time.time()
     diag_every = 0
+    last_muxes: List[Dict[str, Any]] = []
     while time.time() < deadline:
+        now = time.time()
         muxes = tvh.list_muxes_for_network(network_uuid)
-        active = 0
-        total_services = 0
-        complete = 0
-        for mux in muxes:
-            scan_state = int(mux.get("scan_state") or 0)
-            if scan_state != 0:
-                active += 1
-            else:
-                complete += 1
-            total_services += int(mux.get("num_svc") or 0)
-        summary = (len(muxes), active, complete, total_services)
-        if summary != last_summary:
-            _tv_setup_log(f"Scan progress: muxes={len(muxes)} active={active} complete={complete} services={total_services}")
-            last_summary = summary
+        last_muxes = muxes
+        summary = _scan_mux_summary(muxes)
+        progress_key = _scan_progress_key(muxes)
+        if progress_key != last_progress_key:
+            _tv_setup_log(
+                f"Scan progress: muxes={summary['muxes']} active={summary['active']} "
+                f"complete={summary['complete']} services={summary['services']}"
+            )
+            last_progress_key = progress_key
+            last_progress_at = now
             diag_every += 1
-            if diag_every >= 3 or (muxes and active == 0):
+            if diag_every >= 3 or (muxes and summary["active"] == 0):
                 _log_mux_diagnostics(muxes, prefix="Mux status")
                 diag_every = 0
-        if muxes and active == 0:
+        if muxes and summary["active"] == 0:
             stable += 1
             if stable >= 3:
-                return muxes
+                return muxes, True, None
         else:
             stable = 0
+
+        idle_s = now - last_progress_at
+        if muxes and summary["active"] > 0 and idle_s >= stall_timeout_s:
+            note = (
+                f"Scan stalled after {int(idle_s)} seconds without mux progress "
+                f"({summary['active']} active mux(es), {summary['services']} service(s) found)."
+            )
+            _tv_setup_log(note)
+            _log_mux_diagnostics(muxes, prefix="Mux at stall")
+            return muxes, False, note
+
         time.sleep(3)
-    raise RuntimeError("Timed out waiting for DVB-T scan to finish")
+    muxes = last_muxes or tvh.list_muxes_for_network(network_uuid)
+    summary = _scan_mux_summary(muxes)
+    note = (
+        f"Scan timed out after {timeout_s} seconds "
+        f"({summary['active']} active mux(es), {summary['services']} service(s) found)."
+    )
+    _tv_setup_log(note)
+    _log_mux_diagnostics(muxes, prefix="Mux at timeout")
+    return muxes, False, note
 
 def _wait_for_mapper(timeout_s: int = 300) -> Dict[str, Any]:
     deadline = time.time() + timeout_s
@@ -515,7 +601,16 @@ def _wait_for_mapper(timeout_s: int = 300) -> Dict[str, Any]:
 def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
     try:
         scanfile_key = str(scanfile_key or cfg.get("tvh_dvbt_scanfile") or "").strip() or None
-        _tv_setup_set(running=True, done=False, percent=2, step="Stopping NDI before TV Setup…", error=None, selected_scanfile=scanfile_key)
+        _tv_setup_set(
+            running=True,
+            done=False,
+            partial=False,
+            percent=2,
+            step="Stopping NDI before TV Setup…",
+            error=None,
+            selected_scanfile=scanfile_key,
+            scan_note=None,
+        )
         if _stop_ndi_for_tv_setup():
             _tv_setup_log("Stopped active NDI/audio pipeline before TV Setup.")
         else:
@@ -568,8 +663,13 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
         _tv_setup_log("Requested DVB-T network scan.")
 
         _tv_setup_set(percent=68, step="Scanning muxes and discovering services…")
-        muxes = _wait_for_scan(network_uuid)
-        _tv_setup_log(f"Scan finished across {len(muxes)} mux(es).")
+        scan_timeout_s = _config_int("tvh_scan_timeout_s", 600, min_value=60, max_value=3600)
+        scan_stall_s = _config_int("tvh_scan_stall_timeout_s", 120, min_value=30, max_value=900)
+        muxes, scan_complete, scan_note = _wait_for_scan(network_uuid, timeout_s=scan_timeout_s, stall_timeout_s=scan_stall_s)
+        if scan_complete:
+            _tv_setup_log(f"Scan finished across {len(muxes)} mux(es).")
+        else:
+            _tv_setup_log(f"{scan_note} Checking discovered services before deciding setup result.")
 
         _tv_setup_set(percent=82, step="Loading discovered services…")
         scanned_services = tvh.list_services(hidemode="none")
@@ -588,7 +688,12 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
         if not service_uuids:
             _tv_setup_log("Detailed mux results after scan:")
             _log_mux_diagnostics(muxes, prefix="Mux result")
-            raise RuntimeError("No services were discovered after the DVB-T scan")
+            if scan_complete:
+                raise RuntimeError("No services were discovered after the DVB-T scan")
+            raise RuntimeError(f"{scan_note} No services were discovered, so TV Setup cannot map channels.")
+
+        if not scan_complete:
+            _tv_setup_log("Continuing with partial setup because discovered services are available to map.")
 
         _tv_setup_set(percent=90, step="Mapping services to channels…")
         tvh.map_services(service_uuids)
@@ -598,10 +703,37 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
         mapped_channels = tvh.list_channels(force_refresh=True)
         _tv_setup_log(f"Mapped {len(mapped_channels)} channel(s).")
 
-        _tv_setup_set(running=False, done=True, percent=100, step="TV Setup complete", finished_at=int(time.time()))
+        if scan_complete:
+            _tv_setup_set(
+                running=False,
+                done=True,
+                partial=False,
+                percent=100,
+                step="TV Setup complete",
+                scan_note=None,
+                finished_at=int(time.time()),
+            )
+        else:
+            _tv_setup_set(
+                running=False,
+                done=True,
+                partial=True,
+                percent=100,
+                step="TV Setup partially complete",
+                scan_note=scan_note,
+                finished_at=int(time.time()),
+            )
     except Exception as e:
         _tv_setup_log(f"ERROR: {e}")
-        _tv_setup_set(running=False, done=True, percent=100, step="TV Setup failed", error=str(e), finished_at=int(time.time()))
+        _tv_setup_set(
+            running=False,
+            done=True,
+            partial=False,
+            percent=100,
+            step="TV Setup failed",
+            error=str(e),
+            finished_at=int(time.time()),
+        )
 
 app = FastAPI(title="Tvheadend to NDI/Line Audio Bridge")
 static_dir = BASE_DIR / "static"
@@ -1423,7 +1555,7 @@ def api_tv_setup_status():
 def api_tv_setup_regions():
     try:
         regions = tvh.list_dvb_scanfiles("dvb-t")
-        selected = str(cfg.get("tvh_dvbt_scanfile") or "")
+        selected = _preferred_dvbt_scanfile(regions, str(cfg.get("tvh_dvbt_scanfile") or ""))
         return {"regions": regions, "selected": selected}
     except Exception as e:
         raise HTTPException(500, f"Failed to load Tvheadend predefined mux regions: {e}")
@@ -1447,6 +1579,7 @@ def api_tv_setup_run(req: TVSetupRunReq):
     _tv_setup_set(
         running=True,
         done=False,
+        partial=False,
         percent=1,
         step="Starting TV Setup…",
         error=None,
@@ -1454,6 +1587,7 @@ def api_tv_setup_run(req: TVSetupRunReq):
         started_at=int(time.time()),
         finished_at=None,
         selected_scanfile=scanfile_key,
+        scan_note=None,
     )
     t = threading.Thread(target=_run_tv_setup_worker, args=(scanfile_key,), name="tv-setup-worker", daemon=True)
     t.start()

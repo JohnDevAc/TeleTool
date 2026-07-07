@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>TeleTool Manager</title>
+  <title>TeleTool Fleet Manager</title>
   <link rel="stylesheet" href="/static/common.css">
 </head>
 
@@ -11,13 +11,13 @@
 <div class="wrap managerWrap">
   <header>
     <div class="title">
-      <h1>TeleTool Manager</h1>
+      <h1>TeleTool Fleet Manager</h1>
     </div>
     <div class="rightTop">
       <a class="miniBtn" href="/">NDI</a>
       <a class="miniBtn" href="/audio">Audio</a>
       <a class="miniBtn" href="/system">System</a>
-      <div class="pill" title="Manager polling state">
+      <div class="pill" title="Fleet Manager polling state">
         <span id="managerDot" class="dot"></span>
         <span id="managerStatusText">CONNECTING</span>
       </div>
@@ -46,7 +46,7 @@
     <div id="adoptedNotice" class="card managerAdopted hidden">
       <h2>Managed remotely</h2>
       <div class="small">
-        This TeleTool is adopted by <a id="adoptedManagerLink" class="inlineLink" href="#" target="_blank" rel="noopener">another manager</a>.
+        This TeleTool is adopted by <a id="adoptedManagerLink" class="inlineLink" href="#" target="_blank" rel="noopener">another Fleet Manager</a>.
       </div>
       <div id="adoptedExpiry" class="small mono"></div>
     </div>
@@ -204,7 +204,7 @@ function setManagerAdoption(adoption){
   notice.classList.toggle("hidden", !managerAdopted);
   if (managerAdopted){
     const managerUrl = String(adoption.manager_url || "").trim();
-    const managerName = String(adoption.manager_name || managerUrl || "another manager").trim();
+    const managerName = String(adoption.manager_name || managerUrl || "another Fleet Manager").trim();
     link.textContent = managerName;
     if (managerUrl){
       link.href = managerUrl;
@@ -256,7 +256,7 @@ async function refreshUnits(){
     setManagerHealth(true);
   }catch(e){
     setManagerHealth(false);
-    toast("Manager refresh failed: " + String(e.message || e), "bad", 3500);
+    toast("Fleet Manager refresh failed: " + String(e.message || e), "bad", 3500);
   }finally{
     refreshBusy = false;
     schedulePoll(5000);

@@ -729,7 +729,7 @@ def _manager_identity(manager_url: Optional[str] = None) -> Dict[str, str]:
     return {
         "manager_id": manager_id,
         "manager_url": str(manager_url or "").strip(),
-        "manager_name": socket.gethostname() or "TeleTool Manager",
+        "manager_name": socket.gethostname() or "TeleTool Fleet Manager",
     }
 
 
@@ -956,7 +956,7 @@ def _manager_heartbeat_unit(unit: Dict[str, Any], manager_identity: Dict[str, st
         return {"ok": True, "adoption": data.get("adoption") or {}}
     except requests.HTTPError as e:
         if e.response is not None and e.response.status_code == 409:
-            return {"ok": False, "error": "Adopted by another active manager"}
+            return {"ok": False, "error": "Adopted by another active Fleet Manager"}
         return {"ok": False, "error": str(e)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -1139,7 +1139,7 @@ def api_manager_adoption_heartbeat(req: ManagerAdoptionHeartbeatReq):
     except ValueError as e:
         raise HTTPException(400, str(e))
     if not ok:
-        manager_name = adoption.get("manager_name") or adoption.get("manager_url") or "another active manager"
+        manager_name = adoption.get("manager_name") or adoption.get("manager_url") or "another active Fleet Manager"
         raise HTTPException(409, f"Already adopted by {manager_name}")
     return {"ok": True, "adoption": adoption}
 

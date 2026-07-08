@@ -1091,6 +1091,7 @@ def api_status(lite: bool = Query(False), logs: bool = Query(False), stats: bool
     with NDI_SUPERVISOR_LOCK:
         sup = deepcopy(NDI_SUPERVISOR_STATE)
         req_d = sup.get("request") or {}
+    last_req = cfg.get("ndi_last_start_request") if isinstance(cfg.get("ndi_last_start_request"), dict) else None
     st["auto_reconnect_enabled"] = _ndi_supervisor_config()["enabled"]
     if st.get("running"):
         st["active_channel_name"] = req_d.get("channel_name")
@@ -1120,6 +1121,7 @@ def api_status(lite: bool = Query(False), logs: bool = Query(False), stats: bool
         "desired_channel_number": req_d.get("channel_number"),
         "desired_profile": req_d.get("profile"),
         "desired_ndi_name": req_d.get("ndi_name"),
+        "last_start_request": deepcopy(last_req) if last_req else None,
     }
     return st
 
@@ -1128,6 +1130,7 @@ MANAGER_CONFIG_KEY = "manager_units"
 MANAGER_ID_CONFIG_KEY = "manager_id"
 MANAGER_CONNECT_TIMEOUT_S = 0.7
 MANAGER_READ_TIMEOUT_S = 1.8
+MANAGER_CONTROL_READ_TIMEOUT_S = 12.0
 MANAGER_ADOPTION_TTL_S = 20.0
 MANAGER_ADOPTION_LOCK = threading.Lock()
 MANAGER_ADOPTION_STATE: Dict[str, Any] = {
@@ -1333,11 +1336,11 @@ def _manager_channel_label(status: Dict[str, Any], base_url: str) -> Tuple[Optio
     return None, None, None
 
 
-def _manager_fetch_json(base_url: str, path: str) -> Dict[str, Any]:
+def _manager_fetch_json(base_url: str, path: str, *, read_timeout_s: Optional[float] = None) -> Dict[str, Any]:
     url = base_url.rstrip("/") + path
     response = requests.get(
         url,
-        timeout=(MANAGER_CONNECT_TIMEOUT_S, MANAGER_READ_TIMEOUT_S),
+        timeout=(MANAGER_CONNECT_TIMEOUT_S, read_timeout_s or MANAGER_READ_TIMEOUT_S),
         headers={"Accept": "application/json"},
     )
     response.raise_for_status()
@@ -1350,12 +1353,12 @@ def _manager_fetch_json(base_url: str, path: str) -> Dict[str, Any]:
     return data
 
 
-def _manager_post_json(base_url: str, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _manager_post_json(base_url: str, path: str, payload: Dict[str, Any], *, read_timeout_s: Optional[float] = None) -> Dict[str, Any]:
     url = base_url.rstrip("/") + path
     response = requests.post(
         url,
         json=payload,
-        timeout=(MANAGER_CONNECT_TIMEOUT_S, MANAGER_READ_TIMEOUT_S),
+        timeout=(MANAGER_CONNECT_TIMEOUT_S, read_timeout_s or MANAGER_READ_TIMEOUT_S),
         headers={"Accept": "application/json"},
     )
     response.raise_for_status()
@@ -1425,6 +1428,132 @@ def _manager_release_unit(unit: Dict[str, Any], manager_identity: Dict[str, str]
         pass
 
 
+def _manager_release_fields(info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    data = info if isinstance(info, dict) else {}
+    branch = str(data.get("branch") or "").strip() or None
+    label = str(data.get("label") or "").strip() or None
+    version = str(data.get("version") or "").strip() or None
+    return {
+        "version": version,
+        "release_branch": branch,
+        "release_label": label,
+        "development_release": bool(data.get("development")),
+    }
+
+
+def _manager_last_start_request(status: Dict[str, Any]) -> Dict[str, Any]:
+    supervisor = status.get("supervisor") if isinstance(status.get("supervisor"), dict) else {}
+    last_req = supervisor.get("last_start_request")
+    return last_req if isinstance(last_req, dict) else {}
+
+
+def _manager_control_channel_uuid(status: Dict[str, Any]) -> Optional[str]:
+    supervisor = status.get("supervisor") if isinstance(status.get("supervisor"), dict) else {}
+    last_req = _manager_last_start_request(status)
+    for value in (
+        status.get("channel_uuid"),
+        status.get("active_channel_uuid"),
+        supervisor.get("desired_channel_uuid"),
+        last_req.get("channel_uuid"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _manager_bool_value(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _manager_int_value(value: Any, default: int, min_value: int, max_value: int) -> int:
+    try:
+        number = int(value)
+    except Exception:
+        number = default
+    return max(min_value, min(max_value, number))
+
+
+def _manager_start_payload_from_status(status: Dict[str, Any], unit_config: Dict[str, Any], unit: Dict[str, Any]) -> Dict[str, Any]:
+    supervisor = status.get("supervisor") if isinstance(status.get("supervisor"), dict) else {}
+    last_req = _manager_last_start_request(status)
+    channel_uuid = _manager_control_channel_uuid(status)
+    if not channel_uuid:
+        raise ValueError("Open this unit UI and choose a channel before starting NDI from Fleet Manager.")
+
+    ndi_name = (
+        status.get("ndi_name")
+        or supervisor.get("desired_ndi_name")
+        or last_req.get("ndi_name")
+        or unit_config.get("ndi_default_name")
+        or unit.get("hostname")
+        or unit.get("host")
+        or "TeleTool"
+    )
+    ndi_name = str(ndi_name or "").strip()[:80]
+    if not ndi_name:
+        raise ValueError("This unit does not have an NDI stream name configured.")
+
+    profile = (
+        supervisor.get("desired_profile")
+        or last_req.get("profile")
+        or status.get("active_profile")
+        or unit_config.get("tvh_stream_profile")
+        or "pass"
+    )
+
+    return {
+        "channel_uuid": channel_uuid,
+        "ndi_name": ndi_name,
+        "profile": str(profile or "pass").strip() or "pass",
+        "ndi_multicast_enabled": _manager_bool_value(
+            last_req.get("ndi_multicast_enabled"),
+            _manager_bool_value(unit_config.get("ndi_multicast_enabled"), False),
+        ),
+        "ndi_multicast_addr": str(last_req.get("ndi_multicast_addr") or unit_config.get("ndi_multicast_addr") or ""),
+        "ndi_multicast_ttl": _manager_int_value(
+            last_req.get("ndi_multicast_ttl", unit_config.get("ndi_multicast_ttl")),
+            1,
+            0,
+            255,
+        ),
+        "deinterlace": _manager_bool_value(
+            last_req.get("deinterlace"),
+            _manager_bool_value(unit_config.get("ndi_deinterlace"), False),
+        ),
+        "buffer_extra_ms": _manager_int_value(
+            last_req.get("buffer_extra_ms", unit_config.get("ndi_buffer_extra_ms")),
+            0,
+            0,
+            5000,
+        ),
+        "ndi_qos": _manager_bool_value(
+            last_req.get("ndi_qos"),
+            _manager_bool_value(unit_config.get("ndi_qos"), False),
+        ),
+    }
+
+
+def _manager_remote_error(exc: requests.HTTPError) -> str:
+    response = exc.response
+    if response is None:
+        return str(exc)
+    try:
+        data = response.json()
+        detail = data.get("detail") if isinstance(data, dict) else None
+        if detail:
+            return str(detail)
+    except Exception:
+        pass
+    return f"Remote TeleTool returned HTTP {response.status_code}"
+
+
 def _manager_status_for_unit(unit: Dict[str, Any], manager_identity: Dict[str, str]) -> Dict[str, Any]:
     checked_at = int(time.time())
     started = time.monotonic()
@@ -1444,10 +1573,18 @@ def _manager_status_for_unit(unit: Dict[str, Any], manager_identity: Dict[str, s
         "channel_name": None,
         "channel_number": None,
         "channel_label": None,
+        "desired_channel_uuid": None,
+        "last_channel_uuid": None,
         "started_at": None,
         "last_error": None,
         "last_warning": None,
         "rf": None,
+        "version": None,
+        "release_branch": None,
+        "release_label": None,
+        "development_release": False,
+        "control_ready": False,
+        "control_error": "Unit is offline.",
         "adoption_ok": False,
         "adoption_error": None,
         "error": None,
@@ -1464,10 +1601,12 @@ def _manager_status_for_unit(unit: Dict[str, Any], manager_identity: Dict[str, s
 
     result["online"] = True
     result["system_status"] = "online"
+    result["control_error"] = None
     adoption = _manager_heartbeat_unit(unit, manager_identity)
     result["adoption_ok"] = bool(adoption.get("ok"))
     result["adoption_error"] = adoption.get("error")
     supervisor = status.get("supervisor") if isinstance(status.get("supervisor"), dict) else {}
+    last_req = _manager_last_start_request(status)
     running = bool(status.get("running"))
     result.update({
         "stream_running": running,
@@ -1475,11 +1614,22 @@ def _manager_status_for_unit(unit: Dict[str, Any], manager_identity: Dict[str, s
         "pipeline_state": status.get("pipeline_state"),
         "pipeline_status": supervisor.get("pipeline_status"),
         "channel_uuid": status.get("channel_uuid") or status.get("active_channel_uuid"),
+        "desired_channel_uuid": supervisor.get("desired_channel_uuid"),
+        "last_channel_uuid": last_req.get("channel_uuid"),
         "started_at": status.get("started_at"),
         "last_error": status.get("last_error") or supervisor.get("last_error"),
         "last_warning": status.get("last_warning"),
         "rf": status.get("rf"),
     })
+    control_channel_uuid = _manager_control_channel_uuid(status)
+    result["control_ready"] = bool(control_channel_uuid)
+    if not control_channel_uuid:
+        result["control_error"] = "Open this unit UI and choose a channel before starting NDI from Fleet Manager."
+
+    try:
+        result.update(_manager_release_fields(_manager_fetch_json(unit["base_url"], "/api/release")))
+    except Exception:
+        pass
 
     try:
         host_info = _manager_fetch_json(unit["base_url"], "/api/system/hostname")
@@ -1517,6 +1667,7 @@ def _manager_status_for_self(base_url: str) -> Dict[str, Any]:
     hostname = socket.gethostname() or "TeleTool"
     status = api_status(lite=True, logs=False, stats=False)
     supervisor = status.get("supervisor") if isinstance(status.get("supervisor"), dict) else {}
+    last_req = _manager_last_start_request(status)
     running = bool(status.get("running"))
     channel_name = status.get("active_channel_name")
     channel_number = status.get("active_channel_number")
@@ -1530,8 +1681,9 @@ def _manager_status_for_self(base_url: str) -> Dict[str, Any]:
 
     default_ndi_name = str(cfg.get("ndi_default_name") or "").strip() or None
     ndi_name = status.get("ndi_name") or supervisor.get("desired_ndi_name") or default_ndi_name
+    control_channel_uuid = _manager_control_channel_uuid(status)
 
-    return {
+    result = {
         "id": "__self__",
         "is_self": True,
         "removable": False,
@@ -1555,16 +1707,22 @@ def _manager_status_for_self(base_url: str) -> Dict[str, Any]:
         "channel_name": channel_name,
         "channel_number": channel_number,
         "channel_label": channel_label,
+        "desired_channel_uuid": supervisor.get("desired_channel_uuid"),
+        "last_channel_uuid": last_req.get("channel_uuid"),
         "started_at": status.get("started_at"),
         "last_error": status.get("last_error") or supervisor.get("last_error"),
         "last_warning": status.get("last_warning"),
         "rf": status.get("rf"),
+        "control_ready": bool(control_channel_uuid),
+        "control_error": None if control_channel_uuid else "Open this unit UI and choose a channel before starting NDI from Fleet Manager.",
         "adoption_ok": True,
         "adoption_error": None,
         "error": None,
         "checked_at": checked_at,
         "latency_ms": 0,
     }
+    result.update(_manager_release_fields(_release_info()))
+    return result
 
 
 class ManagerAdoptionHeartbeatReq(BaseModel):
@@ -1606,6 +1764,26 @@ def api_manager_adoption_release(req: ManagerAdoptionReleaseReq):
 
 class ManagerUnitReq(BaseModel):
     host: str = Field(min_length=1, max_length=300)
+
+
+def _manager_control_unit(unit_id: str, request: Request) -> Dict[str, Any]:
+    if unit_id == "__self__":
+        base_url = str(request.base_url).rstrip("/")
+        parsed = urlparse(base_url)
+        hostname = socket.gethostname() or "TeleTool"
+        return {
+            "id": "__self__",
+            "host": parsed.hostname or hostname,
+            "address": parsed.netloc or parsed.hostname or hostname,
+            "base_url": base_url,
+            "scheme": parsed.scheme or "http",
+            "port": parsed.port,
+            "hostname": hostname,
+        }
+    for unit in _manager_units_from_config():
+        if unit.get("id") == unit_id:
+            return unit
+    raise HTTPException(404, "TeleTool unit not found")
 
 
 @app.post("/api/manager/units")
@@ -1653,6 +1831,52 @@ def api_manager_delete_unit(unit_id: str):
         _manager_release_unit(unit, manager_identity)
     _update_stored_config({MANAGER_CONFIG_KEY: next_units})
     return {"ok": True, "units": _manager_units_from_config()}
+
+
+@app.post("/api/manager/units/{unit_id}/start")
+def api_manager_unit_start(unit_id: str, request: Request):
+    unit = _manager_control_unit(unit_id, request)
+    try:
+        status = _manager_fetch_json(unit["base_url"], "/api/status?lite=1", read_timeout_s=MANAGER_CONTROL_READ_TIMEOUT_S)
+        if bool(status.get("running")):
+            return {"ok": True, "unit_id": unit_id, "already_running": True}
+        try:
+            unit_config = _manager_fetch_json(unit["base_url"], "/api/config/ui")
+        except Exception:
+            unit_config = {}
+        payload = _manager_start_payload_from_status(status, unit_config, unit)
+        result = _manager_post_json(
+            unit["base_url"],
+            "/api/start",
+            payload,
+            read_timeout_s=MANAGER_CONTROL_READ_TIMEOUT_S,
+        )
+        return {"ok": True, "unit_id": unit_id, "result": result}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except requests.HTTPError as e:
+        status_code = e.response.status_code if e.response is not None else 502
+        raise HTTPException(status_code, _manager_remote_error(e))
+    except Exception as e:
+        raise HTTPException(502, f"Could not start NDI on that TeleTool unit: {e}")
+
+
+@app.post("/api/manager/units/{unit_id}/stop")
+def api_manager_unit_stop(unit_id: str, request: Request):
+    unit = _manager_control_unit(unit_id, request)
+    try:
+        result = _manager_post_json(
+            unit["base_url"],
+            "/api/stop",
+            {},
+            read_timeout_s=MANAGER_CONTROL_READ_TIMEOUT_S,
+        )
+        return {"ok": True, "unit_id": unit_id, "result": result}
+    except requests.HTTPError as e:
+        status_code = e.response.status_code if e.response is not None else 502
+        raise HTTPException(status_code, _manager_remote_error(e))
+    except Exception as e:
+        raise HTTPException(502, f"Could not stop NDI on that TeleTool unit: {e}")
 
 
 @app.get("/api/manager/status")
@@ -1825,7 +2049,7 @@ def api_start(req: StartReq):
             NDI_SUPERVISOR_STATE["last_error"] = str(e)
         raise HTTPException(500, f"Failed to start pipeline: {e}")
     _active_profile = req.profile
-    _update_config({"ndi_default_name": req.ndi_name, "tvh_stream_profile": req.profile})
+    _update_config({"ndi_default_name": req.ndi_name, "tvh_stream_profile": req.profile, "ndi_last_start_request": req_d})
     return {"ok": True, "stream_url": stream_url, "ndi_name": req.ndi_name, "auto_reconnect": _ndi_supervisor_config()["enabled"]}
 @app.post("/api/stop")
 def api_stop():

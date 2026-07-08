@@ -654,6 +654,19 @@ input[type="range"]::-moz-range-thumb{
 .managerControls{
   padding-bottom:16px;
 }
+.managerPanelHead{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:10px;
+}
+.managerPanelHead h2{
+  margin-bottom:0;
+}
+.fleetHealth{
+  flex:0 0 auto;
+}
 .managerControlActions{
   align-self:flex-end;
 }
@@ -760,5 +773,9 @@ input[type="range"]::-moz-range-thumb{
   }
   .managerControlActions{
     align-self:stretch;
+  }
+  .managerPanelHead{
+    align-items:flex-start;
+    flex-direction:column;
   }
 }

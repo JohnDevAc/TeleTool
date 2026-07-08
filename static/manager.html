@@ -29,7 +29,13 @@
 
   <div class="grid managerGrid">
     <div class="card managerControls">
-      <h2>Units</h2>
+      <div class="managerPanelHead">
+        <h2>Units</h2>
+        <div id="fleetHealth" class="badge warn fleetHealth" title="Fleet health is loading">
+          <span id="fleetHealthDot" class="rfDot warn" aria-hidden="true"></span>
+          <span id="fleetHealthText">Fleet Health: Checking</span>
+        </div>
+      </div>
       <form id="addUnitForm" class="row">
         <div class="field">
           <label for="unitHost">IP address or hostname</label>
@@ -85,6 +91,66 @@ function badgeClass(kind){
   return kind ? "badge " + kind : "badge";
 }
 
+function setFleetHealth(kind, text, title){
+  const wrap = document.getElementById("fleetHealth");
+  const dot = document.getElementById("fleetHealthDot");
+  const label = document.getElementById("fleetHealthText");
+  if (!wrap || !dot || !label) return;
+  wrap.classList.remove("good", "warn", "bad");
+  dot.classList.remove("good", "warn", "bad");
+  wrap.classList.add(kind || "warn");
+  dot.classList.add(kind || "warn");
+  label.textContent = text || "Fleet Health: Unknown";
+  wrap.title = title || "";
+}
+
+function updateFleetHealth(units){
+  const list = Array.isArray(units) ? units : [];
+  if (managerAdopted){
+    setFleetHealth("warn", "Fleet Health: Managed Remotely", "This TeleTool is adopted by another Fleet Manager.");
+    return;
+  }
+  if (!list.length){
+    setFleetHealth("warn", "Fleet Health: No Units", "No TeleTool units are currently listed.");
+    return;
+  }
+
+  const totals = { offline:0, stopped:0, rfBadRunning:0, rfBadStopped:0, rfWarn:0, streamUnknown:0 };
+  for (const unit of list){
+    if (!unit || !unit.online){
+      totals.offline += 1;
+      continue;
+    }
+    const running = !!unit.stream_running;
+    const streamStatus = String(unit.stream_status || "").toLowerCase();
+    if (!running) totals.stopped += 1;
+    if (streamStatus && streamStatus !== "running" && streamStatus !== "stopped") totals.streamUnknown += 1;
+    const rfKind = rfSignalKind(unit.rf);
+    if (rfKind === "bad") {
+      if (running) totals.rfBadRunning += 1;
+      else totals.rfBadStopped += 1;
+    } else if (rfKind === "warn") {
+      totals.rfWarn += 1;
+    }
+  }
+
+  const titleParts = [`${list.length} unit${list.length === 1 ? "" : "s"}`];
+  if (totals.offline) titleParts.push(`${totals.offline} offline`);
+  if (totals.stopped) titleParts.push(`${totals.stopped} stopped`);
+  if (totals.streamUnknown) titleParts.push(`${totals.streamUnknown} stream unknown`);
+  if (totals.rfBadRunning) titleParts.push(`${totals.rfBadRunning} running with poor RF`);
+  if (totals.rfBadStopped) titleParts.push(`${totals.rfBadStopped} stopped with RF unavailable/poor`);
+  if (totals.rfWarn) titleParts.push(`${totals.rfWarn} RF warning`);
+
+  if (totals.offline || totals.streamUnknown || totals.rfBadRunning){
+    setFleetHealth("bad", "Fleet Health: Critical", titleParts.join(" | "));
+  } else if (totals.stopped || totals.rfBadStopped || totals.rfWarn){
+    setFleetHealth("warn", "Fleet Health: Warning", titleParts.join(" | "));
+  } else {
+    setFleetHealth("good", "Fleet Health: Good", titleParts.join(" | "));
+  }
+}
+
 function setManagerHealth(ok){
   if (managerAdopted) return;
   const dot = document.getElementById("managerDot");
@@ -119,6 +185,21 @@ function renderUnit(unit){
   const rfKind = unit.online ? rfSignalKind(unit.rf) : "bad";
   const rfLabel = unit.online ? rfSignalLabel(unit.rf) : "N/A";
   const rfTitle = unit.online ? rfSignalTitle(unit.rf) : "RF signal unavailable";
+  const versionText = unit.version ? `${unit.version}${unit.development_release ? " Dev" : ""}` : "-";
+  const versionTitle = unit.release_label ? `${unit.release_label}${unit.release_branch ? " branch" : ""}` : "Software version";
+  const canStart = !!(unit.online && !unit.stream_running && unit.control_ready);
+  const canStop = !!(unit.online && unit.stream_running);
+  const startTitle = !unit.online
+    ? "Unit is offline"
+    : unit.stream_running
+      ? "NDI is already running"
+      : unit.control_ready
+        ? "Start the last selected NDI stream"
+        : (unit.control_error || "Open UI and choose a channel first");
+  const stopTitle = unit.online ? "Stop NDI stream" : "Unit is offline";
+  const controlId = escapeHtml(unit.id || "");
+  const startDisabled = canStart ? "" : " disabled";
+  const stopDisabled = canStop ? "" : " disabled";
   const removeButton = unit.removable === false ? "" : `<button class="miniBtn" type="button" data-remove-unit="${escapeHtml(unit.id)}">Remove</button>`;
 
   return `
@@ -133,6 +214,8 @@ function renderUnit(unit){
         </div>
         <div class="unitActions">
           <a class="miniBtn" href="${escapeHtml(unit.main_url || unit.base_url || "#")}" target="_blank" rel="noopener">Open UI</a>
+          <button class="miniBtn primary" type="button" data-start-unit="${controlId}" title="${escapeHtml(startTitle)}"${startDisabled}>Start</button>
+          <button class="miniBtn danger" type="button" data-stop-unit="${controlId}" title="${escapeHtml(stopTitle)}"${stopDisabled}>Stop</button>
           ${removeButton}
         </div>
       </div>
@@ -152,6 +235,10 @@ function renderUnit(unit){
         <div class="stat">
           <div class="k">Hostname</div>
           <div class="v mono">${escapeHtml(textOrDash(unit.hostname))}</div>
+        </div>
+        <div class="stat">
+          <div class="k">Software</div>
+          <div class="v mono" title="${escapeHtml(versionTitle)}">${escapeHtml(versionText)}</div>
         </div>
         <div class="stat">
           <div class="k">NDI stream name</div>
@@ -187,9 +274,11 @@ function renderUnits(units){
   empty.classList.toggle("hidden", managerAdopted || list.length > 0);
   if (managerAdopted){
     grid.innerHTML = "";
+    updateFleetHealth(list);
     return;
   }
   grid.innerHTML = list.map(renderUnit).join("");
+  updateFleetHealth(list);
 }
 
 function setManagerAdoption(adoption){
@@ -260,6 +349,7 @@ async function refreshUnits(){
     setManagerHealth(true);
   }catch(e){
     setManagerHealth(false);
+    setFleetHealth("bad", "Fleet Health: Offline", "Fleet Manager refresh failed.");
     toast("Fleet Manager refresh failed: " + String(e.message || e), "bad", 3500);
   }finally{
     refreshBusy = false;
@@ -301,6 +391,29 @@ document.getElementById("refreshUnits").addEventListener("click", async () => {
 
 document.getElementById("unitsGrid").addEventListener("click", async (event) => {
   if (managerAdopted) return;
+  const controlButton = event.target.closest("[data-start-unit], [data-stop-unit]");
+  if (controlButton){
+    const action = controlButton.hasAttribute("data-start-unit") ? "start" : "stop";
+    const unitId = controlButton.getAttribute(action === "start" ? "data-start-unit" : "data-stop-unit");
+    if (!unitId) return;
+    await refreshAdoption();
+    if (managerAdopted){
+      toast("Management is disabled while this TeleTool is adopted.", "warn", 3500);
+      return;
+    }
+    controlButton.disabled = true;
+    toast(action === "start" ? "Starting NDI..." : "Stopping NDI...");
+    try{
+      await jpost("/api/manager/units/" + encodeURIComponent(unitId) + "/" + action, {});
+      toast(action === "start" ? "NDI started." : "NDI stopped.", "good");
+      await refreshUnits();
+    }catch(e){
+      toast((action === "start" ? "Start" : "Stop") + " failed: " + String(e.message || e), "bad", 4500);
+      controlButton.disabled = false;
+    }
+    return;
+  }
+
   const button = event.target.closest("[data-remove-unit]");
   if (!button) return;
   const unitId = button.getAttribute("data-remove-unit");

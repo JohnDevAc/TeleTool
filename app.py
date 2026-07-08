@@ -1280,6 +1280,103 @@ def _normalise_manager_target(raw_host: str) -> Dict[str, Any]:
     }
 
 
+def _manager_default_port_for_scheme(scheme: Optional[str]) -> int:
+    return 443 if str(scheme or "").lower() == "https" else 80
+
+
+def _manager_normalised_host(hostname: Optional[str]) -> str:
+    return str(hostname or "").strip().strip("[]").rstrip(".").lower()
+
+
+def _manager_host_variants(hostname: Optional[str]) -> set[str]:
+    host = _manager_normalised_host(hostname)
+    if not host:
+        return set()
+    try:
+        return {ipaddress.ip_address(host).compressed.lower()}
+    except ValueError:
+        pass
+
+    variants = {host}
+    if host != "localhost":
+        if host.endswith(".local"):
+            variants.add(host[:-6])
+        elif "." not in host:
+            variants.add(f"{host}.local")
+    return {item for item in variants if item}
+
+
+def _manager_resolved_ips(hostname: Optional[str]) -> set[str]:
+    host = _manager_normalised_host(hostname)
+    if not host:
+        return set()
+    try:
+        return {ipaddress.ip_address(host).compressed.lower()}
+    except ValueError:
+        pass
+
+    ips: set[str] = set()
+    try:
+        records = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        records = []
+    for record in records:
+        sockaddr = record[4] if len(record) > 4 else None
+        if not sockaddr:
+            continue
+        try:
+            ips.add(ipaddress.ip_address(sockaddr[0]).compressed.lower())
+        except ValueError:
+            pass
+    return ips
+
+
+def _manager_local_interface_ips() -> set[str]:
+    ips = {"127.0.0.1", "::1"}
+    try:
+        host_info = socket.gethostbyname_ex(socket.gethostname())
+        for ip in host_info[2]:
+            ips.add(ipaddress.ip_address(ip).compressed.lower())
+    except Exception:
+        pass
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.settimeout(0.2)
+            probe.connect(("8.8.8.8", 80))
+            ips.add(ipaddress.ip_address(probe.getsockname()[0]).compressed.lower())
+    except Exception:
+        pass
+    return ips
+
+
+def _manager_target_is_self(target: Dict[str, Any], request: Request) -> bool:
+    current_base_url = str(request.base_url).rstrip("/")
+    if target["base_url"].rstrip("/").lower() == current_base_url.lower():
+        return True
+
+    parsed = urlparse(current_base_url)
+    current_port = parsed.port or _manager_default_port_for_scheme(parsed.scheme)
+    if int(target.get("port") or 0) != current_port:
+        return False
+
+    target_hosts = _manager_host_variants(target.get("host"))
+    self_hosts: set[str] = set()
+    for host in (parsed.hostname, socket.gethostname(), socket.getfqdn(), "localhost"):
+        self_hosts.update(_manager_host_variants(host))
+    if target_hosts and target_hosts.intersection(self_hosts):
+        return True
+
+    target_ips = _manager_resolved_ips(target.get("host"))
+    if not target_ips:
+        return False
+
+    self_ips = _manager_local_interface_ips()
+    for host in self_hosts:
+        self_ips.update(_manager_resolved_ips(host))
+    return bool(target_ips.intersection(self_ips))
+
+
 def _manager_units_from_config() -> List[Dict[str, Any]]:
     raw_units = cfg.get(MANAGER_CONFIG_KEY, [])
     if not isinstance(raw_units, list):
@@ -1794,7 +1891,7 @@ def api_manager_add_unit(req: ManagerUnitReq, request: Request):
         raise HTTPException(400, str(e))
 
     current_base_url = str(request.base_url).rstrip("/")
-    if target["base_url"].rstrip("/").lower() == current_base_url.lower():
+    if _manager_target_is_self(target, request):
         raise HTTPException(409, "This TeleTool is already shown as the Primary unit")
 
     units = _manager_units_from_config()

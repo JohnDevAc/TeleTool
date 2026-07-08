@@ -169,14 +169,28 @@ async function setDevelopmentReleaseBanner(){
     if (document.querySelector(".devReleaseBanner")) return;
     const banner = document.createElement("div");
     banner.className = "devReleaseBanner";
-    banner.textContent = "Development Release";
+    const version = String(info.version || "").trim();
+    banner.textContent = version ? `Development Release ${version}` : "Development Release";
     document.body.insertBefore(banner, document.body.firstChild);
   }catch(e){
     // Release metadata is non-critical UI decoration.
   }
 }
 
+async function setTeleToolPageTitle(){
+  let title = "TeleTool";
+  try{
+    const info = await jget("/api/system/hostname");
+    const hostname = String(info && info.hostname || "").trim();
+    if (hostname) title = `TeleTool - ${hostname}`;
+  }catch(e){
+    // Hostname metadata is non-critical UI decoration.
+  }
+  document.title = title;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  setTeleToolPageTitle();
   setDevelopmentReleaseBanner();
   setTvheadendLinks();
 });

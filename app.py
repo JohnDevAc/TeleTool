@@ -1860,7 +1860,7 @@ def api_manager_adoption_release(req: ManagerAdoptionReleaseReq):
 
 
 class ManagerUnitReq(BaseModel):
-    host: str = Field(min_length=1, max_length=300)
+    host: str = Field(min_length=1, max_length=4000)
 
 
 def _manager_control_unit(unit_id: str, request: Request) -> Dict[str, Any]:
@@ -1883,28 +1883,17 @@ def _manager_control_unit(unit_id: str, request: Request) -> Dict[str, Any]:
     raise HTTPException(404, "TeleTool unit not found")
 
 
-@app.post("/api/manager/units")
-def api_manager_add_unit(req: ManagerUnitReq, request: Request):
-    try:
-        target = _normalise_manager_target(req.host)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+def _manager_split_unit_hosts(raw_host: str) -> List[str]:
+    hosts = [part.strip() for part in re.split(r"[,\n]+", str(raw_host or "")) if part.strip()]
+    if not hosts:
+        raise ValueError("IP address or hostname is required")
+    if len(hosts) > 50:
+        raise ValueError("Add 50 or fewer TeleTool units at once")
+    return hosts
 
-    current_base_url = str(request.base_url).rstrip("/")
-    if _manager_target_is_self(target, request):
-        raise HTTPException(409, "This TeleTool is already shown as the Primary unit")
 
-    units = _manager_units_from_config()
-    if any(unit["base_url"].lower() == target["base_url"].lower() for unit in units):
-        raise HTTPException(409, "That TeleTool unit is already listed")
-
-    manager_identity = _manager_identity(current_base_url + "/manager")
-    try:
-        validation = _manager_validate_unit_for_add(target, manager_identity)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-    new_unit = {
+def _manager_unit_from_target(target: Dict[str, Any]) -> Dict[str, Any]:
+    return {
         "id": uuid.uuid4().hex,
         "host": target["host"],
         "address": target["address"],
@@ -1912,8 +1901,60 @@ def api_manager_add_unit(req: ManagerUnitReq, request: Request):
         "scheme": target["scheme"],
         "port": target["port"],
     }
-    _update_stored_config({MANAGER_CONFIG_KEY: units + [new_unit]})
-    return {"ok": True, "unit": new_unit, "validation": validation, "units": _manager_units_from_config()}
+
+
+@app.post("/api/manager/units")
+def api_manager_add_unit(req: ManagerUnitReq, request: Request):
+    try:
+        host_entries = _manager_split_unit_hosts(req.host)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    current_base_url = str(request.base_url).rstrip("/")
+    units = _manager_units_from_config()
+    next_units = list(units)
+    known_base_urls = {unit["base_url"].lower() for unit in units}
+    manager_identity = _manager_identity(current_base_url + "/manager")
+    results: List[Dict[str, Any]] = []
+
+    for entry in host_entries:
+        result: Dict[str, Any] = {"input": entry, "ok": False}
+        try:
+            target = _normalise_manager_target(entry)
+            result["address"] = target["address"]
+            if _manager_target_is_self(target, request):
+                raise HTTPException(409, "This TeleTool is already shown as the Primary unit")
+            base_key = target["base_url"].lower()
+            if base_key in known_base_urls:
+                raise HTTPException(409, "That TeleTool unit is already listed")
+            validation = _manager_validate_unit_for_add(target, manager_identity)
+            new_unit = _manager_unit_from_target(target)
+            next_units.append(new_unit)
+            known_base_urls.add(base_key)
+            result.update({"ok": True, "unit": new_unit, "validation": validation})
+        except HTTPException as e:
+            result.update({"status": e.status_code, "error": str(e.detail)})
+        except ValueError as e:
+            result.update({"status": 400, "error": str(e)})
+        except Exception as e:
+            result.update({"status": 500, "error": str(e)})
+        results.append(result)
+
+    added_units = [result["unit"] for result in results if result.get("ok") and isinstance(result.get("unit"), dict)]
+    if not added_units and len(host_entries) == 1:
+        failed = results[0] if results else {}
+        raise HTTPException(int(failed.get("status") or 400), str(failed.get("error") or "TeleTool unit could not be added"))
+
+    if added_units:
+        _update_stored_config({MANAGER_CONFIG_KEY: next_units})
+    return {
+        "ok": bool(added_units),
+        "unit": added_units[0] if len(added_units) == 1 else None,
+        "results": results,
+        "added_count": len(added_units),
+        "failed_count": len(results) - len(added_units),
+        "units": _manager_units_from_config(),
+    }
 
 
 @app.delete("/api/manager/units/{unit_id}")

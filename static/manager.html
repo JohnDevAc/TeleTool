@@ -38,8 +38,8 @@
       </div>
       <form id="addUnitForm" class="row">
         <div class="field">
-          <label for="unitHost">IP address or hostname</label>
-          <input id="unitHost" placeholder="192.168.1.50" autocomplete="off" spellcheck="false" required />
+          <label for="unitHost">IP addresses or hostnames</label>
+          <input id="unitHost" placeholder="192.168.1.50, teletool-2.local" autocomplete="off" spellcheck="false" required />
         </div>
         <div class="actions managerControlActions">
           <button id="addUnit" class="primary" type="submit">Add Unit</button>
@@ -370,12 +370,24 @@ document.getElementById("addUnitForm").addEventListener("submit", async (event) 
     toast("Enter an IP address or hostname.", "warn");
     return;
   }
+  const hostCount = host.split(",").map(item => item.trim()).filter(Boolean).length || 1;
   document.getElementById("addUnit").disabled = true;
-  toast("Validating unit...");
+  toast(hostCount > 1 ? `Validating ${hostCount} units...` : "Validating unit...");
   try{
-    await jpost("/api/manager/units", { host });
-    input.value = "";
-    toast("Unit added.", "good");
+    const data = await jpost("/api/manager/units", { host });
+    const results = Array.isArray(data.results) ? data.results : [];
+    const added = Number(data.added_count ?? (data.unit ? 1 : 0));
+    const failed = Number(data.failed_count ?? results.filter(item => !item.ok).length);
+    const failures = results.filter(item => !item.ok);
+    const firstFailure = failures.length ? `${failures[0].input || "Unit"}: ${failures[0].error || "could not be added"}` : "";
+    if (added > 0) input.value = "";
+    if (added > 0 && failed > 0) {
+      toast(`${added} added, ${failed} failed.${firstFailure ? " " + firstFailure : ""}`, "warn", 6500);
+    } else if (added > 0) {
+      toast(added === 1 ? "Unit added." : `${added} units added.`, "good");
+    } else {
+      toast(firstFailure ? `No units added. ${firstFailure}` : "No units added.", "bad", 5500);
+    }
     await refreshUnits();
   }catch(e){
     toast("Add failed: " + String(e.message || e), "bad", 4500);

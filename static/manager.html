@@ -31,10 +31,6 @@
     <div class="card managerControls">
       <div class="managerPanelHead">
         <h2>Units</h2>
-        <div id="fleetHealth" class="badge warn fleetHealth" title="Fleet health is loading">
-          <span id="fleetHealthDot" class="rfDot warn" aria-hidden="true"></span>
-          <span id="fleetHealthText">Fleet Health: Checking</span>
-        </div>
       </div>
       <form id="addUnitForm" class="row">
         <div class="field">
@@ -56,6 +52,8 @@
       </div>
       <div id="adoptedExpiry" class="small mono"></div>
     </div>
+
+    <div id="fleetPillStrip" class="fleetPillStrip hidden" aria-live="polite"></div>
 
     <div id="managerEmpty" class="card managerEmpty hidden">
       <h2>No units</h2>
@@ -92,66 +90,6 @@ function badgeClass(kind){
   return kind ? "badge " + kind : "badge";
 }
 
-function setFleetHealth(kind, text, title){
-  const wrap = document.getElementById("fleetHealth");
-  const dot = document.getElementById("fleetHealthDot");
-  const label = document.getElementById("fleetHealthText");
-  if (!wrap || !dot || !label) return;
-  wrap.classList.remove("good", "warn", "bad");
-  dot.classList.remove("good", "warn", "bad");
-  wrap.classList.add(kind || "warn");
-  dot.classList.add(kind || "warn");
-  label.textContent = text || "Fleet Health: Unknown";
-  wrap.title = title || "";
-}
-
-function updateFleetHealth(units){
-  const list = Array.isArray(units) ? units : [];
-  if (managerAdopted){
-    setFleetHealth("warn", "Fleet Health: Managed Remotely", "This TeleTool is adopted by another Fleet Manager.");
-    return;
-  }
-  if (!list.length){
-    setFleetHealth("warn", "Fleet Health: No Units", "No TeleTool units are currently listed.");
-    return;
-  }
-
-  const totals = { offline:0, stopped:0, rfBadRunning:0, rfBadStopped:0, rfWarn:0, streamUnknown:0 };
-  for (const unit of list){
-    if (!unit || !unit.online){
-      totals.offline += 1;
-      continue;
-    }
-    const running = !!unit.stream_running;
-    const streamStatus = String(unit.stream_status || "").toLowerCase();
-    if (!running) totals.stopped += 1;
-    if (streamStatus && streamStatus !== "running" && streamStatus !== "stopped") totals.streamUnknown += 1;
-    const rfKind = rfSignalKind(unit.rf);
-    if (rfKind === "bad") {
-      if (running) totals.rfBadRunning += 1;
-      else totals.rfBadStopped += 1;
-    } else if (rfKind === "warn") {
-      totals.rfWarn += 1;
-    }
-  }
-
-  const titleParts = [`${list.length} unit${list.length === 1 ? "" : "s"}`];
-  if (totals.offline) titleParts.push(`${totals.offline} offline`);
-  if (totals.stopped) titleParts.push(`${totals.stopped} stopped`);
-  if (totals.streamUnknown) titleParts.push(`${totals.streamUnknown} stream unknown`);
-  if (totals.rfBadRunning) titleParts.push(`${totals.rfBadRunning} running with poor RF`);
-  if (totals.rfBadStopped) titleParts.push(`${totals.rfBadStopped} stopped with RF unavailable/poor`);
-  if (totals.rfWarn) titleParts.push(`${totals.rfWarn} RF warning`);
-
-  if (totals.offline || totals.streamUnknown || totals.rfBadRunning){
-    setFleetHealth("bad", "Fleet Health: Critical", titleParts.join(" | "));
-  } else if (totals.stopped || totals.rfBadStopped || totals.rfWarn){
-    setFleetHealth("warn", "Fleet Health: Warning", titleParts.join(" | "));
-  } else {
-    setFleetHealth("good", "Fleet Health: Good", titleParts.join(" | "));
-  }
-}
-
 function setManagerHealth(ok){
   if (managerAdopted) return;
   const dot = document.getElementById("managerDot");
@@ -169,6 +107,49 @@ function statusLine(unit){
   if (!unit.online) return unit.error || "Unit is unreachable";
   if (unit.adoption_error) return unit.adoption_error;
   return unit.last_error || unit.last_warning || "";
+}
+
+function unitPillStatus(unit){
+  if (!unit || !unit.online) {
+    return { kind:"bad", text:"Offline", title:statusLine(unit || {}) || "Unit is unreachable" };
+  }
+  const rfKind = rfSignalKind(unit.rf);
+  const rfLabel = rfSignalLabel(unit.rf);
+  const running = !!unit.stream_running;
+  if (running && rfKind === "bad") {
+    return { kind:"bad", text:`Running | RF ${rfLabel}`, title:rfSignalTitle(unit.rf) };
+  }
+  if (running && rfKind === "warn") {
+    return { kind:"warn", text:`Running | RF ${rfLabel}`, title:rfSignalTitle(unit.rf) };
+  }
+  if (!running) {
+    return { kind:"warn", text:`Stopped | RF ${rfLabel}`, title:statusLine(unit) || rfSignalTitle(unit.rf) };
+  }
+  return { kind:"good", text:`Running | RF ${rfLabel}`, title:rfSignalTitle(unit.rf) };
+}
+
+function renderFleetPills(units){
+  const strip = document.getElementById("fleetPillStrip");
+  if (!strip) return;
+  const list = Array.isArray(units) ? units : [];
+  strip.classList.toggle("hidden", managerAdopted || list.length === 0);
+  if (managerAdopted || !list.length){
+    strip.innerHTML = "";
+    return;
+  }
+  strip.innerHTML = list.map(unit => {
+    const status = unitPillStatus(unit);
+    const host = unitTitle(unit);
+    const address = unit.address || unit.host || "";
+    const title = [host, address, status.title].filter(Boolean).join(" | ");
+    return `
+      <button class="fleetUnitPill ${escapeHtml(status.kind)}" type="button" title="${escapeHtml(title)}" data-focus-unit="${escapeHtml(unit.id || "")}">
+        <span class="rfDot ${escapeHtml(status.kind)}" aria-hidden="true"></span>
+        <span class="fleetUnitName">${escapeHtml(host)}</span>
+        <span class="fleetUnitStatus">${escapeHtml(status.text)}</span>
+      </button>
+    `;
+  }).join("");
 }
 
 function renderUnit(unit){
@@ -204,7 +185,7 @@ function renderUnit(unit){
   const removeButton = unit.removable === false ? "" : `<button class="miniBtn" type="button" data-remove-unit="${escapeHtml(unit.id)}">Remove</button>`;
 
   return `
-    <article class="card unitCard ${unit.online ? "" : "isOffline"} ${isSelf ? "isPrimary" : ""}">
+    <article class="card unitCard ${unit.online ? "" : "isOffline"} ${isSelf ? "isPrimary" : ""}" data-unit-id="${controlId}">
       <div class="unitTop">
         <div class="unitIdentity">
           <span class="dot ${unit.online ? "ok" : "bad"}" aria-hidden="true"></span>
@@ -275,11 +256,11 @@ function renderUnits(units){
   empty.classList.toggle("hidden", managerAdopted || list.length > 0);
   if (managerAdopted){
     grid.innerHTML = "";
-    updateFleetHealth(list);
+    renderFleetPills(list);
     return;
   }
   grid.innerHTML = list.map(renderUnit).join("");
-  updateFleetHealth(list);
+  renderFleetPills(list);
 }
 
 function setManagerAdoption(adoption){
@@ -350,7 +331,7 @@ async function refreshUnits(){
     setManagerHealth(true);
   }catch(e){
     setManagerHealth(false);
-    setFleetHealth("bad", "Fleet Health: Offline", "Fleet Manager refresh failed.");
+    renderFleetPills(latestUnits);
     toast("Fleet Manager refresh failed: " + String(e.message || e), "bad", 3500);
   }finally{
     refreshBusy = false;
@@ -400,6 +381,14 @@ document.getElementById("addUnitForm").addEventListener("submit", async (event) 
 document.getElementById("refreshUnits").addEventListener("click", async () => {
   await refreshAdoption();
   if (!managerAdopted) await refreshUnits();
+});
+
+document.getElementById("fleetPillStrip").addEventListener("click", (event) => {
+  const pill = event.target.closest("[data-focus-unit]");
+  if (!pill) return;
+  const unitId = pill.getAttribute("data-focus-unit");
+  const card = unitId ? Array.from(document.querySelectorAll("[data-unit-id]")).find(item => item.getAttribute("data-unit-id") === unitId) : null;
+  if (card) card.scrollIntoView({ behavior:"smooth", block:"center" });
 });
 
 document.getElementById("unitsGrid").addEventListener("click", async (event) => {

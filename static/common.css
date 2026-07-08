@@ -664,11 +664,53 @@ input[type="range"]::-moz-range-thumb{
 .managerPanelHead h2{
   margin-bottom:0;
 }
-.fleetHealth{
-  flex:0 0 auto;
-}
 .managerControlActions{
   align-self:flex-end;
+}
+.fleetPillStrip{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex-wrap:wrap;
+  gap:10px;
+  padding:2px 0;
+}
+.fleetUnitPill{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  max-width:320px;
+  min-height:38px;
+  padding:8px 12px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.05);
+  color:var(--text);
+  box-shadow:none;
+}
+.fleetUnitPill.good{
+  border-color:rgba(25,195,125,.35);
+  background:rgba(25,195,125,.10);
+}
+.fleetUnitPill.warn{
+  border-color:rgba(245,197,66,.35);
+  background:rgba(245,197,66,.10);
+}
+.fleetUnitPill.bad{
+  border-color:rgba(255,92,92,.35);
+  background:rgba(255,92,92,.10);
+}
+.fleetUnitName{
+  font-weight:750;
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.fleetUnitStatus{
+  color:var(--muted);
+  font-size:12px;
+  white-space:nowrap;
 }
 .unitGrid{
   display:grid;

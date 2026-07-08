@@ -878,7 +878,7 @@ def _wait_for_mapper(timeout_s: int = 300) -> Dict[str, Any]:
         if total == 0 or done >= total:
             return status
         time.sleep(2)
-    raise RuntimeError("Timed out waiting for TVHeadend service mapper")
+    raise RuntimeError("Timed out waiting for TV service mapper")
 
 def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
     try:
@@ -897,7 +897,7 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
             _tv_setup_log("Stopped active NDI/audio pipeline before TV Setup.")
         else:
             _tv_setup_log("Confirmed NDI pipeline is stopped before TV Setup.")
-        _tv_setup_set(percent=4, step="Loading current TVHeadend data…")
+        _tv_setup_set(percent=4, step="Loading current TV data…")
         if scanfile_key:
             _tv_setup_log(f"Selected predefined DVB-T/T2 mux region: {scanfile_key}")
         channels = tvh.list_channels(force_refresh=True)
@@ -1017,7 +1017,7 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
             finished_at=int(time.time()),
         )
 
-app = FastAPI(title="Tvheadend to NDI/Line Audio Bridge")
+app = FastAPI(title="TV to NDI/Line Audio Bridge")
 static_dir = BASE_DIR / "static"
 static_dir.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -2214,7 +2214,7 @@ def api_tv_setup_regions():
         selected = _preferred_dvbt_scanfile(regions, str(cfg.get("tvh_dvbt_scanfile") or ""))
         return {"regions": regions, "selected": selected}
     except Exception as e:
-        raise HTTPException(500, f"Failed to load Tvheadend predefined mux regions: {e}")
+        raise HTTPException(500, f"Failed to load TV predefined mux regions: {e}")
 
 class TVSetupRunReq(BaseModel):
     scanfile: Optional[str] = None
@@ -2229,9 +2229,9 @@ def api_tv_setup_run(req: TVSetupRunReq):
         try:
             valid = {str(r.get("key") or "") for r in tvh.list_dvb_scanfiles("dvb-t")}
         except Exception as e:
-            raise HTTPException(500, f"Could not validate selected region with Tvheadend: {e}")
+            raise HTTPException(500, f"Could not validate selected region with TV: {e}")
         if scanfile_key not in valid:
-            raise HTTPException(400, f"Unknown Tvheadend DVB-T/T2 predefined mux region: {scanfile_key}")
+            raise HTTPException(400, f"Unknown TV DVB-T/T2 predefined mux region: {scanfile_key}")
     _tv_setup_set(
         running=True,
         done=False,

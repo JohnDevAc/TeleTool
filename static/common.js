@@ -79,7 +79,7 @@ function rfSignalLabel(rf){
 function rfSignalTitle(rf){
   if (!rf || !rf.available) return "RF signal unavailable";
   const parts = [`RF signal ${rfSignalLabel(rf)}`];
-  if (rf.dbm_estimated) parts.push("estimated from TVHeadend signal strength");
+  if (rf.dbm_estimated) parts.push("estimated from TV signal strength");
   if (Number.isFinite(Number(rf.percent))) parts.push(`${Math.round(Number(rf.percent))}%`);
   if (rf.snr) parts.push(`SNR ${rf.snr}`);
   if (rf.mux) parts.push(String(rf.mux));
@@ -122,13 +122,13 @@ function lockNetworkFormFor(ms){
 function isNetworkFormLocked(){
   return Date.now() < _netFormLockedUntil;
 }
-function fallbackTvheadendUrl(){
+function fallbackTvUrl(){
   const host = window.location.hostname;
   return host ? `http://${host}:9981/` : "#";
 }
 
-function normalizedTvheadendUrl(raw){
-  const fallback = fallbackTvheadendUrl();
+function normalizedTvUrl(raw){
+  const fallback = fallbackTvUrl();
   const text = String(raw || "").trim();
   if (!text) return fallback;
   try{
@@ -142,12 +142,12 @@ function normalizedTvheadendUrl(raw){
   }
 }
 
-async function setTvheadendLinks(){
+async function setTvLinks(){
   try{
-    let url = fallbackTvheadendUrl();
+    let url = fallbackTvUrl();
     try{
       const cfg = await jget("/api/config/ui");
-      url = normalizedTvheadendUrl(cfg && cfg.tvh_base_url);
+      url = normalizedTvUrl(cfg && cfg.tvh_base_url);
     }catch(e){
       // Keep the header usable while the API is unavailable.
     }
@@ -155,7 +155,7 @@ async function setTvheadendLinks(){
       a.href = url;
       a.target = "_blank";
       a.rel = "noopener";
-      a.title = "Open TVHeadend";
+      a.title = "Open TV";
     });
   }catch(e){
     // ignore
@@ -192,5 +192,5 @@ async function setTeleToolPageTitle(){
 document.addEventListener('DOMContentLoaded', () => {
   setTeleToolPageTitle();
   setDevelopmentReleaseBanner();
-  setTvheadendLinks();
+  setTvLinks();
 });

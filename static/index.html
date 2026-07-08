@@ -11,7 +11,7 @@
 <div class="wrap">
   <header>
     <div class="title">
-      <h1 class="srOnly">Tvheadend → NDI Bridge</h1>
+      <h1 class="srOnly">TV to NDI Bridge</h1>
     </div>
     <div class="rightTop">
       <a class="miniBtn" href="/manager">Fleet Manager</a>
@@ -33,7 +33,7 @@
 
       <div class="row">
         <div class="field">
-          <label for="channel">Tvheadend channel</label>
+          <label for="channel">TV channel</label>
           <select id="channel"></select>
         </div>
 
@@ -55,7 +55,7 @@
         <div class="field" style="margin-top:10px;">
           <label for="tvSetupRegion">DVB-T/T2 region / predefined muxes</label>
           <select id="tvSetupRegion">
-            <option value="">Loading TVHeadend regions…</option>
+            <option value="">Loading TV regions...</option>
           </select>
         </div>
 
@@ -249,9 +249,9 @@ async function loadTvSetupRegions(){
     if (!regions.length) {
       const opt = document.createElement("option");
       opt.value = "";
-      opt.textContent = "No TVHeadend DVB-T/T2 regions found";
+      opt.textContent = "No TV DVB-T/T2 regions found";
       sel.appendChild(opt);
-      if (hint) hint.textContent = "TVHeadend did not return any DVB-T/T2 scanfiles. Check that its scanfile data package is installed.";
+      if (hint) hint.textContent = "TV did not return any DVB-T/T2 scanfiles. Check that its scanfile data package is installed.";
       tvSetupRegionsLoading = false;
       updateTvSetupControls();
       return;
@@ -265,13 +265,13 @@ async function loadTvSetupRegions(){
     const options = Array.from(sel.options);
     const selected = previous || preferredTvSetupRegion(options, data.selected || "");
     if (selected && options.some(o => o.value === selected)) sel.value = selected;
-    if (hint) hint.textContent = "This mirrors TVHeadend's “Pre-defined muxes” dropdown and will replace muxes in the selected DVB-T network during setup.";
+    if (hint) hint.textContent = "This mirrors TV's “Pre-defined muxes” dropdown and will replace muxes in the selected DVB-T network during setup.";
     tvSetupRegionsLoading = false;
     updateTvSetupControls();
   } catch (e) {
     const opt = document.createElement("option");
     opt.value = "";
-    opt.textContent = "Could not load TVHeadend regions";
+    opt.textContent = "Could not load TV regions";
     sel.appendChild(opt);
     if (hint) hint.textContent = String(e);
     console.warn("TV setup region load failed", e);
@@ -334,7 +334,7 @@ document.getElementById("runTvSetup").addEventListener("click", async () => {
     toast("Select a DVB-T/T2 region before running TV setup.", "warn", 4000);
     return;
   }
-  const ok = window.confirm(`This will stop any active NDI stream, delete all current TVHeadend channels and services, replace the DVB-T/T2 mux list with “${regionText}”, run a new scan, and map services back to channels. Continue?`);
+  const ok = window.confirm(`This will stop any active NDI stream, delete all current TV channels and services, replace the DVB-T/T2 mux list with “${regionText}”, run a new scan, and map services back to channels. Continue?`);
   if (!ok) return;
   try {
     tvSetupRunning = true;
@@ -364,7 +364,7 @@ document.getElementById("refreshTvSetupRegions").addEventListener("click", async
     return;
   }
   await loadTvSetupRegions();
-  toast("TVHeadend regions refreshed.", "good", 2500);
+  toast("TV regions refreshed.", "good", 2500);
 });
 
 async function loadChannels(forceRefresh=false) {

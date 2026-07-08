@@ -11,7 +11,7 @@
 <div class="wrap">
   <header>
     <div class="title">
-      <h1 class="srOnly">Tvheadend Line Audio Output</h1>
+      <h1 class="srOnly">TV Line Audio Output</h1>
     </div>
     <div class="rightTop">
       <a class="miniBtn" href="/manager">Fleet Manager</a>
@@ -185,7 +185,7 @@ async function loadDevices(){
     if (!devices.length){
       const opt = document.createElement("option");
       opt.value = "";
-      opt.textContent = "No Pi analogue or Dante AVIO USB output detected";
+      opt.textContent = "No HW analogue or Dante AVIO USB output detected";
       sel.appendChild(opt);
       if (Number.isFinite(Number(data.volume))) setVolumeSliderFromScalar(data.volume);
       return;
@@ -203,7 +203,7 @@ async function loadDevices(){
   }catch(e){
     const opt = document.createElement("option");
     opt.value = "";
-    opt.textContent = "Could not detect Pi analogue or Dante AVIO USB outputs";
+    opt.textContent = "Could not detect HW analogue or Dante AVIO USB outputs";
     sel.appendChild(opt);
     toast("Audio device detection failed: " + String(e.message || e), "bad", 5000);
   }

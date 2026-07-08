@@ -605,7 +605,7 @@
   }
 }
 
-/* Keep live logs and setup output inside their panels even when Tvheadend returns long mux/file strings. */
+/* Keep live logs and setup output inside their panels even when TV returns long mux/file strings. */
 .card, .tvSetupSection, .field, .actions, details, summary{
   min-width:0;
 }

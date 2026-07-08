@@ -241,7 +241,7 @@ class GstNDIBridge(GstPipelineBase):
 
         def label_for(kind: str, card_name: str, dev_name: str) -> str:
             if kind == "analog":
-                return "Pi analogue 3.5mm jack"
+                return "HW analogue 3.5mm jack"
             if kind == "avio":
                 return "Dante AVIO USB"
             descriptor = clean(card_name) or clean(dev_name)

@@ -71,6 +71,7 @@ let pollTimer = null;
 let refreshBusy = false;
 let managerAdopted = false;
 let latestUnits = [];
+const MANAGER_POLL_MS = 1000;
 
 function escapeHtml(value){
   return String(value ?? "").replace(/[&<>"']/g, ch => ({
@@ -327,7 +328,7 @@ async function refreshAdoption(){
   }
 }
 
-function schedulePoll(delayMs=5000){
+function schedulePoll(delayMs=MANAGER_POLL_MS){
   if (pollTimer) clearTimeout(pollTimer);
   pollTimer = setTimeout(refreshUnits, delayMs);
 }
@@ -353,7 +354,7 @@ async function refreshUnits(){
     toast("Fleet Manager refresh failed: " + String(e.message || e), "bad", 3500);
   }finally{
     refreshBusy = false;
-    schedulePoll(5000);
+    schedulePoll(MANAGER_POLL_MS);
   }
 }
 

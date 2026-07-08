@@ -385,6 +385,8 @@ async function loadChannels(forceRefresh=false) {
 
 let statusPollTimer = null;
 let lastStatusKey = "";
+let lastUptimeText = "";
+const STATUS_POLL_MS = 1000;
 
 function scheduleStatusPoll(delayMs){
   if (statusPollTimer) clearTimeout(statusPollTimer);
@@ -430,14 +432,18 @@ async function refreshStatus() {
     lastStatusKey = nextKey;
   }
   const stUptime = document.getElementById("st_uptime");
-  if (stUptime) stUptime.textContent = running ? fmtUptime(st.started_at) : "—";
+  const uptimeText = running ? fmtUptime(st.started_at) : "—";
+  if (stUptime && uptimeText !== lastUptimeText) {
+    stUptime.textContent = uptimeText;
+    lastUptimeText = uptimeText;
+  }
   renderRfStatus(st.rf);
 
   if (st.last_error) setAlertBadge("bad", st.last_error);
   else if (st.last_warning) setAlertBadge("warn", st.last_warning);
   else setAlertBadge("", "");
 
-  scheduleStatusPoll(running ? 5000 : 8000);
+  scheduleStatusPoll(STATUS_POLL_MS);
 }
 
 document.getElementById("start").addEventListener("click", async () => {

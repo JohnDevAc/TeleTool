@@ -187,7 +187,7 @@ def _channel_summary_for_uuid(channel_uuid: Optional[str]) -> Dict[str, Any]:
 
 RF_STATUS_LOCK = threading.Lock()
 RF_STATUS_CACHE: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
-RF_STATUS_DEFAULT_TTL_S = 20.0
+RF_STATUS_DEFAULT_TTL_S = 1.0
 
 
 def _rf_status_cache_ttl_s() -> float:
@@ -195,7 +195,7 @@ def _rf_status_cache_ttl_s() -> float:
         value = float(cfg.get("rf_status_ttl_s", RF_STATUS_DEFAULT_TTL_S))
     except Exception:
         value = RF_STATUS_DEFAULT_TTL_S
-    return max(5.0, min(120.0, value))
+    return max(1.0, min(120.0, value))
 
 
 def _rf_number(value: Any) -> Optional[float]:

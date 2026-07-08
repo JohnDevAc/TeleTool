@@ -35,13 +35,8 @@ async function jdelete(url) {
 
 function fmtUptime(startedAtSec){
   if (!startedAtSec) return "—";
-  const s = Math.max(0, Math.floor(Date.now()/1000 - startedAtSec));
-  const hh = Math.floor(s/3600);
-  const mm = Math.floor((s%3600)/60);
-  const ss = s%60;
-  if (hh>0) return `${hh}h ${mm}m ${ss}s`;
-  if (mm>0) return `${mm}m ${ss}s`;
-  return `${ss}s`;
+  const minutes = Math.max(0, Math.floor((Date.now()/1000 - startedAtSec) / 60));
+  return `${minutes} min`;
 }
 
 function setBadge(el, kind, text){

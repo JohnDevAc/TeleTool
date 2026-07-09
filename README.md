@@ -1,26 +1,24 @@
 # TeleTool
 
-TeleTool is a Raspberry Pi 5 broadcast utility for controlling Tvheadend streams, publishing the selected service as NDI, and routing the active stereo audio to a local line-level output device. The audio path is intended for a Dante AVIO USB adapter, which appears to the Pi as a stereo USB playback device.
+TeleTool is a FastAPI application for a Raspberry Pi 5 that bridges Tvheadend TV services to NDI and optional local line-level audio output. It is designed for DVB-T/T2 workflows where a selected Tvheadend channel is decoded with GStreamer, published as an NDI source, and monitored from a simple web UI.
 
-AES67/RTP output has been removed. The current audio workflow is local line output through ALSA/GStreamer.
+The local audio path is intended for line-output devices such as a Dante AVIO USB adapter. HDMI outputs and noisy ALSA aliases are hidden from the audio device list.
 
-## What The App Does
+## Features
 
 - Select a Tvheadend channel and publish it as an NDI source.
-- Keep the NDI stream supervised and restart it if the live Tvheadend stream stalls.
-- Route the same active stream audio to a local stereo output device.
+- Supervise the live stream and restart the NDI pipeline if it stalls.
+- Preserve interlaced sources by default; software deinterlacing is optional.
+- Route the active stream audio to a local ALSA/GStreamer output device.
+- Show live stream, RF, NDI, and audio status in the web UI.
+- Run a guided Tvheadend DVB-T/T2 setup and channel mapping flow.
 - Manage multiple TeleTool units from the Fleet Manager page.
-- Detect only relevant audio output devices:
-  - Dante AVIO or suitable USB audio output
-  - Pi analogue/headphones output where present
-- Hide HDMI outputs and noisy ALSA aliases from the audio dropdown.
-- Configure network, hostname, power actions, updates, and advanced NDI settings from the web UI.
-- Run a guided Tvheadend DVB-T/T2 setup flow with stalled-scan handling.
-- Build a shrunk Raspberry Pi SD-card golden-master image for cloning.
+- Configure hostname, network, software updates, reboot, and NDI/audio settings from the System page.
+- Build optional Raspberry Pi SD-card golden images for cloning.
 
 ## Web UI
 
-The FastAPI app runs on port `8000`.
+The app runs on port `8000`.
 
 ```text
 http://<pi-hostname-or-ip>:8000/
@@ -29,132 +27,86 @@ http://<pi-hostname-or-ip>:8000/
 Main pages:
 
 - `/` - NDI control and Tvheadend setup
-- `/audio` - local line-level audio output control
+- `/audio` - local line-level audio output
 - `/manager` - Fleet Manager for multiple TeleTool units
-- `/system` - hostname, network, power, and app configuration
+- `/system` - hostname, network, power, updates, and advanced settings
+
+API reference: [API.md](API.md). FastAPI also exposes generated docs at `/docs`.
 
 ## Normal Operation
 
-1. Open the main page at `http://<pi>:8000/`.
+1. Open `http://<pi>:8000/`.
 2. Select a Tvheadend channel.
 3. Enter a unique NDI source name.
 4. Click `Start NDI`.
 5. Confirm the NDI source appears on the network.
-6. Open `/audio`.
-7. Connect the Dante AVIO USB adapter if it is not already attached.
-8. Click `Refresh devices`.
-9. Select the Dante AVIO USB audio output.
-10. Set output level with the slider.
-11. Click `Start Audio`.
+6. Open `/audio` if local audio output is required.
+7. Select the Dante AVIO or other suitable line-output device.
+8. Set the output level and click `Start Audio`.
 
-The audio output branch is tied to the active NDI pipeline. Start NDI first, then start audio.
+Audio output depends on the active NDI pipeline, so start NDI first. The default audio level is `0.8`, about `-1.9 dB`; `1.0` is unity gain.
 
-The audio level slider is stored as a linear GStreamer volume value:
+## Tvheadend Setup
 
-- `80%` is the default and is about `-1.9 dB`.
-- `100%` is unity gain, `0.0 dB`.
-- `50%` is about `-6.0 dB`.
-- `0%` is muted.
+The TV Setup panel on `/` can rebuild Tvheadend DVB-T/T2 channel data.
 
-## Fleet Manager
+This is destructive: it deletes current Tvheadend channels/services, applies the selected predefined mux region, starts a scan, and maps services back to channels.
 
-Open `/manager` to monitor multiple TeleTool units from one primary unit. Add each unit by IP address or hostname. Each unit appears as a box showing system status, stream status, IP/hostname, NDI stream name, and the current channel when an NDI stream is running.
+When no previous region has been saved, TeleTool prefers `United Kingdom: auto DVB-T/T2` where available. This is slower than selecting a specific transmitter, but includes DVB-T2 HD multiplex parameters that Tvheadend's built-in `Generic: auto-Default` list can miss.
 
-The primary unit also appears in the Fleet Manager. If a TeleTool is adopted by an active Fleet Manager, its own management page is disabled and redirects back to the managing unit until the adoption lease expires.
+TeleTool monitors scan progress and will map found services if Tvheadend stalls after finding usable services. Setup status is shown as `Complete`, `Partial`, or `Failed`.
 
-## Tvheadend Setup Flow
+## Configuration
 
-The TV Setup panel on `/` can rebuild Tvheadend channel data for a DVB-T/T2 region.
+Runtime settings live in `config.json`, which is intentionally ignored by git because the web UI edits it on the Pi. Defaults are committed in `config.example.json`.
 
-Important: this flow is destructive. It deletes current Tvheadend channels/services, applies the selected predefined mux region, starts a scan, and maps services back to channels.
+Common settings:
 
-When no previous region has been saved, the region dropdown prefers TeleTool's `United Kingdom: auto DVB-T/T2` option where available. This UK-wide option is slower than selecting a specific transmitter, but it preserves DVB-T2 HD multiplex parameters that Tvheadend's built-in `Generic: auto-Default` list does not include.
+- `tvh_base_url` - Tvheadend API base URL, default `http://127.0.0.1:9981`
+- `tvh_dvbt_scanfile` - default DVB-T/T2 scanfile
+- `tvh_stream_profile` - Tvheadend stream profile, usually `pass`
+- `ndi_default_name` - default NDI source name
+- `ndi_delay_ms` - NDI audio/video delay
+- `ndi_deinterlace` - optional software deinterlace
+- `ndi_stall_timeout_s` - supervisor stall timeout after frames have rendered
+- `lineout_default_device` and `lineout_volume` - local audio defaults
 
-Some RF environments can cause Tvheadend to stall near the end of a scan. TeleTool monitors mux progress during TV Setup:
+Use `/system` or `POST /api/config/ui` to change UI-managed settings.
 
-- If the scan finishes normally, services are mapped and the setup shows `Complete`.
-- If scan progress stalls but services have been found, those services are mapped and the setup shows `Partial`.
-- If scan progress stalls and no services have been found, the setup shows `Failed`.
+## Raspberry Pi Setup
 
-The default stalled-scan threshold is `tvh_scan_stall_timeout_s = 120` seconds without mux progress. The overall scan timeout defaults to `tvh_scan_timeout_s = 600` seconds. These can be adjusted in `config.json` if a site needs longer scan windows.
+TeleTool expects:
 
-Use it when preparing a fresh Pi or when intentionally rebuilding the tuner/channel setup.
+- Raspberry Pi OS on a Raspberry Pi 5
+- Tvheadend available locally or on the configured URL
+- Python 3 with PyGObject
+- GStreamer base/good/bad/ugly/libav and ALSA plugins
+- An ARM64 NDI runtime/GStreamer plugin that provides `ndisink`
 
-## System Page
+On the Pi, after syncing the project:
 
-Open `/system` for:
+```sh
+bash scripts/pi_setup.sh
+```
 
-- Restarting the TeleTool service.
-- Updating the program from the latest server version on either the Main or Dev branch.
-- Rebooting the Pi.
-- Changing hostname.
-- Viewing or applying network settings.
-- Editing advanced NDI config such as delay, buffer, reconnect, startup grace, and stall timeout.
+The setup script installs common Debian/Raspberry Pi OS packages, creates `.venv` with system site packages, installs Python requirements, and installs the systemd service.
 
-Network changes can briefly disconnect the web UI if the Pi changes IP address.
-
-## Project Layout
-
-- `app.py` - FastAPI web/API entrypoint.
-- `gst_ndi.py`, `gst_base.py` - GStreamer pipeline control.
-- `tvh.py` - Tvheadend API client.
-- `static/` - web UI.
-- `config.example.json` - default config template committed to git.
-- `config.json` - local runtime config used by the app, ignored by git.
-- `.env.local` - local Pi SSH/sync credentials, ignored by git.
-- `.vscode/tasks.json` - VS Code tasks for syncing and managing the Pi.
-- `deploy/systemd/tvh_ndi_bridge.service` - systemd service file.
-- `scripts/pi_sync.ps1` - Windows/VS Code sync script.
-- `scripts/pi_setup.sh` - Raspberry Pi dependency and service setup.
-- `scripts/pi_make_golden_image.sh` - golden-master SD-card image builder.
-- `golden-images/` - local image artifacts, ignored by git.
-
-## Git Safety
-
-The repository uses `main` for stable releases and `dev` for development builds. The System page update control lets a device update from either branch.
-
-These files are intentionally not committed:
-
-- `.env.local`
-- `config.json`
-- `golden-images/`
-- Python cache files
-
-`config.example.json` is the committed template. Copy or sync it to `config.json` only when intentionally resetting a device config.
-
-## Raspberry Pi Requirements
-
-The setup script installs common Raspberry Pi OS packages for:
-
-- Python virtual environments.
-- PyGObject.
-- GStreamer base/good/bad/ugly/libav and ALSA plugins.
-- ALSA device discovery tools.
-- Avahi helpers.
-
-NDI support still requires an ARM64 NDI runtime/GStreamer plugin that provides `ndisink`. After installing it, this should succeed on the Pi:
+NDI support is external to this repository. Verify it with:
 
 ```sh
 gst-inspect-1.0 ndisink
 ```
 
-Tvheadend is expected at `http://127.0.0.1:9981` by default. Change `tvh_base_url` in `config.json` if Tvheadend is elsewhere.
-
-For Dante AVIO USB output, connect the adapter to the Pi and open `/audio`. The Audio output dropdown only lists suitable line-output devices. If the dropdown is empty, check whether ALSA can see the adapter:
+Check the service:
 
 ```sh
-aplay -l
+systemctl status tvh_ndi_bridge.service
+journalctl -u tvh_ndi_bridge.service -f
 ```
 
-## VS Code Raspberry Pi Sync
+## Windows/VS Code Sync
 
-Install the recommended VS Code extensions when prompted:
-
-- Python
-- Remote - SSH
-- PowerShell
-
-Create `.env.local` in the project root for local sync credentials:
+Create `.env.local` for local Pi sync credentials:
 
 ```text
 TELETOOL_PI_HOST=192.168.0.142
@@ -165,14 +117,14 @@ TELETOOL_PI_PATH=/home/admin/tvh_ndi_bridge
 
 Do not commit `.env.local`.
 
-Useful tasks:
+Useful VS Code tasks:
 
-- `Pi: Sync project` - copy code and static assets to the Pi while preserving remote `config.json`.
-- `Pi: Sync project including config` - copy everything including `config.json`.
-- `Pi: Setup dependencies/service` - install packages, create `.venv`, install systemd service.
-- `Pi: Restart service` - restart `tvh_ndi_bridge.service`.
-- `Pi: Tail service logs` - follow service logs over SSH.
-- `Local: Run API` - run the FastAPI app locally with uvicorn.
+- `Pi: Sync project` - copy code and static assets while preserving remote `config.json`
+- `Pi: Sync project including config` - copy everything including `config.json`
+- `Pi: Setup dependencies/service` - run `scripts/pi_setup.sh`
+- `Pi: Restart service` - restart `tvh_ndi_bridge.service`
+- `Pi: Tail service logs` - follow service logs over SSH
+- `Local: Run API` - run the FastAPI app locally
 
 Normal deployment flow:
 
@@ -181,136 +133,79 @@ Normal deployment flow:
 3. Run `Pi: Restart service`.
 4. Open `http://<pi>:8000/`.
 
-The normal sync task preserves `config.json` on the Pi because the web UI writes device-specific settings there.
+## Fleet Manager
 
-## Service Commands On The Pi
+Open `/manager` to monitor and control multiple TeleTool units from one primary unit. Add units by IP address or hostname. Each unit reports system status, stream status, version, hostname/IP, NDI source name, and current channel when available.
 
-```sh
-sudo systemctl restart tvh_ndi_bridge.service
-systemctl status tvh_ndi_bridge.service
-journalctl -u tvh_ndi_bridge.service -f
-```
+When a unit is adopted by an active Fleet Manager, its own manager page redirects back to the managing unit until the adoption lease expires.
 
-Tvheadend:
+## Software Updates
 
-```sh
-systemctl status tvheadend
-journalctl -u tvheadend -f
-```
+The System page can update the program from GitHub branch `main` or `dev`. The updater preserves local runtime files such as `config.json`, `.env.local`, `.venv`, git metadata, and generated image artifacts.
 
-## Golden Master Images
+Use `main` for stable releases and `dev` for development builds.
 
-The project includes a repeatable SD-card image builder:
+## Golden Images
+
+The optional image builder can create a compact Raspberry Pi SD-card image for cloning:
 
 ```sh
 sudo env COMPRESS=xz ROOT_MIN_MIB=12288 ROOT_MARGIN_MIB=4096 \
   bash scripts/pi_make_golden_image.sh /home/admin/golden-master teletool-pi5-golden-$(date +%Y%m%d-%H%M%S)
 ```
 
-The builder creates a smaller two-partition Raspberry Pi image instead of cloning the entire SD card byte-for-byte. It:
+Generated images are ignored by git. The builder stops TeleTool and Tvheadend during copy, updates boot identifiers, adds first-boot root expansion, clears clone-specific machine state, and writes checksum/manifest sidecar files.
 
-- Creates a sparse image with a FAT boot partition and ext4 root partition.
-- Copies the live root filesystem and boot partition into the image.
-- Stops `tvh_ndi_bridge` and `tvheadend` during the copy for a cleaner snapshot.
-- Updates `fstab` and `cmdline.txt` PARTUUID references inside the image.
-- Adds a one-shot first-boot service that expands the root filesystem to fill the target SD card.
-- Clears machine-id/random-seed/log noise so clones are cleaner.
-- Runs `e2fsck` on the generated root filesystem.
-- Compresses the image to `.img.xz`.
-- Writes `.sha256` and `.manifest` sidecar files.
+## Project Layout
 
-Generated image artifacts are intentionally ignored by git.
+- `app.py` - FastAPI web/API entrypoint
+- `gst_ndi.py`, `gst_base.py` - GStreamer pipeline control
+- `tvh.py` - Tvheadend API client and scan helpers
+- `static/` - web UI
+- `API.md` - concise JSON API reference
+- `config.example.json` - committed config template
+- `config.json` - local runtime config, ignored by git
+- `deploy/systemd/tvh_ndi_bridge.service` - systemd service file
+- `scripts/pi_sync.ps1` - Windows sync helper
+- `scripts/pi_setup.sh` - Pi dependency and service setup
+- `scripts/pi_make_golden_image.sh` - optional SD-card image builder
 
-Hosted golden-master download:
+## Development Checks
 
-[Download TeletoolBase.img.xz](https://www.johnlightfoot.biz/TeletoolBase.img.xz)
-
-Current golden-master artifact:
-
-```text
-/home/admin/golden-master/TeletoolBase.img.xz
-```
-
-Current image details:
-
-- Created: `2026-07-07T20:01:15+01:00`
-- Decompressed image size: `12,868 MiB`
-- Compressed image size: about `1.9 GB`
-- SHA-256: `1bf7f0b337c0f3d5fd876896c354d8a306724bcaa3ba990e400fe35f82aef315`
-
-Verify the image on Windows:
+On a development machine:
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\golden-images\TeletoolBase.img.xz
-Get-Content .\golden-images\TeletoolBase.img.xz.sha256
+python -m compileall .
 ```
 
-The two hashes should match.
-
-## Flashing The Golden Master
-
-Use Raspberry Pi Imager or balenaEtcher and select the `.img.xz` file as a custom image.
-
-Recommended first boot checklist:
-
-1. Flash the `.img.xz` image to a new SD card.
-2. Boot the Pi and wait a few minutes for first-boot root expansion.
-3. Find the Pi on the network by hostname, router DHCP table, or direct IP scan.
-4. SSH into the Pi.
-5. Change the default password immediately.
-6. Open `http://<pi>:8000/system`.
-7. Set hostname and network settings for that unit.
-8. Confirm `tvh_ndi_bridge` and `tvheadend` are active.
-9. Open `http://<pi>:8000/`.
-10. Run Tvheadend setup if the tuner/channel list needs to be rebuilt.
-11. Start NDI and verify the source appears on the network.
-12. Connect the Dante AVIO USB adapter, open `/audio`, refresh devices, and start line output.
-
-The first-boot expansion service removes itself after it runs.
-
-## Copying Golden Image Artifacts Off The Pi
-
-Images are created on the Pi under `/home/admin/golden-master/`.
-
-From Windows:
-
-```powershell
-pscp admin@192.168.0.142:/home/admin/golden-master/TeletoolBase.img.xz .\golden-images\
-pscp admin@192.168.0.142:/home/admin/golden-master/TeletoolBase.img.xz.sha256 .\golden-images\
-pscp admin@192.168.0.142:/home/admin/golden-master/TeletoolBase.img.xz.manifest .\golden-images\
-```
-
-If using SSH keys or a different username/host, adjust the command accordingly.
-
-## Local Development
-
-On Windows, full local runtime may be limited because PyGObject and GStreamer are easiest on Raspberry Pi OS. Lightweight syntax checks still work:
-
-```powershell
-python -m compileall app.py gst_ndi.py gst_base.py tvh.py
-```
-
-On the Pi:
+On the Pi, also check:
 
 ```sh
-python3 -m venv --system-site-packages .venv
-.venv/bin/python -m pip install -r requirements.txt
+gst-inspect-1.0 ndisink
+gst-inspect-1.0 alsasink
+systemctl status tvh_ndi_bridge.service
+```
+
+Run the app manually on the Pi:
+
+```sh
 .venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
 ## Troubleshooting
 
-Check service status:
+Check TeleTool:
 
 ```sh
 systemctl status tvh_ndi_bridge.service
 journalctl -u tvh_ndi_bridge.service -n 120 --no-pager
 ```
 
-Check NDI plugin:
+Check Tvheadend:
 
 ```sh
-gst-inspect-1.0 ndisink
+curl http://127.0.0.1:9981/api/serverinfo
+systemctl status tvheadend
 ```
 
 Check audio devices:
@@ -320,14 +215,7 @@ aplay -l
 curl http://127.0.0.1:8000/api/audio/devices
 ```
 
-If `/api/audio/devices` is empty but `aplay -l` only shows HDMI devices, that is expected. HDMI is hidden from the TeleTool audio dropdown. Connect the Dante AVIO USB adapter and refresh devices.
-
-Check Tvheadend:
-
-```sh
-curl http://127.0.0.1:9981/api/serverinfo
-systemctl status tvheadend
-```
+If `/api/audio/devices` is empty and `aplay -l` only shows HDMI devices, that is expected. Connect a Dante AVIO or other suitable USB audio output and refresh the audio page.
 
 If the web UI cannot change network settings or reboot the Pi, install the helper once:
 

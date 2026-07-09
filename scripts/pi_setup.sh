@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SERVICE_NAME="tvh_ndi_bridge.service"
+LEGACY_SERVICE_NAMES=("tvh-ndi-bridge.service")
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_USER="${TELETOOL_SERVICE_USER:-$(id -un)}"
 SERVICE_TEMPLATE="$PROJECT_DIR/deploy/systemd/$SERVICE_NAME"
@@ -45,6 +46,15 @@ if [ ! -f "$SERVICE_TEMPLATE" ]; then
   echo "Missing $SERVICE_TEMPLATE" >&2
   exit 1
 fi
+
+echo "Removing legacy TeleTool systemd units..."
+for legacy_service in "${LEGACY_SERVICE_NAMES[@]}"; do
+  sudo systemctl disable --now "$legacy_service" 2>/dev/null || true
+  sudo rm -f "/etc/systemd/system/$legacy_service"
+  sudo rm -f "/etc/systemd/system/multi-user.target.wants/$legacy_service"
+done
+sudo systemctl daemon-reload
+sudo systemctl reset-failed "${LEGACY_SERVICE_NAMES[@]}" 2>/dev/null || true
 
 echo "Installing systemd service for user '$SERVICE_USER'..."
 tmp_service="$(mktemp)"

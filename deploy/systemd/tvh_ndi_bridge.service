@@ -2,6 +2,7 @@
 Description=TeleTool Tvheadend to NDI/line-audio bridge
 Wants=network-online.target
 After=network-online.target
+Conflicts=tvh-ndi-bridge.service
 
 [Service]
 Type=simple

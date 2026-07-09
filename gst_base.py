@@ -184,15 +184,17 @@ class GstPipelineBase:
             except Exception:
                 pass
 
-        if bus_watch_id is not None:
+        if bus_watch_id is not None and pipeline is not None:
             try:
-                GLib.source_remove(bus_watch_id)
+                bus = pipeline.get_bus()
+                bus.disconnect(bus_watch_id)
             except Exception:
                 pass
 
         if poll_id is not None:
             try:
-                GLib.source_remove(poll_id)
+                if context is None or context.find_source_by_id(poll_id) is not None:
+                    GLib.source_remove(poll_id)
             except Exception:
                 pass
 
@@ -228,14 +230,13 @@ class GstPipelineBase:
             self._push_err(f"Pipeline build failed: {e}")
             return
 
-        bus = pipeline.get_bus()
-        bus.add_signal_watch()
-
         # Run the pipeline inside its own GLib MainContext so other threads can
         # safely schedule work (element property changes, etc.) into this loop.
         context = GLib.MainContext()
         context.push_thread_default()
         loop = GLib.MainLoop.new(context, False)
+        bus = pipeline.get_bus()
+        bus.add_signal_watch()
 
         with self._lock:
             self._pipeline = pipeline
@@ -246,7 +247,9 @@ class GstPipelineBase:
 
         if poll_cb is not None:
             # poll_cb must return True to keep polling
-            self._poll_id = GLib.timeout_add_seconds(1, lambda: bool(poll_cb()))
+            poll_source = GLib.timeout_source_new_seconds(1)
+            poll_source.set_callback(lambda _data=None: bool(poll_cb()), None)
+            self._poll_id = poll_source.attach(context)
 
         try:
             pipeline.set_state(Gst.State.PLAYING)

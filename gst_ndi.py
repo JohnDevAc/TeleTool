@@ -650,14 +650,16 @@ class GstNDIBridge(GstPipelineBase):
         except Exception:
             lineout_pipeline_volume = 0.8
         lineout_pipeline_volume = max(0.0, min(1.0, lineout_pipeline_volume))
-        lineout_default_device = "default"
+        lineout_default_device = ""
         if lineout_sink_factory == "alsasink":
             try:
                 default_lineout = self._resolve_audio_output_device(cfg.get("lineout_default_device"))
                 if default_lineout.get("sink") == "alsasink" and default_lineout.get("device"):
                     lineout_default_device = str(default_lineout["device"])
+                else:
+                    lineout_sink_factory = "fakesink"
             except Exception:
-                lineout_default_device = "default"
+                lineout_sink_factory = "fakesink"
 
         ndi_video_format = str(cfg.get("ndi_video_format", "UYVY"))
 
@@ -672,9 +674,13 @@ class GstNDIBridge(GstPipelineBase):
                     f'! queue max-size-buffers=0 max-size-bytes=0 max-size-time={max_time_ns} '
                     f'min-threshold-time={delay_ns} ! combiner.video '
                 )
+            # Some MPEG decoders expose PAL/HD interlaced sources as "mixed", which
+            # this ndisink build rejects. Preserve interlaced frames but normalise
+            # the raw caps to a concrete interleaved mode for NDI negotiation.
             return (
                 f'{src_prefix} ! queue ! videoconvert '
                 f'! video/x-raw,format={ndi_video_format} '
+                f'! capssetter caps=video/x-raw,format={ndi_video_format},interlace-mode=interleaved replace=false '
                 f'! queue max-size-buffers=0 max-size-bytes=0 max-size-time={max_time_ns} '
                 f'min-threshold-time={delay_ns} ! combiner.video '
             )

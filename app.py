@@ -21,13 +21,13 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import requests
-from tvh import TvheadendClient
+from tvh import TELETOOL_UK_AUTO_SCANFILE, TvheadendClient
 from gst_ndi import GstNDIBridge
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 RELEASE_MARKER_PATH = BASE_DIR / ".teletool_release.json"
 VERSION_PATH = BASE_DIR / "VERSION"
-APP_VERSION_FALLBACK = "V1.5.01"
+APP_VERSION_FALLBACK = "V1.6.00"
 CONFIG_LOCK = threading.Lock()
 
 
@@ -292,19 +292,57 @@ def _rf_dbm_label(dbm: Optional[float], estimated: bool) -> str:
     return f"~{text}" if estimated else text
 
 
-def _rf_status_from_mux(mux: Dict[str, Any], *, source: str) -> Dict[str, Any]:
-    signal = mux.get("signal")
-    snr = mux.get("snr")
-    signal_percent = _rf_percent(signal)
-    snr_percent = _rf_percent(snr)
+def _rf_scale_is_db(scale: Any) -> bool:
+    text = str(scale or "").strip().lower()
+    return text in ("2", "db", "dbm", "decibel", "decibels")
+
+
+def _rf_scaled_db_value(value: Any, scale: Any) -> Optional[float]:
+    if not _rf_scale_is_db(scale):
+        return None
+    n = _rf_number(value)
+    if n is None:
+        return None
+    if abs(n) >= 1000:
+        return round(n / 1000.0, 1)
+    return round(n, 1)
+
+
+def _rf_scaled_snr_text(snr: Any, snr_scale: Any) -> Optional[str]:
+    snr_db = _rf_scaled_db_value(snr, snr_scale)
+    if snr_db is not None:
+        return f"{snr_db:.1f}".rstrip("0").rstrip(".") + " dB"
+    return _rf_text(snr)
+
+
+def _rf_dbm_from_signal_scaled(signal: Any, signal_scale: Any, signal_percent: Optional[int]) -> Tuple[Optional[float], bool]:
+    signal_db = _rf_scaled_db_value(signal, signal_scale)
+    if signal_db is not None:
+        return signal_db, False
+    return _rf_dbm_from_signal(signal, signal_percent)
+
+
+def _rf_status_from_fields(
+    *,
+    signal: Any,
+    snr: Any,
+    signal_scale: Any = None,
+    snr_scale: Any = None,
+    mux_label: Optional[str] = None,
+    source: str,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    signal_percent = None if _rf_scale_is_db(signal_scale) else _rf_percent(signal)
+    snr_percent = None if _rf_scale_is_db(snr_scale) else _rf_percent(snr)
     percent = signal_percent if signal_percent is not None else snr_percent
-    dbm, dbm_estimated = _rf_dbm_from_signal(signal, signal_percent)
+    dbm, dbm_estimated = _rf_dbm_from_signal_scaled(signal, signal_scale, signal_percent)
     dbm_label = _rf_dbm_label(dbm, dbm_estimated)
     available = dbm is not None or percent is not None or signal not in (None, "") or snr not in (None, "")
+    snr_for_kind = _rf_scaled_db_value(snr, snr_scale) if _rf_scale_is_db(snr_scale) else snr
     label = dbm_label if dbm is not None else (f"{percent}%" if percent is not None else (_rf_text(signal) or _rf_text(snr) or "N/A"))
-    return {
+    out = {
         "available": available,
-        "kind": _rf_kind_from_dbm(dbm, percent, snr=snr),
+        "kind": _rf_kind_from_dbm(dbm, percent, snr=snr_for_kind),
         "label": label,
         "dbm": dbm,
         "dbm_estimated": dbm_estimated,
@@ -312,11 +350,23 @@ def _rf_status_from_mux(mux: Dict[str, Any], *, source: str) -> Dict[str, Any]:
         "percent": percent,
         "signal": _rf_text(signal),
         "signal_percent": signal_percent,
-        "snr": _rf_text(snr),
+        "snr": _rf_scaled_snr_text(snr, snr_scale),
         "snr_percent": snr_percent,
-        "mux": _mux_label(mux),
+        "mux": mux_label,
         "source": source,
     }
+    if extra:
+        out.update(extra)
+    return out
+
+
+def _rf_status_from_mux(mux: Dict[str, Any], *, source: str) -> Dict[str, Any]:
+    return _rf_status_from_fields(
+        signal=mux.get("signal"),
+        snr=mux.get("snr"),
+        mux_label=_mux_label(mux),
+        source=source,
+    )
 
 
 def _service_matches_channel(service: Dict[str, Any], channel_uuid: Optional[str], channel_name: Optional[str]) -> bool:
@@ -358,6 +408,94 @@ def _mux_for_service(muxes: List[Dict[str, Any]], service: Dict[str, Any]) -> Op
         for mux in muxes:
             if _mux_matches_ref(mux, str(ref)):
                 return mux
+    return None
+
+
+def _rf_norm_ref(value: Any) -> str:
+    return re.sub(r"[^a-z0-9.]+", "", str(value or "").strip().lower())
+
+
+def _rf_freq_tokens(freq: Any) -> List[str]:
+    freq_i = _coerce_int(freq)
+    if freq_i is None or freq_i <= 0:
+        return []
+    mhz = freq_i / 1_000_000.0
+    mhz_text = f"{mhz:.3f}".rstrip("0").rstrip(".")
+    return [
+        str(freq_i),
+        _rf_norm_ref(f"{mhz_text}MHz"),
+        _rf_norm_ref(f"{mhz_text} MHz"),
+    ]
+
+
+def _rf_input_matches_mux(input_status: Dict[str, Any], mux: Optional[Dict[str, Any]]) -> bool:
+    if not mux:
+        return False
+    haystack = _rf_norm_ref(" ".join(str(input_status.get(key) or "") for key in ("stream", "input", "uuid")))
+    candidates: List[str] = []
+    for key in ("uuid", "name", "muxname", "multiplex", "frequency", "freq"):
+        value = mux.get(key)
+        if value not in (None, ""):
+            candidates.append(_rf_norm_ref(value))
+    candidates.extend(_rf_freq_tokens(mux.get("frequency") or mux.get("freq")))
+    return any(candidate and candidate in haystack for candidate in candidates)
+
+
+def _rf_input_matches_subscription(input_status: Dict[str, Any], subscription: Dict[str, Any]) -> bool:
+    stream = _rf_norm_ref(input_status.get("stream"))
+    service = _rf_norm_ref(subscription.get("service"))
+    return bool(stream and service and stream in service)
+
+
+def _rf_status_from_input(input_status: Dict[str, Any], *, mux: Optional[Dict[str, Any]], source: str) -> Dict[str, Any]:
+    mux_label = _mux_label(mux) if mux else str(input_status.get("stream") or "").strip() or None
+    return _rf_status_from_fields(
+        signal=input_status.get("signal"),
+        snr=input_status.get("snr"),
+        signal_scale=input_status.get("signal_scale"),
+        snr_scale=input_status.get("snr_scale"),
+        mux_label=mux_label,
+        source=source,
+        extra={
+            "input": input_status.get("input"),
+            "stream": input_status.get("stream"),
+            "ber": input_status.get("ber"),
+            "unc": input_status.get("unc"),
+            "cc": input_status.get("cc"),
+            "bps": input_status.get("bps"),
+        },
+    )
+
+
+def _live_rf_status_for_mux(mux: Optional[Dict[str, Any]], channel_name: Optional[str]) -> Optional[Dict[str, Any]]:
+    try:
+        inputs = tvh.status_inputs()
+    except Exception:
+        inputs = []
+    if not inputs:
+        return None
+
+    for input_status in inputs:
+        if _rf_input_matches_mux(input_status, mux):
+            return _rf_status_from_input(input_status, mux=mux, source="active_input")
+
+    if channel_name:
+        wanted = str(channel_name or "").strip().lower()
+        try:
+            subscriptions = tvh.status_subscriptions()
+        except Exception:
+            subscriptions = []
+        for subscription in subscriptions:
+            sub_channel = str(subscription.get("channel") or "").strip().lower()
+            sub_service = str(subscription.get("service") or "").strip().lower()
+            if (wanted and (sub_channel == wanted or wanted in sub_service)):
+                for input_status in inputs:
+                    if _rf_input_matches_subscription(input_status, subscription):
+                        return _rf_status_from_input(input_status, mux=mux, source="active_input")
+
+    if mux is None and len(inputs) == 1:
+        return _rf_status_from_input(inputs[0], mux=None, source="tuned_input")
+
     return None
 
 
@@ -423,7 +561,14 @@ def _rf_status_for_channel_uncached(channel_uuid: Optional[str] = None, channel_
             return service_rf
         mux = _mux_for_service(muxes, matched_service)
         if mux:
+            live_rf = _live_rf_status_for_mux(mux, channel_name)
+            if live_rf and live_rf.get("available"):
+                return live_rf
             return _rf_status_from_mux(mux, source="active_mux")
+
+    live_rf = _live_rf_status_for_mux(None, channel_name)
+    if live_rf and live_rf.get("available"):
+        return live_rf
 
     mux = _best_rf_mux(muxes)
     if mux:
@@ -661,8 +806,6 @@ def _tv_setup_log(message: str) -> None:
 def _preferred_dvbt_scanfile(regions: List[Dict[str, Any]], configured: str = "") -> str:
     valid = {str(r.get("key") or "").strip() for r in regions}
     configured = str(configured or "").strip()
-    if configured and configured in valid:
-        return configured
 
     def norm(value: Any) -> str:
         text = str(value or "").strip().lower()
@@ -671,6 +814,13 @@ def _preferred_dvbt_scanfile(regions: List[Dict[str, Any]], configured: str = ""
     def is_auto_default(value: Any) -> bool:
         normalized = norm(value)
         return normalized == "auto-default" or normalized.endswith("-auto-default") or "auto-default" in normalized
+
+    if configured and configured in valid:
+        if configured == TELETOOL_UK_AUTO_SCANFILE or not is_auto_default(configured):
+            return configured
+
+    if TELETOOL_UK_AUTO_SCANFILE in valid:
+        return TELETOOL_UK_AUTO_SCANFILE
 
     for region in regions:
         key = str(region.get("key") or "").strip()
@@ -864,25 +1014,78 @@ def _wait_for_scan(network_uuid: str, timeout_s: int = 600, stall_timeout_s: int
     _log_mux_diagnostics(muxes, prefix="Mux at timeout")
     return muxes, False, note
 
-def _wait_for_mapper(timeout_s: int = 300) -> Dict[str, Any]:
+def _mapper_counts(status: Dict[str, Any]) -> Tuple[int, int, int, int, int]:
+    total = _coerce_int(status.get("total")) or 0
+    ok = _coerce_int(status.get("ok")) or 0
+    fail = _coerce_int(status.get("fail")) or 0
+    ignore = _coerce_int(status.get("ignore")) or 0
+    done = ok + fail + ignore
+    return total, done, ok, ignore, fail
+
+
+def _wait_for_mapper(timeout_s: int = 300, expected_total: Optional[int] = None) -> Dict[str, Any]:
     deadline = time.time() + timeout_s
     last_summary = None
+    waiting_logged = False
+    unexpected_total_logged: Optional[int] = None
+    complete_mismatch_since: Optional[float] = None
     while time.time() < deadline:
+        now = time.time()
         status = tvh.mapper_status()
-        total = int(status.get("total") or 0)
-        done = int(status.get("ok") or 0) + int(status.get("fail") or 0) + int(status.get("ignore") or 0)
-        summary = (total, done, int(status.get("ok") or 0), int(status.get("ignore") or 0), int(status.get("fail") or 0))
+        total, done, ok, ignore, fail = _mapper_counts(status)
+        summary = (total, done, ok, ignore, fail)
         if summary != last_summary:
-            _tv_setup_log(f"Mapper progress: {done}/{total} processed (ok={summary[2]}, ignore={summary[3]}, fail={summary[4]})")
+            _tv_setup_log(f"Mapper progress: {done}/{total} processed (ok={ok}, ignore={ignore}, fail={fail})")
             last_summary = summary
-        if total == 0 or done >= total:
+        expected_matches = expected_total is None or total == expected_total
+        if total > 0 and done >= total and expected_matches:
             return status
+        if total == 0 and expected_total:
+            if not waiting_logged:
+                _tv_setup_log(f"Waiting for TV service mapper to queue {expected_total} service(s).")
+                waiting_logged = True
+        elif expected_total and total != expected_total:
+            if total != unexpected_total_logged:
+                _tv_setup_log(f"TV service mapper queued {total} service(s); expected {expected_total}.")
+                unexpected_total_logged = total
+            if total > 0 and done >= total:
+                if complete_mismatch_since is None:
+                    complete_mismatch_since = now
+                elif now - complete_mismatch_since >= 20:
+                    _tv_setup_log(
+                        "TV service mapper status still shows a different completed total; "
+                        "continuing to channel refresh."
+                    )
+                    return status
+            else:
+                complete_mismatch_since = None
+        else:
+            complete_mismatch_since = None
         time.sleep(2)
     raise RuntimeError("Timed out waiting for TV service mapper")
+
+
+def _wait_for_mapped_channels(min_count: int = 1, timeout_s: int = 60) -> List[Dict[str, Any]]:
+    deadline = time.time() + timeout_s
+    last_count: Optional[int] = None
+    channels: List[Dict[str, Any]] = []
+    while time.time() < deadline:
+        channels = tvh.list_channels(force_refresh=True)
+        count = len(channels)
+        if count != last_count:
+            _tv_setup_log(f"Channel refresh: {count} mapped channel(s) visible.")
+            last_count = count
+        if count >= min_count:
+            return channels
+        time.sleep(2)
+    return tvh.list_channels(force_refresh=True)
+
 
 def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
     try:
         scanfile_key = str(scanfile_key or cfg.get("tvh_dvbt_scanfile") or "").strip() or None
+        if not scanfile_key:
+            scanfile_key = _preferred_dvbt_scanfile(tvh.list_dvb_scanfiles("dvb-t"), "") or None
         _tv_setup_set(
             running=True,
             done=False,
@@ -979,11 +1182,20 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
 
         _tv_setup_set(percent=90, step="Mapping services to channels…")
         tvh.map_services(service_uuids)
-        _wait_for_mapper()
+        mapper_status = _wait_for_mapper(expected_total=len(service_uuids))
+        mapper_total, _mapper_done, mapper_ok, mapper_ignore, mapper_fail = _mapper_counts(mapper_status)
+        _tv_setup_log(
+            f"Mapper complete: total={mapper_total}, ok={mapper_ok}, "
+            f"ignore={mapper_ignore}, fail={mapper_fail}."
+        )
 
         _tv_setup_set(percent=97, step="Refreshing channel list…")
-        mapped_channels = tvh.list_channels(force_refresh=True)
+        mapped_channels = _wait_for_mapped_channels(min_count=1 if mapper_ok > 0 else 0)
         _tv_setup_log(f"Mapped {len(mapped_channels)} channel(s).")
+        if mapper_ok > 0 and not mapped_channels:
+            raise RuntimeError(
+                "TV service mapper reported mapped services, but no channels appeared in the channel list"
+            )
 
         if scan_complete:
             _tv_setup_set(
@@ -2052,6 +2264,7 @@ def api_manager_status(request: Request):
 
 UI_CONFIG_KEYS = {
     "tvh_base_url",
+    "tvh_dvbt_scanfile",
     "tvh_stream_profile",
     "ndi_default_name",
     "ndi_delay_ms",
@@ -2076,6 +2289,7 @@ UI_CONFIG_KEYS = {
 
 class UIConfigUpdateReq(BaseModel):
     tvh_base_url: Optional[str] = None
+    tvh_dvbt_scanfile: Optional[str] = None
     tvh_stream_profile: Optional[str] = None
     ndi_default_name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     ndi_delay_ms: Optional[int] = Field(default=None, ge=0, le=5000)
@@ -2266,6 +2480,12 @@ def api_tv_setup_run(req: TVSetupRunReq):
     if snap.get("running"):
         raise HTTPException(409, "TV Setup is already running")
     scanfile_key = str(req.scanfile or "").strip() or None
+    if not scanfile_key:
+        try:
+            regions = tvh.list_dvb_scanfiles("dvb-t")
+            scanfile_key = _preferred_dvbt_scanfile(regions, str(cfg.get("tvh_dvbt_scanfile") or "")) or None
+        except Exception as e:
+            raise HTTPException(500, f"Could not choose default TV DVB-T/T2 predefined mux region: {e}")
     if scanfile_key:
         try:
             valid = {str(r.get("key") or "") for r in tvh.list_dvb_scanfiles("dvb-t")}

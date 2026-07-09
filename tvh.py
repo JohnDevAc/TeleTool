@@ -10,6 +10,10 @@ from requests.auth import AuthBase
 from urllib3.util.retry import Retry
 
 
+TELETOOL_UK_AUTO_SCANFILE = "teletool/uk-auto-dvbt-dvbt2"
+TELETOOL_UK_AUTO_LABEL = "United Kingdom: auto DVB-T/T2 (TeleTool, slower)"
+
+
 class TvheadendClient:
     """Small Tvheadend API client with lightweight TTL caching.
 
@@ -276,6 +280,8 @@ class TvheadendClient:
             val = str(e.get("val") or key).strip()
             if key:
                 out.append({"key": key, "val": val})
+        if str(scan_type or "").strip().lower() == "dvb-t":
+            out.append({"key": TELETOOL_UK_AUTO_SCANFILE, "val": TELETOOL_UK_AUTO_LABEL})
         out.sort(key=lambda e: (e.get("val") or "").lower())
         return out
 
@@ -531,6 +537,9 @@ class TvheadendClient:
         return muxes
 
     def load_scanfile_muxes(self, scanfile_key: str) -> List[Dict[str, Any]]:
+        if str(scanfile_key or "").strip() == TELETOOL_UK_AUTO_SCANFILE:
+            return self._load_uk_auto_dvbt2_muxes()
+
         path = self._find_scanfile_path(scanfile_key)
         text = path.read_text(errors="replace")
         muxes = self._parse_dvbv5_scanfile(text)
@@ -539,6 +548,39 @@ class TvheadendClient:
         if not muxes:
             raise RuntimeError(f"No DVB-T/T2 muxes could be parsed from scanfile '{scanfile_key}' at {path}")
         return muxes
+
+    def _load_uk_auto_dvbt2_muxes(self) -> List[Dict[str, Any]]:
+        """Build a UK-wide DVB-T/T2 scan set from Tvheadend's transmitter files.
+
+        Tvheadend's built-in ``auto-Default`` table is DVB-T only, so it misses
+        UK HD services carried on DVB-T2 multiplexes. This synthetic option keeps
+        setup easy while preserving exact UK offsets, PLP ids, and delivery
+        systems from the bundled transmitter tables.
+        """
+        muxes_by_key: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+        for region in self.list_dvb_scanfiles("dvb-t"):
+            key = str(region.get("key") or "")
+            if not key.startswith("dvb-t/uk/"):
+                continue
+            try:
+                muxes = self.load_scanfile_muxes(key)
+            except Exception:
+                continue
+            for mux in muxes:
+                frequency = mux.get("frequency")
+                if not frequency:
+                    continue
+                mux_key = (
+                    int(frequency),
+                    str(mux.get("delsys") or ""),
+                    str(mux.get("bandwidth") or ""),
+                    int(mux.get("plp_id") if mux.get("plp_id") is not None else -1),
+                )
+                muxes_by_key[mux_key] = dict(mux)
+        return [
+            muxes_by_key[key]
+            for key in sorted(muxes_by_key, key=lambda k: (k[0], k[1], k[3]))
+        ]
 
     def delete_muxes(self, uuids: List[str]) -> None:
         if not uuids:
@@ -606,6 +648,16 @@ class TvheadendClient:
     def mapper_status(self) -> Dict:
         r = self._get(f"{self.base_url}/api/service/mapper/status")
         return r.json()
+
+    def status_inputs(self) -> List[Dict]:
+        r = self._get(f"{self.base_url}/api/status/inputs", params={"start": 0, "limit": 1000})
+        data = r.json()
+        return data.get("entries", [])
+
+    def status_subscriptions(self) -> List[Dict]:
+        r = self._get(f"{self.base_url}/api/status/subscriptions", params={"start": 0, "limit": 1000})
+        data = r.json()
+        return data.get("entries", [])
 
     def map_services(self, service_uuids: List[str]) -> Dict:
         node = {

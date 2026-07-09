@@ -193,12 +193,19 @@ function setTvSetupBadge(kind, text){
 
 function preferredTvSetupRegion(options, selected){
   const normalized = value => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const isTeleToolUkAuto = value => {
+    const n = normalized(value);
+    return n === "teletool-uk-auto-dvbt-dvbt2" || n.includes("auto-dvb-t-t2-teletool");
+  };
   const isAutoDefault = value => {
     const n = normalized(value);
     return n === "auto-default" || n.endsWith("-auto-default") || n.includes("auto-default");
   };
   const selectedText = normalized(selected);
   const selectedOption = options.find(o => o.value === selected || normalized(o.value) === selectedText || normalized(o.textContent) === selectedText);
+  if (selectedOption && selectedOption.value && !isAutoDefault(selectedOption.value) && !isAutoDefault(selectedOption.textContent)) return selectedOption.value;
+  const teletoolUkAuto = options.find(o => isTeleToolUkAuto(o.value) || isTeleToolUkAuto(o.textContent));
+  if (teletoolUkAuto) return teletoolUkAuto.value;
   if (selectedOption && selectedOption.value) return selectedOption.value;
   const autoDefault = options.find(o => isAutoDefault(o.value) || isAutoDefault(o.textContent));
   return autoDefault ? autoDefault.value : "";

@@ -68,7 +68,7 @@ The TV Setup panel on `/` can rebuild Tvheadend channel data for a DVB-T/T2 regi
 
 Important: this flow is destructive. It deletes current Tvheadend channels/services, applies the selected predefined mux region, starts a scan, and maps services back to channels.
 
-When no previous region has been saved, the region dropdown prefers Tvheadend's preconfigured mux list labelled `Generic: auto-Default` where available.
+When no previous region has been saved, the region dropdown prefers TeleTool's `United Kingdom: auto DVB-T/T2` option where available. This UK-wide option is slower than selecting a specific transmitter, but it preserves DVB-T2 HD multiplex parameters that Tvheadend's built-in `Generic: auto-Default` list does not include.
 
 Some RF environments can cause Tvheadend to stall near the end of a scan. TeleTool monitors mux progress during TV Setup:
 

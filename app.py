@@ -27,7 +27,7 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 RELEASE_MARKER_PATH = BASE_DIR / ".teletool_release.json"
 VERSION_PATH = BASE_DIR / "VERSION"
-APP_VERSION_FALLBACK = "V1.6.02"
+APP_VERSION_FALLBACK = "V1.6.03"
 CONFIG_LOCK = threading.Lock()
 
 

@@ -133,45 +133,6 @@
       </div>
     </div>
 
-
-    <div class="card">
-      <h2>App config</h2>
-
-      <div class="row">
-        <div class="field">
-          <label for="cfg_ndi_delay_ms">NDI delay (ms)</label>
-          <input id="cfg_ndi_delay_ms" inputmode="numeric" placeholder="500" />
-        </div>
-        <div class="field">
-          <label for="cfg_ndi_buffer_extra_ms">NDI jitter buffer extra (ms)</label>
-          <input id="cfg_ndi_buffer_extra_ms" inputmode="numeric" placeholder="0" />
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="field">
-          <label for="cfg_ndi_auto_reconnect_enabled">Auto reconnect</label>
-          <select id="cfg_ndi_auto_reconnect_enabled">
-            <option value="true">Enabled</option>
-            <option value="false">Disabled</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="cfg_ndi_startup_grace_s">Startup grace (s)</label>
-          <input id="cfg_ndi_startup_grace_s" inputmode="decimal" placeholder="10" />
-        </div>
-        <div class="field">
-          <label for="cfg_ndi_stall_timeout_s">Stall timeout (s)</label>
-          <input id="cfg_ndi_stall_timeout_s" inputmode="decimal" placeholder="5" />
-        </div>
-      </div>
-
-      <div class="actions">
-        <button id="saveAppConfig" class="primary">Save app config</button>
-        <span id="toastConfig" class="toast"></span>
-      </div>
-    </div>
-
   </div>
 </div>
 
@@ -363,19 +324,6 @@ async function refreshNetwork(){
   }
 }
 
-async function refreshConfig(){
-  try{
-    const cfg = await jget("/api/config/ui");
-    document.getElementById("cfg_ndi_delay_ms").value = String(cfg.ndi_delay_ms ?? 500);
-    document.getElementById("cfg_ndi_buffer_extra_ms").value = String(cfg.ndi_buffer_extra_ms ?? 0);
-    document.getElementById("cfg_ndi_auto_reconnect_enabled").value = String(cfg.ndi_auto_reconnect_enabled !== false);
-    document.getElementById("cfg_ndi_startup_grace_s").value = String(cfg.ndi_startup_grace_s ?? 10);
-    document.getElementById("cfg_ndi_stall_timeout_s").value = String(cfg.ndi_stall_timeout_s ?? 5);
-  } catch(e){
-    toastId("toastConfig", "Config refresh failed", true);
-  }
-}
-
 async function refreshReleaseInfo(){
   try{
     const info = await jget("/api/release");
@@ -391,7 +339,7 @@ async function refreshReleaseInfo(){
 }
 
 async function refreshAll(){
-  await Promise.all([refreshHostname(), refreshNetwork(), refreshConfig(), refreshReleaseInfo()]);
+  await Promise.all([refreshHostname(), refreshNetwork(), refreshReleaseInfo()]);
 }
 
 document.getElementById("mode").addEventListener("change", () => {
@@ -484,24 +432,6 @@ document.getElementById("updateFromServer").addEventListener("click", async () =
     toastId("toastPower", "Update failed: " + e, true, 7000);
     renderUpdateStatus({ running: false, done: true, percent: 100, step: "Update failed", error: String(e) });
     btn.disabled = false;
-  }
-});
-
-document.getElementById("saveAppConfig").addEventListener("click", async () => {
-  toastId("toastConfig", "Saving…");
-  try{
-    const payload = {
-      ndi_delay_ms: Number(document.getElementById("cfg_ndi_delay_ms").value || 500),
-      ndi_buffer_extra_ms: Number(document.getElementById("cfg_ndi_buffer_extra_ms").value || 0),
-      ndi_auto_reconnect_enabled: document.getElementById("cfg_ndi_auto_reconnect_enabled").value === "true",
-      ndi_startup_grace_s: Number(document.getElementById("cfg_ndi_startup_grace_s").value || 10),
-      ndi_stall_timeout_s: Number(document.getElementById("cfg_ndi_stall_timeout_s").value || 5),
-    };
-    const r = await jpost("/api/config/ui", payload);
-    toastId("toastConfig", r.ok ? "Config saved." : "Config save failed.", !r.ok);
-    await refreshConfig();
-  } catch(e){
-    toastId("toastConfig", "Config save failed: " + e, true);
   }
 });
 

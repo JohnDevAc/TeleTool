@@ -158,7 +158,6 @@ function renderUnit(unit){
   const systemText = unit.online ? "Online" : "Offline";
   const streamKind = !unit.online ? "bad" : (unit.stream_running ? "good" : "warn");
   const streamText = !unit.online ? "Unavailable" : (unit.stream_running ? "Running" : "Stopped");
-  const pipeline = unit.pipeline_status || unit.pipeline_state || (unit.online ? "-" : "offline");
   const channel = unit.stream_running ? textOrDash(unit.channel_label) : "-";
   const ndiName = textOrDash(unit.ndi_name || unit.default_ndi_name);
   const issue = statusLine(unit);
@@ -211,14 +210,6 @@ function renderUnit(unit){
 
       <div class="unitStats">
         <div class="stat">
-          <div class="k">IP / host</div>
-          <div class="v mono">${escapeHtml(unit.host || "-")}</div>
-        </div>
-        <div class="stat">
-          <div class="k">Hostname</div>
-          <div class="v mono">${escapeHtml(textOrDash(unit.hostname))}</div>
-        </div>
-        <div class="stat">
           <div class="k">Software</div>
           <div class="v mono" title="${escapeHtml(versionTitle)}">${escapeHtml(versionText)}</div>
         </div>
@@ -229,10 +220,6 @@ function renderUnit(unit){
         <div class="stat">
           <div class="k">Channel</div>
           <div class="v">${escapeHtml(channel)}</div>
-        </div>
-        <div class="stat">
-          <div class="k">Pipeline</div>
-          <div class="v mono">${escapeHtml(pipeline)}</div>
         </div>
         <div class="stat">
           <div class="k">Uptime</div>

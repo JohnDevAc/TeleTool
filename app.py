@@ -27,7 +27,7 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 RELEASE_MARKER_PATH = BASE_DIR / ".teletool_release.json"
 VERSION_PATH = BASE_DIR / "VERSION"
-APP_VERSION_FALLBACK = "V1.6.00"
+APP_VERSION_FALLBACK = "V1.6.01"
 CONFIG_LOCK = threading.Lock()
 
 
@@ -142,7 +142,7 @@ def _ndi_supervisor_config() -> Dict[str, Any]:
         "enabled": bool(cfg.get("ndi_auto_reconnect_enabled", True)),
         "poll_s": max(0.25, float(cfg.get("ndi_supervisor_poll_s", 1.0))),
         "startup_grace_s": max(1.0, float(cfg.get("ndi_startup_grace_s", 10.0))),
-        "stall_timeout_s": max(1.0, float(cfg.get("ndi_stall_timeout_s", 5.0))),
+        "stall_timeout_s": max(1.0, float(cfg.get("ndi_stall_timeout_s", 15.0))),
         "initial_backoff_s": max(0.25, float(cfg.get("ndi_reconnect_initial_backoff_s", 1.0))),
         "max_backoff_s": max(1.0, float(cfg.get("ndi_reconnect_max_backoff_s", 15.0))),
     }
@@ -729,17 +729,31 @@ def _ndi_supervisor_loop() -> None:
                 started_at = st.get("started_at") or NDI_SUPERVISOR_STATE.get("last_start_attempt_at") or now
 
                 if stats_available and rendered_i is not None:
-                    if prev is None or rendered_i != int(prev):
+                    try:
+                        prev_i = int(prev) if prev is not None else None
+                    except Exception:
+                        prev_i = None
+
+                    if prev_i is None or rendered_i != prev_i:
                         NDI_SUPERVISOR_STATE["last_rendered"] = rendered_i
-                        NDI_SUPERVISOR_STATE["last_rendered_change_at"] = now
-                        last_change = now
-                        if NDI_SUPERVISOR_STATE.get("healthy_since") is None:
-                            NDI_SUPERVISOR_STATE["healthy_since"] = now
-                        if NDI_SUPERVISOR_STATE.get("last_success_at") is None:
-                            NDI_SUPERVISOR_STATE["last_success_at"] = now
-                    if (now - float(started_at)) >= cfg_s["startup_grace_s"] and (now - float(last_change)) >= cfg_s["stall_timeout_s"]:
-                        should_restart = True
-                        restart_reason = f"stall: no NDI frames rendered for {cfg_s['stall_timeout_s']:.1f}s"
+                        if rendered_i > 0:
+                            NDI_SUPERVISOR_STATE["last_rendered_change_at"] = now
+                            last_change = now
+                            if NDI_SUPERVISOR_STATE.get("healthy_since") is None:
+                                NDI_SUPERVISOR_STATE["healthy_since"] = now
+                            if NDI_SUPERVISOR_STATE.get("last_success_at") is None:
+                                NDI_SUPERVISOR_STATE["last_success_at"] = now
+
+                    healthy_since = NDI_SUPERVISOR_STATE.get("healthy_since")
+                    if healthy_since:
+                        if (now - float(last_change)) >= cfg_s["stall_timeout_s"]:
+                            should_restart = True
+                            restart_reason = f"stall: no NDI frames rendered for {cfg_s['stall_timeout_s']:.1f}s"
+                    else:
+                        first_frame_timeout_s = max(cfg_s["startup_grace_s"], cfg_s["stall_timeout_s"] * 2.0)
+                        if (now - float(started_at)) >= first_frame_timeout_s:
+                            should_restart = True
+                            restart_reason = f"startup: no NDI frames rendered for {first_frame_timeout_s:.1f}s"
                 else:
                     # Some ndisink builds do not expose stats. In that case avoid false stall
                     # restarts and mark the pipeline healthy once it survives startup grace.

@@ -61,6 +61,13 @@ class GstPipelineBase:
             self._log_full.append(line)
             self._log_tail.append(line)
 
+    def _suppress_gst_warning(self, message: str, debug: Optional[str]) -> bool:
+        text = f"{message} {debug or ''}".upper()
+        # MPEG-TS continuity warnings often occur during channel tune/start while
+        # Tvheadend and tsdemux align to the new stream. They are noisy but not
+        # actionable if the pipeline reaches PLAYING and renders normally.
+        return "CONTINUITY: MISMATCH PACKET" in text and "TSDEMUX" in text
+
     def _set_pipeline_state(self, state_name: str):
         with self._lock:
             self._pipeline_state = state_name
@@ -305,6 +312,8 @@ class GstPipelineBase:
 
         elif t == Gst.MessageType.WARNING:
             err, dbg = msg.parse_warning()
+            if self._suppress_gst_warning(err.message, dbg):
+                return
             self._push_warn(f"WARNING: {err.message}" + (f" | {dbg}" if dbg else ""))
 
         elif t == Gst.MessageType.EOS:

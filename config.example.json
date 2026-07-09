@@ -11,7 +11,7 @@
   "ndi_auto_reconnect_enabled": true,
   "ndi_supervisor_poll_s": 1.0,
   "ndi_startup_grace_s": 10.0,
-  "ndi_stall_timeout_s": 5.0,
+  "ndi_stall_timeout_s": 15.0,
   "ndi_reconnect_initial_backoff_s": 1.0,
   "ndi_reconnect_max_backoff_s": 15.0,
   "rf_status_ttl_s": 1.0,

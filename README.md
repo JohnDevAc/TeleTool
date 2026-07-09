@@ -73,7 +73,50 @@ Common settings:
 
 Use `/system` or `POST /api/config/ui` to change UI-managed settings.
 
-## Raspberry Pi Setup
+## Clean Raspberry Pi Setup
+
+On a fresh Raspberry Pi OS Lite install, run the full bootstrap as the normal
+service user, for example `admin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/JohnDevAc/teletwat/dev/scripts/pi_full_setup.sh | bash
+```
+
+The full setup script installs OS packages, Tvheadend, DVB scan tables,
+GStreamer, Python dependencies, the TeleTool systemd service, and the sudo rules
+needed for System page network/power controls. It also creates Tvheadend blank
+username/blank password local admin access so TeleTool can use the local
+Tvheadend API without interactive first-run setup.
+
+By default the bootstrap installs the `dev` branch and seeds the Crystal Palace
+DVB-T/T2 scanfile:
+
+```sh
+TELETOOL_BRANCH=dev \
+TELETOOL_DVBT_SCANFILE=dvb-t/uk/dvb-t_uk-CrystalPalac \
+bash scripts/pi_full_setup.sh
+```
+
+Useful clean-install options:
+
+- `TELETOOL_PROJECT_DIR=/home/admin/tvh_ndi_bridge` - install location
+- `TELETOOL_SERVICE_USER=admin` - systemd service user
+- `TELETOOL_DVBT_SCANFILE=<scanfile>` - default TV transmitter/region
+- `TELETOOL_TVH_NETWORK_NAME=<name>` - seeded Tvheadend DVB-T network name
+- `TELETOOL_TVH_OPEN_LAN=1` - make the blank Tvheadend admin access LAN-wide
+- `TELETOOL_NDI_DEB=/path/to/ndi-plugin.deb` - install a supplied NDI package
+- `TELETOOL_APT_UPGRADE=1` - run `apt full-upgrade` before installing packages
+
+NDI support is not bundled in this repository. The script can install a supplied
+`.deb`, but otherwise you must install an ARM64 NDI runtime/GStreamer plugin
+that provides `ndisink`.
+
+After the script finishes, open TeleTool, confirm the DVB-T/T2 transmitter in TV
+Setup, and run the scan. For the Crystal Palace area, use the specific Crystal
+Palace region rather than the broad TeleTool UK auto scan to avoid duplicate
+services from other transmitters.
+
+## Raspberry Pi Project Setup
 
 TeleTool expects:
 
@@ -89,7 +132,10 @@ On the Pi, after syncing the project:
 bash scripts/pi_setup.sh
 ```
 
-The setup script installs common Debian/Raspberry Pi OS packages, creates `.venv` with system site packages, installs Python requirements, and installs the systemd service.
+The project setup script is the smaller installer for an already-synced checkout.
+It installs common Debian/Raspberry Pi OS packages, creates `.venv` with system
+site packages, installs Python requirements, and installs the systemd service.
+Use `scripts/pi_full_setup.sh` for a clean Raspberry Pi OS Lite bootstrap.
 
 NDI support is external to this repository. Verify it with:
 
@@ -166,6 +212,7 @@ Generated images are ignored by git. The builder stops TeleTool and Tvheadend du
 - `config.example.json` - committed config template
 - `config.json` - local runtime config, ignored by git
 - `deploy/systemd/tvh_ndi_bridge.service` - systemd service file
+- `scripts/pi_full_setup.sh` - clean Raspberry Pi OS Lite bootstrap
 - `scripts/pi_sync.ps1` - Windows sync helper
 - `scripts/pi_setup.sh` - Pi dependency and service setup
 - `scripts/pi_make_golden_image.sh` - optional SD-card image builder

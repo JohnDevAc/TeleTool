@@ -49,8 +49,9 @@ signed `InRelease`/`Release.gpg` metadata, the public archive keyring, and the
 terminal-based `install.sh` bootstrap. The bootstrap keeps APT output in
 `/var/log/teletool-installer.log`, displays a full-screen percentage view, and
 uses APT's status channel to advance through individual download, unpack,
-configuration, and trigger actions. It prints the Web UI address only after
-package triggers and service checks finish.
+configuration, and trigger actions. Individual package details stay in the log;
+the terminal shows a simple patience message. It prints the Web UI address only
+after package triggers and service checks finish.
 
 ## GitHub publishing
 

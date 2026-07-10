@@ -185,8 +185,9 @@ run_apt_with_progress() {
   download_span="$2"
   install_start="$3"
   install_span="$4"
-  default_label="$5"
-  shift 5
+  phase_label="$5"
+  display_message="$6"
+  shift 6
 
   progress_dir="$(mktemp -d /tmp/teletool-apt-progress.XXXXXX)"
   progress_pipe="$progress_dir/status"
@@ -211,11 +212,11 @@ run_apt_with_progress() {
     case "$progress_kind" in
       dlstatus)
         overall_percent=$((download_start + progress_whole * download_span / 100))
-        progress_label="Downloading packages"
+        progress_label="$phase_label"
         ;;
       pmstatus)
         overall_percent=$((install_start + progress_whole * install_span / 100))
-        progress_label="Installing packages"
+        progress_label="$phase_label"
         ;;
       pmerror|error)
         overall_percent="$TT_UI_LAST_PERCENT"
@@ -238,12 +239,12 @@ run_apt_with_progress() {
     esac
 
     if [ -z "$progress_description" ]; then
-      progress_description="$default_label"
+      progress_description="$phase_label"
     fi
     printf 'progress=%s phase=%s package=%s detail=%s\n' \
       "$overall_percent" "$progress_kind" "$progress_item" \
       "$progress_description" >>"$LOG_FILE"
-    tt_ui_progress "$overall_percent" "$progress_label" "$progress_description"
+    tt_ui_progress "$overall_percent" "$progress_label" "$display_message"
   done < "$progress_pipe"
 
   wait "$progress_pid" || true
@@ -294,17 +295,19 @@ Architectures: arm64
 Signed-By: $KEYRING
 EOF
 
-tt_ui_progress 15 "Refreshing package information" "Checking Raspberry Pi OS and TeleTool repositories"
-if ! run_apt_with_progress 15 5 20 0 "Refreshing package information" \
+tt_ui_progress 15 "Preparing TeleTool" "Please be patient, TeleTool is preparing the installation..."
+if ! run_apt_with_progress 15 5 20 0 "Preparing TeleTool" \
+  "Please be patient, TeleTool is preparing the installation..." \
   apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 update; then
   tt_ui_failure "Package information could not be refreshed." "$LOG_FILE"
   exit 1
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-tt_ui_progress 20 "Preparing TeleTool packages" "Resolving Tvheadend, GStreamer and media dependencies"
+tt_ui_progress 20 "Installing TeleTool" "Please be patient, TeleTool is installing..."
 export TELETOOL_DEFER_COMPLETION=1
-if ! run_apt_with_progress 20 30 50 45 "Installing TeleTool and its dependencies" \
+if ! run_apt_with_progress 20 30 50 45 "Installing TeleTool" \
+  "Please be patient, TeleTool is installing..." \
   apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 install -y teletool; then
   tt_ui_failure "TeleTool could not be installed." "$LOG_FILE"
   exit 1

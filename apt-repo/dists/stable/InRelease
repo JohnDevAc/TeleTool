@@ -4,42 +4,43 @@ Hash: SHA256
 Architectures: arm64
 Codename: stable
 Components: main
-Date: Fri, 10 Jul 2026 13:13:02 +0000
+Date: Fri, 10 Jul 2026 13:33:27 +0000
 Description: TeleTool Raspberry Pi packages
 Label: TeleTool
 Origin: TeleTool
 Suite: stable
 MD5Sum:
- f5c11bacf29a4d189b18489b05b648d7              184 Release
- 7efa8cc862b429fcefacebbe4be538f8             1324 main/binary-arm64/Packages
- 8616a6015d3271db77e950c8ece7de6e              748 main/binary-arm64/Packages.gz
- e15eb3c7df290d03a683f4ec7bc71b25              836 main/binary-arm64/Packages.xz
+ 0e3555d88c24a67f65e7f55c8792df7e              184 Release
+ 16f8d8cec21221d5c82e83b20ef306cb             1324 main/binary-arm64/Packages
+ ae22953701da67913eaa3891119c1b7c              747 main/binary-arm64/Packages.gz
+ dc914287ad2d0b54c1318ecb3611594e              836 main/binary-arm64/Packages.xz
 SHA1:
- 30815d49041a64e28367e45bd6027fd95026e257              184 Release
- 4e65925ff118f82510acdbad3e9469cec0fd0c0d             1324 main/binary-arm64/Packages
- c561fb06557e67ae2c63e20e16ded3c65571ae22              748 main/binary-arm64/Packages.gz
- 4372dedbf99d5a7bb2b4306f152e90e713703a10              836 main/binary-arm64/Packages.xz
+ 42e995425225944d9c86dfbc713788d22fb0a777              184 Release
+ fce5301ecfa2bd8cdbb47856ec8eccfb77183fdb             1324 main/binary-arm64/Packages
+ ee425a6a64a9a32320ecbbe5666a425a4318992a              747 main/binary-arm64/Packages.gz
+ 958f263527db726be009903f3b79525e59398234              836 main/binary-arm64/Packages.xz
 SHA256:
- c4a57c58b997a3f2c20b9fd608b0dd530287eb3aa025a417cd413ff1128bf39f              184 Release
- ba4f2e4462920714a2dd591665c5b5ff7c7fee587470c22394a4579298e5ee8c             1324 main/binary-arm64/Packages
- eb56c2660467606a5826f522e24e12aa6c95c647f5029a8188bace3bcc674e2d              748 main/binary-arm64/Packages.gz
- 6517d74c47d4206fc290cbf0784c5694bd2c66c3a2444097dcd98e7e90bb9dfc              836 main/binary-arm64/Packages.xz
+ e20d90795df7cc0a42a782f34f466fae3ed24e02d098a20cf797677567e5e673              184 Release
+ 8777c78dbf8fe1990fa99c2f275bf26db6067643ed8853f908eaed09d44e43e3             1324 main/binary-arm64/Packages
+ 320a14df321cf869de00e8accf27786b1ad46f5195ca6b6e7fcfc1816f2b056e              747 main/binary-arm64/Packages.gz
+ f2f7a17a4e558698e98bee2b5d144a1864ccb6e86c9781f7596ee4eb1d2f017a              836 main/binary-arm64/Packages.xz
 SHA512:
- f5362a50a5b14916e13d0c140ef6972b5fa1dc23d24322bfaf4044740f4c9100e657f4df444d1738d01984ae927dbba85e97004fb8e4a311248768121170d925              184 Release
- c4343ddbfbdd000bcf1a6adba05bcd4bfe2ef30ca60a3c630c4030bfb3ac47e530290b5366a3b1a618c471df0c6f11f2e155c5417dca2fd401bb6d3a766790c3             1324 main/binary-arm64/Packages
- 1e835bd6178f2e716ba88f33260d7642ffb7ef0d0c4a1ef5ba99b99ebc96e3e4c4b1b947945878a93fd7ffb451b07e38d582633147bbdfab7eec2fff87b5f347              748 main/binary-arm64/Packages.gz
- b8d42f14a7dcf4c34db2dad7edc05715c5e3fdf8ad68a6d6b2f9b73d887c494ab8ea2f158eb6514171cd15880ded39bef80084114656a7d71fec471bcf660df0              836 main/binary-arm64/Packages.xz
+ f8e584dfa95f2fb78a2731bf998251797f4e58bb8d326b6d8419671006c65dda2e710b84a4e9d3606d170e6474d80bf40a5ee7c98dae9573101bb80ee7f4e898              184 Release
+ 557ba8b337d1cc08f12cee14b6083ee878b5a5e69a28d24f93c1e70e40eb48453124971002662ea7214e4944def7314662c9ff1af6c27fcb5721e72283f6018d             1324 main/binary-arm64/Packages
+ a793c6104216c78c366d0767742156f1eb190cc7766e4a9f8cacdac15b60043ca95b4e6d96430d3d3fe8743e8fef12d91befc2b080c3978705dc6cb2807576b6              747 main/binary-arm64/Packages.gz
+ 22f51cc7de8092b80c600f78beb2dbe19450920b8231eb8e2ef1722cf90daec17b4cebceb5b8cf29f4e3c7c8b4d320a16e0d8274e55e92953d21c40da6dceec5              836 main/binary-arm64/Packages.xz
+
 -----BEGIN PGP SIGNATURE-----
 
-iQGzBAEBCAAdFiEEpG458YffHs4h+ntJ3XIpzfib83wFAmpQ8UAACgkQ3XIpzfib
-83yy2Av+OWq+muWT+BjYFSRO+qzhScZqQXUUYCC+fTS8EQyaxsTfO/YneAnIZLJc
-8eaNaPg/a3q05cOdAP5h1ob249B85SeR4QldzopFrepbD4G62pMc7zANfJuWWOZo
-rJrKsO4hfuoZkz0Kjr8jhegQRBBs1FZ7Ac4MPL9ruqUlD8aMgeTHVTKqo1V/7BtR
-0CCR6V3yABKhOpcQheExWTcjnz9kArSVRbBS5IyIEd0pb9T7vGsrTpSeSRFIwBOV
-GoUKhwf4g6oVvYWizkj4c6f+cEPkGxl7dUCgTr35CvkM7X5X3BQzVj1KEVS5WwJF
-qjj4gExZTUoHCu9nomnQ6JeTO1lWeF8R3s4k0r4IsCFbKC4I4dNps5o4JeYy8wuN
-CHnrHt0U0ikmczLWfDILNgdaqs/4ccZ9BhX8E1PGzohhwblEpvIIPMg6NvNwnsMU
-f01StsAXy45EOvQbdLHFev4iozyFO43V1IqCl3Kb4Kzk0FLpAqg5viT7vUybh0Jk
-mqUoVfB4
-=Dwnx
+iQGzBAEBCAAdFiEEpG458YffHs4h+ntJ3XIpzfib83wFAmpQ+E4ACgkQ3XIpzfib
+83wXmwv+PHH/fW924tVKvUD8OGMJlc6NPs78dISLM19uk+EHbWFo8mJeZaNAPizV
+ix5fvJD+oIO9cdH2/nYM+qQNMeUc6RLBcdSd5UD/2mIXZ49dZmBYBRUxL4qNf2xG
+uz3IrF95zks5s5g/QqH1mqDIizL3gQXSRfLROatkqhP3r8KMFweaPasd3WqC16cq
+wv2KPMm65DTBXjYUMCik0Lt9mIiMs3kPINgTuV4bc0MkYEic690Vn+zV40tEqU4I
+gmxxceEoMnXxpU7fFtc0JCKuMQ4rlfQQegqlMHlLAYkgQfuDLlnyqfEgyGDY93m2
+J7IrigOCqWm1W2kLvvNzkEJAQPCdFUDKd/+DEyg5GjufuMJVRzFsbr5vOhXSNdNn
+RfkgJyDKvvGESyOqneLJNxIjWxDObO7iEnO599OMa8UTpkZDYUT5Pmu1EzTbtKSB
+swSAfAJzqgk9X82yqXybZVWSgSfesrAg1JxB6q/fPm76lyD0Ex+wAfti+efl/5qU
+3cEyifUJ
+=fvE4
 -----END PGP SIGNATURE-----

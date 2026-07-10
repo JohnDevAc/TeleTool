@@ -1,0 +1,46 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Architectures: arm64
+Codename: dev
+Components: main
+Date: Fri, 10 Jul 2026 15:41:02 +0000
+Description: TeleTool Raspberry Pi packages
+Label: TeleTool
+Origin: TeleTool
+Suite: dev
+MD5Sum:
+ 40369884c951891b25ed1362b2222407              178 Release
+ 09c89f027a65fcc2ef74bd148989b855             1342 main/binary-arm64/Packages
+ 0d9255aa5faa094c0584d8ec7ac9828e              756 main/binary-arm64/Packages.gz
+ 4f78ccf74b9617ff1b51294ea34d42a7              840 main/binary-arm64/Packages.xz
+SHA1:
+ 845e1b1f7aaa5ae8234a86d83d8c7f6605c09ea8              178 Release
+ b2fbb9705debaf1e29c0766eda6f74bd374269e7             1342 main/binary-arm64/Packages
+ 53581b515f7fab1e077952ac25414de079ccdcce              756 main/binary-arm64/Packages.gz
+ a88e78642b0bcfc2e3888731428083ce251f0b0a              840 main/binary-arm64/Packages.xz
+SHA256:
+ 3d83a558781f3400675a72c94fdecd2770f811aa090a732ca5f2fdac27395dc9              178 Release
+ 3adec6e5151effe5952e7bf9004ff8f041870b2fe79645f8fbbae13a76c4dbe3             1342 main/binary-arm64/Packages
+ b8c04e3642ae4bacb1d41a5247b0b4bce185e45af076fb0586cd0f5cfb20066a              756 main/binary-arm64/Packages.gz
+ c9d362837fb28ed665dadafb7a222c1b5bb2fa82594fc7e58fd8eac4c9a976c2              840 main/binary-arm64/Packages.xz
+SHA512:
+ 18605153012ca4071aa9f3d56e8dd07a02d1ea329da4265863c1d972f879e14b4db90b69ce775fce218c5aa5f048cb6bfadbae84ea55919d104f5d457c8134a4              178 Release
+ 71abab445e13a143f60d4645d42828a018a89abd100496d12ad7143d13c671683051b2426c4b520ff4b205b8c28bdd79e20516300303105ceac175cf56ae1591             1342 main/binary-arm64/Packages
+ f8ca6152c8898afb48d2a80902fdaa98cc4f561f629e2ca4cf61c3ac59947fd6a3a6d30ec8ca16662380140f2ae7fa2149b171d8a4d0e97d71dbad22690b1feb              756 main/binary-arm64/Packages.gz
+ 3221879177d03c20903a7fd4e41444f7b2693810122295e6ae7a19cd886b6bfc66bfeb3270bd865b43963cef447638388e87e8fc5fe83ea4fc379d0f7250549c              840 main/binary-arm64/Packages.xz
+
+-----BEGIN PGP SIGNATURE-----
+
+iQGzBAEBCAAdFiEEpG458YffHs4h+ntJ3XIpzfib83wFAmpRExsACgkQ3XIpzfib
+83wiQAv+NCVxmuk3ruMgpAJw+Pg49IYrCRhg+44YrdGZxQ9BAYHIOpPALmjdywGz
+39EaZzhZFEptzBp/SAIsVnyMfkHgbqcHlI2YLIsOuW34HcU2EQFB4AYFOeR7zCfP
+FVpcYy2wiabzsFKn+8FjVRW6hSaXBoiXgqUXd7gnJcBHbOwbELlCmErbETeT0YJK
+c7RV6sAEu71WfZFA5iUi9Kzm6NTFeDv+/LRMDf71mIEre8a1XdInoXVj1NSgb8P5
+B8StIP650WuUTBtlE9l/jvFRznF8lk1TWQNWg1g0nD+MIimP0Ey1Bf/6mEOKsYcZ
+hBxkwpsHx+aKMSZ5CWtPyjxSu2Hwr5nqmEVNKg2d1uutyIWYzC2sr1ox1egDh6mK
+fsx6TpqNoBn2AHCONxVgz5kUNIBf6o2czYPM4D4uiA65i7sSrDM69H/6Xqn2Lg2S
+UZliLiSUhdua5PBRwr/wEs63rZPNOb1gKG2DLrE/qcfE3fzKLm97/WU8LeUnOcvE
+e4nFTqR6
+=9CJ+
+-----END PGP SIGNATURE-----

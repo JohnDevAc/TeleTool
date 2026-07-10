@@ -71,6 +71,9 @@ run_apt_with_progress() {
     if [ -z "$progress_description" ]; then
       progress_description="$default_label"
     fi
+    printf 'progress=%s phase=%s package=%s detail=%s\n' \
+      "$overall_percent" "$progress_kind" "$progress_item" \
+      "$progress_description" >>"$LOG_FILE"
     tt_ui_progress "$overall_percent" "$progress_label" "$progress_description"
   done < "$progress_pipe"
 

@@ -199,12 +199,13 @@ function renderUpdateStatus(st){
   bar.style.width = `${percent}%`;
   step.textContent = error ? ("Update failed: " + error) : ((st && st.step) || "Idle");
   if (btn) btn.disabled = running;
-  if (branchSelect) branchSelect.disabled = packageManagedInstall || running;
+  if (branchSelect) branchSelect.disabled = running;
 
   if (error) toastId("toastPower", "Update failed: " + error, true, 7000);
   else if (running) toastId(
     "toastPower",
-    packageManagedInstall ? "Installing the latest signed TeleTool package..." :
+    packageManagedInstall ?
+      ("Installing the signed TeleTool " + updateBranchLabel(st && st.branch) + " channel...") :
       ("Updating from " + updateBranchLabel(st && st.branch) + " branch...")
   );
   else if (done){
@@ -343,12 +344,12 @@ async function refreshReleaseInfo(){
       const branchSelect = document.getElementById("updateBranch");
       if (btn){
         btn.textContent = "Check for Update";
-        btn.title = "Install the latest signed TeleTool package";
+        btn.title = "Install or switch to the selected signed TeleTool channel";
       }
       if (branchSelect){
-        branchSelect.value = "main";
-        branchSelect.disabled = true;
-        branchSelect.title = "Package updates use the signed stable repository";
+        branchSelect.value = String((info && info.branch) || "main").toLowerCase() === "dev" ? "dev" : "main";
+        branchSelect.disabled = false;
+        branchSelect.title = "Choose the signed Main or Dev package channel";
       }
     }
   } catch(e){
@@ -439,7 +440,7 @@ document.getElementById("updateFromServer").addEventListener("click", async () =
   const branch = document.getElementById("updateBranch").value || "main";
   const branchLabel = updateBranchLabel(branch);
   const prompt = packageManagedInstall ?
-    "Install the latest signed TeleTool package now? The service will restart if an update is available." :
+    `Install or switch to the signed TeleTool ${branchLabel} channel now? The service will restart if the package changes.` :
     `Update from the ${branchLabel} branch now? Do not do this while TeleTool is in production. The service will restart after the update.`;
   const ok = window.confirm(prompt);
   if (!ok) return;

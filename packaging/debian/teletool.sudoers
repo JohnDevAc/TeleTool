@@ -1,6 +1,7 @@
 # TeleTool Web UI privileges. The service runs as the unprivileged teletool user.
 teletool ALL=(root) NOPASSWD: /usr/lib/teletool/bin/install-ndi-runtime ""
-teletool ALL=(root) NOPASSWD: /usr/bin/systemctl --no-block start teletool-update.service
+teletool ALL=(root) NOPASSWD: /usr/bin/systemctl --no-block start teletool-update@main.service
+teletool ALL=(root) NOPASSWD: /usr/bin/systemctl --no-block start teletool-update@dev.service
 teletool ALL=(root) NOPASSWD: /usr/bin/nmcli *
 teletool ALL=(root) NOPASSWD: /usr/bin/systemctl restart NetworkManager
 teletool ALL=(root) NOPASSWD: /usr/bin/systemctl restart dhcpcd

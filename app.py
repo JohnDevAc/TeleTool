@@ -39,7 +39,7 @@ PACKAGE_MANAGED = str(os.environ.get("TELETOOL_PACKAGE_MANAGED", "0")).strip().l
 PACKAGE_UPDATE_STATUS_PATH = Path(
     os.environ.get("TELETOOL_PACKAGE_UPDATE_STATUS_PATH", "/var/lib/teletool/update-status.json")
 ).expanduser()
-APP_VERSION_FALLBACK = "V1.7.2"
+APP_VERSION_FALLBACK = "V1.7.3"
 CONFIG_LOCK = threading.Lock()
 NDI_RUNTIME_NAME = "libndi.so.6"
 NDI_SDK_URL = "https://ndi.video/for-developers/ndi-sdk/"
@@ -3619,9 +3619,9 @@ def api_system_update_from_server(req: ProgramUpdateReq):
     if PACKAGE_MANAGED:
         # Keep apt/dpkg outside teletool.service's cgroup. The package postinst
         # restarts TeleTool, which would otherwise kill its own update process.
-        status = _set_update_status(branch=DEFAULT_RELEASE_BRANCH)
+        unit = f"teletool-update@{branch}.service"
         rc, out, err = _run_cmd(
-            ["systemctl", "--no-block", "start", "teletool-update.service"],
+            ["systemctl", "--no-block", "start", unit],
             sudo=True,
             timeout_s=12,
         )

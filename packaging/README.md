@@ -68,6 +68,12 @@ repository, build and sign `apt-repo/`, commit that directory, and keep `main`
 and `dev` on the same tested release commit. The private signing key must remain
 outside Git and the public key is published inside `apt-repo/`.
 
+Development packages use the separately signed `apt-repo-dev/` repository on
+the `dev` branch with suite `dev` and Debian versions such as
+`1.7.3+dev.<run>`. Package-managed units can switch between Main and Dev from
+the System page; the updater rewrites only the TeleTool source and installs the
+exact version advertised by the selected signed repository.
+
 The published fresh-install command is:
 
 ```sh

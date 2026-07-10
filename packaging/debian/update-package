@@ -4,7 +4,27 @@ set -eu
 STATUS_DIR="/var/lib/teletool"
 STATUS_FILE="$STATUS_DIR/update-status.json"
 LOG_FILE="/var/log/teletool-web-update.log"
+SOURCE_FILE="/etc/apt/sources.list.d/teletool.sources"
+KEYRING="/usr/share/keyrings/teletool-archive-keyring.gpg"
+channel="${1:-}"
 started_at="$(date +%s)"
+
+case "$channel" in
+  main)
+    channel_label="Main"
+    repository_url="https://johndevac.github.io/teletwat/apt-repo"
+    suite="stable"
+    ;;
+  dev)
+    channel_label="Dev"
+    repository_url="https://raw.githubusercontent.com/JohnDevAc/teletwat/dev/apt-repo-dev"
+    suite="dev"
+    ;;
+  *)
+    printf 'Usage: %s main|dev\n' "$0" >&2
+    exit 2
+    ;;
+esac
 
 write_status() {
   running="$1"
@@ -15,9 +35,9 @@ write_status() {
   finished_at="$6"
   restart_required="$7"
   tmp="$(mktemp "$STATUS_DIR/.update-status.XXXXXX")"
-  printf '{\n  "running": %s,\n  "done": %s,\n  "percent": %s,\n  "step": "%s",\n  "error": %s,\n  "started_at": %s,\n  "finished_at": %s,\n  "branch": "main",\n  "package_managed": true,\n  "restart_required": %s,\n  "log": "%s"\n}\n' \
+  printf '{\n  "running": %s,\n  "done": %s,\n  "percent": %s,\n  "step": "%s",\n  "error": %s,\n  "started_at": %s,\n  "finished_at": %s,\n  "branch": "%s",\n  "package_managed": true,\n  "restart_required": %s,\n  "log": "%s"\n}\n' \
     "$running" "$done" "$percent" "$step" "$error_json" \
-    "$started_at" "$finished_at" "$restart_required" "$LOG_FILE" >"$tmp"
+    "$started_at" "$finished_at" "$channel" "$restart_required" "$LOG_FILE" >"$tmp"
   install -o teletool -g teletool -m 0640 "$tmp" "$STATUS_FILE"
   rm -f "$tmp"
 }
@@ -36,25 +56,42 @@ install -d -m 0755 /var/log
 chmod 0644 "$LOG_FILE"
 trap update_failed EXIT
 
-write_status true false 5 "Checking the signed TeleTool repository" null null false
+write_status true false 5 "Selecting the signed $channel_label channel" null null false
 exec >>"$LOG_FILE" 2>&1
 
+cat >"$SOURCE_FILE" <<EOF
+Types: deb
+URIs: $repository_url
+Suites: $suite
+Components: main
+Architectures: arm64
+Signed-By: $KEYRING
+EOF
+
+write_status true false 20 "Checking the signed $channel_label repository" null null false
 apt-get -qq -o Acquire::Retries=3 -o DPkg::Lock::Timeout=300 update
-write_status true false 45 "Checking for a newer TeleTool package" null null false
+write_status true false 45 "Resolving the $channel_label package version" null null false
 
 before="$(dpkg-query -W -f='${Version}' teletool 2>/dev/null || true)"
-write_status true false 65 "Installing the latest signed TeleTool package" null null false
+target_version="$(apt-cache madison teletool | awk 'NR == 1 {print $3}')"
+case "$target_version" in
+  ''|*[!0-9A-Za-z.+:~_-]*)
+    printf 'No valid TeleTool package was found in the %s repository.\n' "$channel_label" >&2
+    exit 1
+    ;;
+esac
+
+write_status true false 65 "Installing TeleTool $target_version from $channel_label" null null false
 DEBIAN_FRONTEND=noninteractive apt-get -qq \
   -o Acquire::Retries=3 -o DPkg::Lock::Timeout=300 -o Dpkg::Use-Pty=0 \
-  install --only-upgrade -y teletool
+  install --only-upgrade --allow-downgrades -y "teletool=$target_version"
 after="$(dpkg-query -W -f='${Version}' teletool 2>/dev/null || true)"
 
 trap - EXIT
 if [ -n "$before" ] && [ "$before" = "$after" ]; then
-  write_status false true 100 "TeleTool is already up to date." null "$(date +%s)" false
+  write_status false true 100 "TeleTool $channel_label is already up to date." null "$(date +%s)" false
 else
-  write_status false true 100 "Update complete. TeleTool has restarted." null "$(date +%s)" true
+  write_status false true 100 "Switched to TeleTool $channel_label $after." null "$(date +%s)" true
 fi
 
 exit 0
-

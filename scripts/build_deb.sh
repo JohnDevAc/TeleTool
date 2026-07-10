@@ -9,6 +9,7 @@ VERSION="${TELETOOL_PACKAGE_VERSION:-$(tr -d '\r\n' < "$PROJECT_DIR/VERSION")}"
 VERSION="${VERSION#V}"
 VERSION="${VERSION#v}"
 INSTALLER_VERSION="${TELETOOL_INSTALLER_VERSION:-$(tr -d '\r\n' < "$PROJECT_DIR/INSTALLER_VERSION")}"
+RELEASE_BRANCH="${TELETOOL_RELEASE_BRANCH:-main}"
 
 if ! [[ "$VERSION" =~ ^[0-9][0-9A-Za-z.+:~-]*$ ]]; then
   echo "Invalid TeleTool package version: $VERSION" >&2
@@ -18,6 +19,14 @@ if ! [[ "$INSTALLER_VERSION" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
   echo "Invalid TeleTool installer version: $INSTALLER_VERSION" >&2
   exit 1
 fi
+case "$RELEASE_BRANCH" in
+  main) RELEASE_LABEL="Main"; RELEASE_DEVELOPMENT=false ;;
+  dev) RELEASE_LABEL="Dev"; RELEASE_DEVELOPMENT=true ;;
+  *)
+    echo "Invalid TeleTool release branch: $RELEASE_BRANCH" >&2
+    exit 1
+    ;;
+esac
 
 for command_name in dpkg dpkg-deb dpkg-architecture file install sed; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -69,18 +78,20 @@ install -d \
   "$package_root/usr/lib/$multiarch/gstreamer-1.0" \
   "$package_root/usr/share/doc/teletool"
 
-for source_file in app.py gst_base.py gst_ndi.py tvh.py config.example.json VERSION INSTALLER_VERSION; do
+for source_file in app.py gst_base.py gst_ndi.py tvh.py config.example.json INSTALLER_VERSION; do
   install -m 0644 "$PROJECT_DIR/$source_file" "$app_root/$source_file"
 done
+printf 'V%s\n' "$VERSION" >"$app_root/VERSION"
+chmod 0644 "$app_root/VERSION"
 cp -a "$PROJECT_DIR/static/." "$app_root/static/"
 install -m 0644 "$PROJECT_DIR/README.md" "$package_root/usr/share/doc/teletool/README.md"
 install -m 0644 "$PROJECT_DIR/API.md" "$package_root/usr/share/doc/teletool/API.md"
 
 cat > "$app_root/.teletool_release.json" <<JSON
 {
-  "branch": "main",
-  "label": "APT package",
-  "development": false
+  "branch": "$RELEASE_BRANCH",
+  "label": "$RELEASE_LABEL",
+  "development": $RELEASE_DEVELOPMENT
 }
 JSON
 chmod 0644 "$app_root/.teletool_release.json"
@@ -95,8 +106,8 @@ done
 
 install -m 0644 "$PROJECT_DIR/packaging/debian/teletool.service" \
   "$package_root/lib/systemd/system/teletool.service"
-install -m 0644 "$PROJECT_DIR/packaging/debian/teletool-update.service" \
-  "$package_root/lib/systemd/system/teletool-update.service"
+install -m 0644 "$PROJECT_DIR/packaging/debian/teletool-update@.service" \
+  "$package_root/lib/systemd/system/teletool-update@.service"
 install -m 0440 "$PROJECT_DIR/packaging/debian/teletool.sudoers" \
   "$package_root/etc/sudoers.d/teletool"
 install -m 0755 "$PROJECT_DIR/packaging/debian/configure-tvheadend" \

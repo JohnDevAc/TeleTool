@@ -20,28 +20,41 @@ def require(path: str, *needles: str) -> None:
 require(
     "packaging/debian/update-package",
     "apt-get -qq",
-    "install --only-upgrade -y teletool",
+    "install --only-upgrade --allow-downgrades",
+    "apt-repo-dev",
     "update-status.json",
 )
 require(
-    "packaging/debian/teletool-update.service",
-    "ExecStart=/usr/lib/teletool/bin/update-package",
+    "packaging/debian/teletool-update@.service",
+    "ExecStart=/usr/lib/teletool/bin/update-package %i",
 )
 require(
     "packaging/debian/teletool.sudoers",
-    "/usr/bin/systemctl --no-block start teletool-update.service",
+    "/usr/bin/systemctl --no-block start teletool-update@main.service",
+    "/usr/bin/systemctl --no-block start teletool-update@dev.service",
 )
 require(
     "scripts/build_deb.sh",
-    "packaging/debian/teletool-update.service",
+    "packaging/debian/teletool-update@.service",
     "packaging/debian/update-package",
+    "TELETOOL_RELEASE_BRANCH",
+)
+require(
+    ".github/workflows/build-apt-package.yml",
+    "teletool-arm64-dev-package",
+    "TELETOOL_APT_SUITE: dev",
+    "TELETOOL_RELEASE_BRANCH: dev",
 )
 require(
     "app.py",
-    '["systemctl", "--no-block", "start", "teletool-update.service"]',
+    'unit = f"teletool-update@{branch}.service"',
     "_read_package_update_status",
 )
-require("static/system.html", 'btn.textContent = "Check for Update"')
+require(
+    "static/system.html",
+    'btn.textContent = "Check for Update"',
+    'branchSelect.disabled = false',
+)
 
 for path in (ROOT / "app.py", ROOT / "static" / "system.html"):
     if "Managed by apt" in path.read_text(encoding="utf-8"):

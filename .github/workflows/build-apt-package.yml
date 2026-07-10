@@ -7,6 +7,9 @@ on:
       - dev
     tags:
       - "v*"
+    paths-ignore:
+      - "apt-repo/**"
+      - "apt-repo-dev/**"
 
 permissions:
   contents: write
@@ -68,6 +71,29 @@ jobs:
       - name: Build the APT repository
         run: scripts/build_apt_repo.sh dist build/apt-repo
 
+      - name: Resolve the Dev package version
+        if: github.ref == 'refs/heads/dev'
+        id: dev_version
+        run: |
+          base="$(tr -d '\r\n' < VERSION)"
+          base="${base#V}"
+          base="${base#v}"
+          echo "version=${base}+dev.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Build the Dev Debian package
+        if: github.ref == 'refs/heads/dev'
+        env:
+          TELETOOL_GST_NDI_PLUGIN: ${{ github.workspace }}/dist/libgstndi.so
+          TELETOOL_PACKAGE_VERSION: ${{ steps.dev_version.outputs.version }}
+          TELETOOL_RELEASE_BRANCH: dev
+        run: scripts/build_deb.sh dist-dev
+
+      - name: Build the Dev APT repository
+        if: github.ref == 'refs/heads/dev'
+        env:
+          TELETOOL_APT_SUITE: dev
+        run: scripts/build_apt_repo.sh dist-dev build/apt-repo-dev
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -75,6 +101,16 @@ jobs:
           path: |
             dist/*.deb
             build/apt-repo/
+          if-no-files-found: error
+
+      - name: Upload Dev build artifacts
+        if: github.ref == 'refs/heads/dev'
+        uses: actions/upload-artifact@v4
+        with:
+          name: teletool-arm64-dev-package
+          path: |
+            dist-dev/*.deb
+            build/apt-repo-dev/
           if-no-files-found: error
 
       - name: Publish tagged Debian package to GitHub Releases

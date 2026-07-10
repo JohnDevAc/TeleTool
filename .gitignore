@@ -28,5 +28,6 @@ Thumbs.db
 *.zip
 golden-images/
 /dist/
+/build/
 /.codex-tmp/
 /.secrets/

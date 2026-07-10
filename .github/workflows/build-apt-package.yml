@@ -60,7 +60,7 @@ jobs:
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
       - name: Build the APT repository
-        run: scripts/build_apt_repo.sh dist apt-repo
+        run: scripts/build_apt_repo.sh dist build/apt-repo
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -68,7 +68,7 @@ jobs:
           name: teletool-arm64-package
           path: |
             dist/*.deb
-            apt-repo/
+            build/apt-repo/
           if-no-files-found: error
 
       - name: Publish tagged Debian package to GitHub Releases

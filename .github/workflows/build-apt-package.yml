@@ -3,6 +3,8 @@ name: Build TeleTool APT package
 on:
   workflow_dispatch:
   push:
+    branches:
+      - dev
     tags:
       - "v*"
 

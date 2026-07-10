@@ -2,9 +2,12 @@
 set -e
 
 . /usr/lib/teletool/bin/terminal-ui
-tt_ui_init
-trap tt_ui_reset EXIT
-tt_ui_stage 4 4 "Finalising TeleTool services"
+defer_completion="${TELETOOL_DEFER_COMPLETION:-0}"
+if [ "$defer_completion" != "1" ]; then
+  tt_ui_init
+  trap tt_ui_reset EXIT
+  tt_ui_progress 85 "Finalising TeleTool services" "Starting the Web UI and Tvheadend"
+fi
 
 if ! getent group teletool >/dev/null 2>&1; then
   addgroup --system teletool >/dev/null
@@ -49,31 +52,28 @@ systemctl disable --now tvh-ndi-bridge.service 2>/dev/null || true
 systemctl enable teletool.service 2>/dev/null || true
 systemctl restart teletool.service 2>/dev/null || true
 
+if [ "$defer_completion" = "1" ]; then
+  exit 0
+fi
+
 ip="$(hostname -I 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+\./ && $i !~ /^127\./) {print $i; exit}}')"
 if [ -z "$ip" ]; then
   ip="$(hostname -s 2>/dev/null || printf teletool).local"
 fi
 
 tt_ui_completion_header
-if systemctl is-active --quiet teletool.service 2>/dev/null; then
-  tt_ui_status OK "TeleTool service is running"
-else
+tt_ui_web_link "http://$ip:8000/"
+if ! systemctl is-active --quiet teletool.service 2>/dev/null; then
   tt_ui_status ERROR "TeleTool service did not start; run systemctl status teletool"
 fi
-if systemctl is-active --quiet tvheadend.service 2>/dev/null; then
-  tt_ui_status OK "Tvheadend service is running"
-else
+if ! systemctl is-active --quiet tvheadend.service 2>/dev/null; then
   tt_ui_status WARN "Tvheadend service is not running"
 fi
-if gst-inspect-1.0 ndisink >/dev/null 2>&1 && \
-   gst-inspect-1.0 ndisinkcombiner >/dev/null 2>&1; then
-  tt_ui_status OK "GStreamer NDI plugin is installed"
-else
+if ! gst-inspect-1.0 ndisink >/dev/null 2>&1 || \
+   ! gst-inspect-1.0 ndisinkcombiner >/dev/null 2>&1; then
   tt_ui_status ERROR "GStreamer NDI plugin verification failed"
 fi
-if gst-inspect-1.0 alsasink >/dev/null 2>&1; then
-  tt_ui_status OK "GStreamer ALSA audio output is installed"
-else
+if ! gst-inspect-1.0 alsasink >/dev/null 2>&1; then
   tt_ui_status WARN "GStreamer ALSA audio output was not detected"
 fi
 
@@ -81,24 +81,13 @@ runtime_ready=0
 if ldconfig -p 2>/dev/null | grep -q 'libndi\.so\.6' && \
    [ -f /var/lib/teletool/ndi-runtime-verified ]; then
   runtime_ready=1
-  tt_ui_status READY "NDI SDK runtime is installed and verified"
-else
-  tt_ui_status ACTION "NDI SDK runtime must be uploaded in the TeleTool Web UI"
 fi
-
-printf '\n  %s%sOPEN THE UNIT WEB UI%s\n' "$TT_UI_BLUE" "$TT_UI_BOLD" "$TT_UI_RESET"
-printf '  ------------------------------------------------------------------------------\n'
-printf '  %s%s%s\n' "$TT_UI_BOLD" "http://$ip:8000/" "$TT_UI_RESET"
-printf '  ------------------------------------------------------------------------------\n'
 
 if [ "$runtime_ready" -ne 1 ]; then
-  printf '\n  Finish NDI setup in the browser:\n'
-  printf '  1. Open the TeleTool link above.\n'
-  printf '  2. Download the Linux NDI SDK from:\n'
-  printf '     https://ndi.video/for-developers/ndi-sdk/\n'
-  printf '  3. Drop the ARM64 libndi.so.6 file onto the upload box.\n'
-  printf '  4. TeleTool will verify it and open normally.\n'
+  printf '\n  %sNDI SDK REQUIRED%s\n' "$TT_UI_YELLOW" "$TT_UI_RESET"
+  printf '  Open the address above and upload the ARM64 libndi.so.6 file.\n'
+  printf '  SDK: https://ndi.video/for-developers/ndi-sdk/\n'
 fi
-printf '\n  Package updates: sudo apt-get update && sudo apt-get upgrade\n\n'
+printf '\n'
 
 exit 0

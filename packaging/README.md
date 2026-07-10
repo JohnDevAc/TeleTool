@@ -29,6 +29,10 @@ TELETOOL_GST_NDI_PLUGIN="$PWD/dist/libgstndi.so" scripts/build_deb.sh dist
 
 The result is `dist/teletool_<version>_arm64.deb`.
 
+Application and installer versions are tracked separately in `VERSION` and
+`INSTALLER_VERSION`. The installer version is displayed by the terminal UI and
+stored in the package's `X-TeleTool-Installer-Version` control field.
+
 ## Build a repository
 
 `build_apt_repo.sh` needs `dpkg-dev`, `apt-utils`, `xz-utils`, and GnuPG. Use a
@@ -42,7 +46,9 @@ scripts/build_apt_repo.sh dist apt-repo
 
 This creates the standard `dists/stable/main/binary-arm64` and `pool` layout,
 signed `InRelease`/`Release.gpg` metadata, the public archive keyring, and the
-terminal-based `install.sh` bootstrap.
+terminal-based `install.sh` bootstrap. The bootstrap keeps APT output in
+`/var/log/teletool-installer.log`, displays a full-screen percentage view, and
+prints the Web UI address only after package triggers and service checks finish.
 
 ## GitHub publishing
 

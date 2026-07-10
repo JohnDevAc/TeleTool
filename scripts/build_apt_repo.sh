@@ -7,6 +7,12 @@ REPO_DIR="${2:-$PROJECT_DIR/apt-repo}"
 SUITE="${TELETOOL_APT_SUITE:-stable}"
 COMPONENT="main"
 ARCH="arm64"
+INSTALLER_VERSION="${TELETOOL_INSTALLER_VERSION:-$(tr -d '\r\n' < "$PROJECT_DIR/INSTALLER_VERSION")}"
+
+if ! [[ "$INSTALLER_VERSION" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
+  echo "Invalid TeleTool installer version: $INSTALLER_VERSION" >&2
+  exit 1
+fi
 
 for command_name in apt-ftparchive dpkg-scanpackages gzip install tail xz; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -70,7 +76,8 @@ else
 fi
 
 {
-  cat "$PROJECT_DIR/packaging/debian/terminal-ui"
+  sed "s/__INSTALLER_VERSION__/$INSTALLER_VERSION/g" \
+    "$PROJECT_DIR/packaging/debian/terminal-ui"
   tail -n +2 "$PROJECT_DIR/packaging/apt/install.sh"
 } > "$REPO_DIR/install.sh"
 chmod 0755 "$REPO_DIR/install.sh"

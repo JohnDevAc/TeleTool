@@ -8,6 +8,16 @@ PACKAGE_ARCH="arm64"
 VERSION="${TELETOOL_PACKAGE_VERSION:-$(tr -d '\r\n' < "$PROJECT_DIR/VERSION")}"
 VERSION="${VERSION#V}"
 VERSION="${VERSION#v}"
+INSTALLER_VERSION="${TELETOOL_INSTALLER_VERSION:-$(tr -d '\r\n' < "$PROJECT_DIR/INSTALLER_VERSION")}"
+
+if ! [[ "$VERSION" =~ ^[0-9][0-9A-Za-z.+:~-]*$ ]]; then
+  echo "Invalid TeleTool package version: $VERSION" >&2
+  exit 1
+fi
+if ! [[ "$INSTALLER_VERSION" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
+  echo "Invalid TeleTool installer version: $INSTALLER_VERSION" >&2
+  exit 1
+fi
 
 for command_name in dpkg dpkg-deb dpkg-architecture file install sed; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -59,7 +69,7 @@ install -d \
   "$package_root/usr/lib/$multiarch/gstreamer-1.0" \
   "$package_root/usr/share/doc/teletool"
 
-for source_file in app.py gst_base.py gst_ndi.py tvh.py config.example.json VERSION; do
+for source_file in app.py gst_base.py gst_ndi.py tvh.py config.example.json VERSION INSTALLER_VERSION; do
   install -m 0644 "$PROJECT_DIR/$source_file" "$app_root/$source_file"
 done
 cp -a "$PROJECT_DIR/static/." "$app_root/static/"
@@ -75,7 +85,8 @@ cat > "$app_root/.teletool_release.json" <<JSON
 JSON
 chmod 0644 "$app_root/.teletool_release.json"
 
-sed "s/__VERSION__/$VERSION/g" \
+sed -e "s/__VERSION__/$VERSION/g" \
+  -e "s/__INSTALLER_VERSION__/$INSTALLER_VERSION/g" \
   "$PROJECT_DIR/packaging/debian/control.in" > "$control_root/control"
 for maintainer_script in postinst prerm postrm; do
   install -m 0755 "$PROJECT_DIR/packaging/debian/$maintainer_script" \
@@ -88,8 +99,9 @@ install -m 0440 "$PROJECT_DIR/packaging/debian/teletool.sudoers" \
   "$package_root/etc/sudoers.d/teletool"
 install -m 0755 "$PROJECT_DIR/packaging/debian/configure-tvheadend" \
   "$app_root/bin/configure-tvheadend"
-install -m 0644 "$PROJECT_DIR/packaging/debian/terminal-ui" \
-  "$app_root/bin/terminal-ui"
+sed "s/__INSTALLER_VERSION__/$INSTALLER_VERSION/g" \
+  "$PROJECT_DIR/packaging/debian/terminal-ui" > "$app_root/bin/terminal-ui"
+chmod 0644 "$app_root/bin/terminal-ui"
 sed 's|__NDI_DROP_PATH__|/var/lib/teletool/libndi.so.6|g' \
   "$PROJECT_DIR/deploy/ndi/teletool-install-ndi-runtime" > \
   "$app_root/bin/install-ndi-runtime"

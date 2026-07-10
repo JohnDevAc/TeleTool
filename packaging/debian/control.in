@@ -1,6 +1,7 @@
 Package: teletool
 Version: __VERSION__
 Architecture: arm64
+X-TeleTool-Installer-Version: __INSTALLER_VERSION__
 Maintainer: TeleTool Project <teletool@localhost>
 Section: video
 Priority: optional

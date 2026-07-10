@@ -7,6 +7,7 @@ TT_UI_BLUE=""
 TT_UI_GREEN=""
 TT_UI_YELLOW=""
 TT_UI_RED=""
+TT_UI_INSTALLER_VERSION="${TELETOOL_INSTALLER_VERSION:-__INSTALLER_VERSION__}"
 
 tt_ui_init() {
   case "${TELETOOL_TERMINAL_UI:-auto}" in
@@ -20,12 +21,16 @@ tt_ui_init() {
   esac
 
   if [ "$TT_UI_ENABLED" = "1" ] && [ -z "${NO_COLOR:-}" ]; then
-    TT_UI_RESET='\033[0m'
-    TT_UI_BOLD='\033[1m'
-    TT_UI_BLUE='\033[38;5;75m'
-    TT_UI_GREEN='\033[38;5;78m'
-    TT_UI_YELLOW='\033[38;5;220m'
-    TT_UI_RED='\033[38;5;203m'
+    TT_UI_RESET="$(printf '\033[0m')"
+    TT_UI_BOLD="$(printf '\033[1m')"
+    TT_UI_BLUE="$(printf '\033[38;5;75m')"
+    TT_UI_GREEN="$(printf '\033[38;5;78m')"
+    TT_UI_YELLOW="$(printf '\033[38;5;220m')"
+    TT_UI_RED="$(printf '\033[38;5;203m')"
+  fi
+
+  if [ "$TT_UI_ENABLED" = "1" ]; then
+    printf '\033[2J\033[H\033[?25l'
   fi
 }
 
@@ -43,15 +48,14 @@ tt_ui_title() {
 
 tt_ui_reset() {
   if [ "$TT_UI_ENABLED" = "1" ]; then
-    printf "$TT_UI_RESET\033[?25h"
+    printf '%s\033[?25h' "$TT_UI_RESET"
   fi
 }
 
 tt_ui_progress_bar() {
-  current="$1"
-  total="$2"
-  width=34
-  filled=$((current * width / total))
+  percent="$1"
+  width=52
+  filled=$((percent * width / 100))
   empty=$((width - filled))
   filled_bar="$(printf '%*s' "$filled" '')"
   empty_bar="$(printf '%*s' "$empty" '')"
@@ -60,30 +64,69 @@ tt_ui_progress_bar() {
   printf '[%s%s]' "$filled_bar" "$empty_bar"
 }
 
+tt_ui_progress() {
+  percent="$1"
+  label="$2"
+  detail="${3:-}"
+  if [ "$percent" -lt 0 ]; then percent=0; fi
+  if [ "$percent" -gt 100 ]; then percent=100; fi
+
+  if [ "$TT_UI_ENABLED" != "1" ]; then
+    printf '\n==> [%s%%] %s\n' "$percent" "$label"
+    return
+  fi
+
+  printf '\033[H'
+  tt_ui_title "$label"
+  printf '%s%s  TELETOOL RASPBERRY PI SETUP%s\n' "$TT_UI_BLUE" "$TT_UI_BOLD" "$TT_UI_RESET"
+  printf '  Installer v%s\n' "$TT_UI_INSTALLER_VERSION"
+  printf '  ==============================================================================\n'
+  printf '\n  %3s%%  ' "$percent"
+  tt_ui_progress_bar "$percent"
+  printf '\n\n  %s%s%s\n' "$TT_UI_BOLD" "$label" "$TT_UI_RESET"
+  if [ -n "$detail" ]; then
+    printf '  %s\n' "$detail"
+  fi
+  printf '\033[J'
+}
+
 tt_ui_stage() {
   current="$1"
   total="$2"
   label="$3"
-  if [ "$TT_UI_ENABLED" != "1" ]; then
-    printf '\n==> [%s/%s] %s\n' "$current" "$total" "$label"
-    return
-  fi
-  tt_ui_clear
-  tt_ui_title "$label"
-  printf "$TT_UI_BLUE$TT_UI_BOLD  TELETOOL RASPBERRY PI SETUP$TT_UI_RESET\n"
-  printf '  ==============================================================================\n'
-  printf '  Stage %s of %s  ' "$current" "$total"
-  tt_ui_progress_bar "$current" "$total"
-  printf '\n'
-  printf "  $TT_UI_BOLD%s$TT_UI_RESET\n" "$label"
-  printf '  ==============================================================================\n\n'
+  percent=$((current * 100 / total))
+  tt_ui_progress "$percent" "$label" "Stage $current of $total"
 }
 
 tt_ui_completion_header() {
   tt_ui_clear
   tt_ui_title "Complete"
-  printf "$TT_UI_GREEN$TT_UI_BOLD  TELETOOL INSTALLATION COMPLETE$TT_UI_RESET\n"
+  printf '%s%s  TELETOOL READY%s\n' "$TT_UI_GREEN" "$TT_UI_BOLD" "$TT_UI_RESET"
+  printf '  Installer v%s\n' "$TT_UI_INSTALLER_VERSION"
+  printf '  ==============================================================================\n'
+}
+
+tt_ui_web_link() {
+  url="$1"
+  printf '\n  %s%sOPEN THIS ADDRESS IN A WEB BROWSER%s\n\n' "$TT_UI_BLUE" "$TT_UI_BOLD" "$TT_UI_RESET"
+  printf '  ==============================================================================\n'
+  printf '\n      %s%s%s\n\n' "$TT_UI_BOLD" "$url" "$TT_UI_RESET"
+  printf '  ==============================================================================\n'
+}
+
+tt_ui_failure() {
+  message="$1"
+  log_file="${2:-}"
+  tt_ui_clear
+  tt_ui_title "Installation stopped"
+  printf '%s%s  TELETOOL INSTALLATION STOPPED%s\n' "$TT_UI_RED" "$TT_UI_BOLD" "$TT_UI_RESET"
   printf '  ==============================================================================\n\n'
+  printf '  %s%s%s\n' "$TT_UI_RED" "$message" "$TT_UI_RESET"
+  if [ -n "$log_file" ] && [ -f "$log_file" ]; then
+    printf '\n  Last installer messages:\n\n'
+    tail -n 12 "$log_file" | sed 's/^/    /'
+    printf '\n  Full log: %s\n' "$log_file"
+  fi
 }
 
 tt_ui_status() {

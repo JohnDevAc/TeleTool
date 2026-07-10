@@ -21,10 +21,12 @@ APT_UPGRADE="${TELETOOL_APT_UPGRADE:-0}"
 NDI_LIB_OVERRIDE="${TELETOOL_NDI_LIB:-}"
 GST_NDI_VERSION="${TELETOOL_GST_NDI_VERSION:-0.13.5}"
 GST_NDI_SHA256="${TELETOOL_GST_NDI_SHA256:-ec8417e75002857f4c8e8fd2f2f1a7521937eaac3de264f7bb6904a0d22cba23}"
+INSTALLER_VERSION="${TELETOOL_INSTALLER_VERSION:-1.0}"
 NDI_SDK_URL="https://ndi.video/for-developers/ndi-sdk/"
 LDCONFIG="${TELETOOL_LDCONFIG:-/sbin/ldconfig}"
 NDI_HELPER_PATH="/usr/local/sbin/teletool-install-ndi-runtime"
 NDI_VERIFICATION_MARKER="/var/lib/teletool/ndi-runtime-verified"
+INSTALL_LOG="${TELETOOL_INSTALL_LOG:-}"
 TVH_NETWORK_UUID="${TELETOOL_TVH_NETWORK_UUID:-54e1e700000000000000000000000010}"
 TVH_NETWORK_NAME="${TELETOOL_TVH_NETWORK_NAME:-DVB-T Network}"
 TVH_PROVIDER_NETWORK_NAME="${TELETOOL_TVH_PROVIDER_NETWORK_NAME:-London}"
@@ -102,6 +104,7 @@ progress_bar() {
 }
 
 begin_stage() {
+  local stage_percent
   CURRENT_STAGE_NUMBER="$1"
   CURRENT_STAGE_LABEL="$2"
 
@@ -113,8 +116,10 @@ begin_stage() {
   terminal_clear
   terminal_title "$CURRENT_STAGE_LABEL"
   printf '%s%s  TELETOOL RASPBERRY PI SETUP%s\n' "$C_BLUE" "$C_BOLD" "$C_RESET"
+  printf '  Installer v%s\n' "$INSTALLER_VERSION"
   printf '  ==============================================================================\n'
-  printf '  Stage %s of %s  ' "$CURRENT_STAGE_NUMBER" "$TOTAL_STAGES"
+  stage_percent=$((CURRENT_STAGE_NUMBER * 100 / TOTAL_STAGES))
+  printf '  %3s%%  Stage %s of %s  ' "$stage_percent" "$CURRENT_STAGE_NUMBER" "$TOTAL_STAGES"
   progress_bar "$CURRENT_STAGE_NUMBER" "$TOTAL_STAGES"
   printf '\n'
   printf '  %s%s%s\n' "$C_BOLD" "$CURRENT_STAGE_LABEL" "$C_RESET"
@@ -138,6 +143,11 @@ on_exit() {
     printf '\n%s%s  SETUP STOPPED%s\n' "$C_RED" "$C_BOLD" "$C_RESET" >&2
     printf '  Stage %s of %s: %s\n' "$CURRENT_STAGE_NUMBER" "$TOTAL_STAGES" "$CURRENT_STAGE_LABEL" >&2
     printf '  Fix the error shown above and run the installer again.\n' >&2
+    if [ -n "${INSTALL_LOG:-}" ] && [ -f "$INSTALL_LOG" ]; then
+      printf '  Last installer messages:\n' >&2
+      tail -n 12 "$INSTALL_LOG" | sed 's/^/    /' >&2
+      printf '  Full log: %s\n' "$INSTALL_LOG" >&2
+    fi
   fi
 }
 trap on_exit EXIT
@@ -186,6 +196,8 @@ SERVICE_HOME="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
 PROJECT_DIR="${TELETOOL_PROJECT_DIR:-$SERVICE_HOME/tvh_ndi_bridge}"
 SERVICE_NAME="tvh_ndi_bridge.service"
 NDI_LIB_SOURCE="${NDI_LIB_OVERRIDE:-$SERVICE_HOME/libndi.so.6}"
+INSTALL_LOG="${INSTALL_LOG:-$SERVICE_HOME/teletool-installer.log}"
+: > "$INSTALL_LOG"
 
 run_as_service_user() {
   if [ "$(id -un)" = "$SERVICE_USER" ]; then
@@ -198,7 +210,7 @@ run_as_service_user() {
 }
 
 apt_install() {
-  run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+  run_root env DEBIAN_FRONTEND=noninteractive apt-get -qq -o Dpkg::Use-Pty=0 install -y "$@" >>"$INSTALL_LOG" 2>&1
 }
 
 apt_install_optional() {
@@ -230,9 +242,9 @@ detect_project_dir_from_script() {
 
 install_base_packages() {
   log "Installing Raspberry Pi OS packages"
-  run_root apt-get update
+  run_root apt-get -qq -o Dpkg::Use-Pty=0 update >>"$INSTALL_LOG" 2>&1
   if [ "$APT_UPGRADE" = "1" ]; then
-    run_root env DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y
+    run_root env DEBIAN_FRONTEND=noninteractive apt-get -qq -o Dpkg::Use-Pty=0 full-upgrade -y >>"$INSTALL_LOG" 2>&1
   fi
 
   apt_install \
@@ -612,7 +624,7 @@ install_teletool_service() {
 }
 
 print_summary() {
-  local ip host web_host teletool_url tvheadend_url
+  local ip host web_host teletool_url
   local teletool_ok=0 tvheadend_ok=0 ndi_plugin_ok=0 ndi_runtime_ok=0 alsa_ok=0
 
   ip="$(hostname -I 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+\./ && $i !~ /^127\./) {print $i; exit}}')"
@@ -623,8 +635,6 @@ print_summary() {
     web_host="$host.local"
   fi
   teletool_url="http://$web_host:8000/"
-  tvheadend_url="http://$web_host:9981/"
-
   systemctl is-active --quiet "$SERVICE_NAME" && teletool_ok=1
   if [ "$INSTALL_TVHEADEND" = "1" ]; then
     systemctl is-active --quiet tvheadend && tvheadend_ok=1
@@ -645,51 +655,28 @@ print_summary() {
     printf '\n'
   fi
 
-  printf '%s%s  TELETOOL INSTALLATION COMPLETE%s\n' "$C_GREEN" "$C_BOLD" "$C_RESET"
+  printf '%s%s  TELETOOL READY%s\n' "$C_GREEN" "$C_BOLD" "$C_RESET"
+  printf '  Installer v%s\n' "$INSTALLER_VERSION"
+  printf '  ==============================================================================\n'
+  printf '\n  %s%sOPEN THIS ADDRESS IN A WEB BROWSER%s\n\n' "$C_BLUE" "$C_BOLD" "$C_RESET"
   printf '  ==============================================================================\n\n'
+  printf '      %s%s%s\n\n' "$C_BOLD" "$teletool_url" "$C_RESET"
+  printf '  ==============================================================================\n'
 
-  [ "$teletool_ok" = "1" ] && \
-    status_line OK "TeleTool service is running" || \
+  [ "$teletool_ok" = "1" ] || \
     status_line ERROR "TeleTool service is not running; check systemctl status $SERVICE_NAME"
-  if [ "$INSTALL_TVHEADEND" = "1" ]; then
-    [ "$tvheadend_ok" = "1" ] && \
-      status_line OK "Tvheadend service is running" || \
-      status_line WARN "Tvheadend is not running; check systemctl status tvheadend"
+  if [ "$INSTALL_TVHEADEND" = "1" ] && [ "$tvheadend_ok" != "1" ]; then
+    status_line WARN "Tvheadend is not running; check systemctl status tvheadend"
   fi
-  [ "$ndi_plugin_ok" = "1" ] && \
-    status_line OK "GStreamer NDI plugin is installed" || \
-    status_line ERROR "GStreamer NDI plugin verification failed"
-  [ "$alsa_ok" = "1" ] && \
-    status_line OK "GStreamer ALSA audio output is installed" || \
-    status_line WARN "GStreamer ALSA audio output was not detected"
-  if [ "$ndi_runtime_ok" = "1" ]; then
-    status_line READY "NDI SDK runtime is installed and verified"
-  else
-    status_line ACTION "NDI SDK runtime must be uploaded in the TeleTool Web UI"
-  fi
-
-  printf '\n  %s%sOPEN THE UNIT WEB UI%s\n' "$C_BLUE" "$C_BOLD" "$C_RESET"
-  printf '  ------------------------------------------------------------------------------\n'
-  printf '  %s%s%s\n' "$C_BOLD" "$teletool_url" "$C_RESET"
-  printf '  ------------------------------------------------------------------------------\n'
+  [ "$ndi_plugin_ok" = "1" ] || status_line ERROR "GStreamer NDI plugin verification failed"
+  [ "$alsa_ok" = "1" ] || status_line WARN "GStreamer ALSA audio output was not detected"
 
   if [ "$ndi_runtime_ok" != "1" ]; then
-    printf '\n  %sFinish NDI setup in the browser:%s\n' "$C_BOLD" "$C_RESET"
-    printf '  1. Open the TeleTool link above.\n'
-    printf '  2. Download the NDI SDK for Linux from:\n'
-    printf '     %s\n' "$NDI_SDK_URL"
-    printf '  3. Extract the ARM64 file named libndi.so.6.\n'
-    printf '  4. Drop it onto the upload box. TeleTool will install and verify it.\n'
-    printf '  5. When verification completes, TeleTool opens normally.\n'
-  else
-    printf '\n  TeleTool is ready to use.\n'
+    printf '\n  %sNDI SDK REQUIRED%s\n' "$C_YELLOW" "$C_RESET"
+    printf '  Open the address above and upload the ARM64 libndi.so.6 file.\n'
+    printf '  SDK: %s\n' "$NDI_SDK_URL"
   fi
-
-  printf '\n  Next: choose the DVB-T/T2 transmitter in TV Setup and run the scan.\n'
-  if [ "$INSTALL_TVHEADEND" = "1" ]; then
-    printf '  Tvheadend UI: %s\n' "$tvheadend_url"
-  fi
-  printf '\n  This completion screen remains in the terminal for reference.\n\n'
+  printf '\n'
 }
 
 main() {

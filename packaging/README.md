@@ -52,7 +52,9 @@ uses APT's status channel to advance through individual download, unpack,
 configuration, and trigger actions. Individual package details stay in the log;
 the terminal shows a simple patience message. It prints the Web UI address only
 after package triggers and service checks finish. The progress and completion
-screens use the TeleTool yellow/blue palette and a compact ASCII banner.
+screens use the TeleTool yellow/blue palette and a compact ASCII banner. A
+single guarded APT repair pass handles transient dependency post-install
+failures before the installer stops and presents the filtered error summary.
 
 ## GitHub publishing
 

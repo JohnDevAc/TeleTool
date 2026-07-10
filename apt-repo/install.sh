@@ -110,9 +110,9 @@ tt_ui_progress() {
   printf '  ==============================================================================\n'
   printf '\n  %3s%%  ' "$percent"
   tt_ui_progress_bar "$percent"
-  printf '\n\n  %s%s%s\n' "$TT_UI_BOLD" "$label" "$TT_UI_RESET"
+  printf '\n\n'
   if [ -n "$detail" ]; then
-    printf '  %s\n' "$detail"
+    printf '\033[2K  %s%s%s\n' "$TT_UI_BOLD" "$detail" "$TT_UI_RESET"
   fi
   printf '\033[J'
 }
@@ -155,7 +155,12 @@ tt_ui_failure() {
   printf '  %s%s%s\n' "$TT_UI_RED" "$message" "$TT_UI_RESET"
   if [ -n "$log_file" ] && [ -f "$log_file" ]; then
     printf '\n  Last installer messages:\n\n'
-    tail -n 12 "$log_file" | sed 's/^/    /'
+    error_lines="$(grep -Ei '(^E:|^W:|error|failed|cannot|unable|returned)' "$log_file" | tail -n 12 || true)"
+    if [ -n "$error_lines" ]; then
+      printf '%s\n' "$error_lines" | sed 's/^/    /'
+    else
+      grep -v '^progress=' "$log_file" | tail -n 12 | sed 's/^/    /'
+    fi
     printf '\n  Full log: %s\n' "$log_file"
   fi
 }
@@ -323,8 +328,14 @@ export TELETOOL_DEFER_COMPLETION=1
 if ! run_apt_with_progress 20 30 50 45 "Installing TeleTool" \
   "Please be patient, TeleTool is installing..." \
   apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 install -y teletool; then
-  tt_ui_failure "TeleTool could not be installed." "$LOG_FILE"
-  exit 1
+  printf 'retry=apt-fix-broken after initial package configuration failure\n' >>"$LOG_FILE"
+  tt_ui_progress 94 "Finalising TeleTool" "Please be patient, TeleTool is completing the installation..."
+  if ! run_apt_with_progress 90 0 90 5 "Finalising TeleTool" \
+    "Please be patient, TeleTool is completing the installation..." \
+    apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 --fix-broken install -y; then
+    tt_ui_failure "TeleTool could not be installed." "$LOG_FILE"
+    exit 1
+  fi
 fi
 unset TELETOOL_DEFER_COMPLETION
 

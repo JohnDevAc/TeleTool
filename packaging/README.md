@@ -51,7 +51,8 @@ terminal-based `install.sh` bootstrap. The bootstrap keeps APT output in
 uses APT's status channel to advance through individual download, unpack,
 configuration, and trigger actions. Individual package details stay in the log;
 the terminal shows a simple patience message. It prints the Web UI address only
-after package triggers and service checks finish.
+after package triggers and service checks finish. The progress and completion
+screens use the TeleTool yellow/blue palette and a compact ASCII banner.
 
 ## GitHub publishing
 

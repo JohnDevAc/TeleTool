@@ -91,7 +91,7 @@ installer version 1.0. Package download and installation details are written to
 `/var/log/teletool-installer.log` while the full-screen terminal UI shows the
 overall percentage and a clean patience message without exposing individual
 package names. The terminal palette uses TeleTool yellow and blue derived from
-the logo.
+the logo, with a compact TeleTool ASCII banner at the top of each screen.
 
 After the repository is configured, normal package commands are sufficient:
 

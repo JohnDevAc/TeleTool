@@ -73,6 +73,16 @@ tt_ui_progress_bar() {
   printf '[%s%s%s%s%s]' "$TT_UI_YELLOW" "$filled_bar" "$TT_UI_BLUE" "$empty_bar" "$TT_UI_RESET"
 }
 
+tt_ui_brand() {
+  printf '%s%s' "$TT_UI_YELLOW" "$TT_UI_BOLD"
+  printf '  TTTTT  EEEEE  L      EEEEE  TTTTT   OOO    OOO   L\n'
+  printf '    T    E      L      E        T    O   O  O   O  L\n'
+  printf '    T    EEEE   L      EEEE     T    O   O  O   O  L\n'
+  printf '    T    E      L      E        T    O   O  O   O  L\n'
+  printf '    T    EEEEE  LLLLL  EEEEE    T     OOO    OOO   LLLLL\n'
+  printf '%s' "$TT_UI_RESET"
+}
+
 tt_ui_progress() {
   percent="$1"
   label="$2"
@@ -95,8 +105,8 @@ tt_ui_progress() {
 
   printf '\033[H'
   tt_ui_title "$label"
-  printf '%s%s  TELETOOL RASPBERRY PI SETUP%s\n' "$TT_UI_YELLOW" "$TT_UI_BOLD" "$TT_UI_RESET"
-  printf '  Installer v%s\n' "$TT_UI_INSTALLER_VERSION"
+  tt_ui_brand
+  printf '\n  %sRASPBERRY PI SETUP%s  |  Installer v%s\n' "$TT_UI_BOLD" "$TT_UI_RESET" "$TT_UI_INSTALLER_VERSION"
   printf '  ==============================================================================\n'
   printf '\n  %3s%%  ' "$percent"
   tt_ui_progress_bar "$percent"
@@ -118,6 +128,8 @@ tt_ui_stage() {
 tt_ui_completion_header() {
   tt_ui_clear
   tt_ui_title "Complete"
+  tt_ui_brand
+  printf '\n'
   printf '%s%s  TELETOOL READY%s\n' "$TT_UI_GREEN" "$TT_UI_BOLD" "$TT_UI_RESET"
   printf '  Installer v%s\n' "$TT_UI_INSTALLER_VERSION"
   printf '  ==============================================================================\n'
@@ -136,6 +148,8 @@ tt_ui_failure() {
   log_file="${2:-}"
   tt_ui_clear
   tt_ui_title "Installation stopped"
+  tt_ui_brand
+  printf '\n'
   printf '%s%s  TELETOOL INSTALLATION STOPPED%s\n' "$TT_UI_RED" "$TT_UI_BOLD" "$TT_UI_RESET"
   printf '  ==============================================================================\n\n'
   printf '  %s%s%s\n' "$TT_UI_RED" "$message" "$TT_UI_RESET"

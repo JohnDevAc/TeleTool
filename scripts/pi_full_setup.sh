@@ -109,6 +109,16 @@ progress_bar() {
   printf '[%s%s%s%s%s]' "$C_YELLOW" "$filled_bar" "$C_BLUE" "$empty_bar" "$C_RESET"
 }
 
+terminal_brand() {
+  printf '%s%s' "$C_YELLOW" "$C_BOLD"
+  printf '  TTTTT  EEEEE  L      EEEEE  TTTTT   OOO    OOO   L\n'
+  printf '    T    E      L      E        T    O   O  O   O  L\n'
+  printf '    T    EEEE   L      EEEE     T    O   O  O   O  L\n'
+  printf '    T    E      L      E        T    O   O  O   O  L\n'
+  printf '    T    EEEEE  LLLLL  EEEEE    T     OOO    OOO   LLLLL\n'
+  printf '%s' "$C_RESET"
+}
+
 begin_stage() {
   local stage_percent
   CURRENT_STAGE_NUMBER="$1"
@@ -121,8 +131,8 @@ begin_stage() {
 
   terminal_clear
   terminal_title "$CURRENT_STAGE_LABEL"
-  printf '%s%s  TELETOOL RASPBERRY PI SETUP%s\n' "$C_YELLOW" "$C_BOLD" "$C_RESET"
-  printf '  Installer v%s\n' "$INSTALLER_VERSION"
+  terminal_brand
+  printf '\n  %sRASPBERRY PI SETUP%s  |  Installer v%s\n' "$C_BOLD" "$C_RESET" "$INSTALLER_VERSION"
   printf '  ==============================================================================\n'
   stage_percent=$((CURRENT_STAGE_NUMBER * 100 / TOTAL_STAGES))
   printf '  %3s%%  Stage %s of %s  ' "$stage_percent" "$CURRENT_STAGE_NUMBER" "$TOTAL_STAGES"
@@ -661,7 +671,8 @@ print_summary() {
     printf '\n'
   fi
 
-  printf '%s%s  TELETOOL READY%s\n' "$C_GREEN" "$C_BOLD" "$C_RESET"
+  terminal_brand
+  printf '\n  %s%sTELETOOL READY%s\n' "$C_GREEN" "$C_BOLD" "$C_RESET"
   printf '  Installer v%s\n' "$INSTALLER_VERSION"
   printf '  ==============================================================================\n'
   printf '\n  %s%sOPEN THIS ADDRESS IN A WEB BROWSER%s\n\n' "$C_BLUE" "$C_BOLD" "$C_RESET"

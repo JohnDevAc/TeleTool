@@ -14,6 +14,8 @@ VERSION text eol=lf
 INSTALLER_VERSION text eol=lf
 packaging/debian/* text eol=lf
 deploy/ndi/* text eol=lf
+apt-repo/install.sh text eol=lf
+apt-repo/dists/** text eol=lf
 
 *.ps1 text eol=crlf
 *.png binary

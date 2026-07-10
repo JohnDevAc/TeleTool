@@ -1,6 +1,9 @@
 #!/bin/sh
 
 TT_UI_ENABLED=0
+TT_UI_DEFAULT=""
+TT_UI_BACKGROUND=""
+TT_UI_TEXT=""
 TT_UI_RESET=""
 TT_UI_BOLD=""
 TT_UI_BLUE=""
@@ -8,6 +11,7 @@ TT_UI_GREEN=""
 TT_UI_YELLOW=""
 TT_UI_RED=""
 TT_UI_INSTALLER_VERSION="${TELETOOL_INSTALLER_VERSION:-1.0}"
+TT_UI_LAST_PERCENT=0
 
 tt_ui_init() {
   case "${TELETOOL_TERMINAL_UI:-auto}" in
@@ -21,22 +25,27 @@ tt_ui_init() {
   esac
 
   if [ "$TT_UI_ENABLED" = "1" ] && [ -z "${NO_COLOR:-}" ]; then
-    TT_UI_RESET="$(printf '\033[0m')"
+    # Palette derived from the TeleTool logo: yellow #F8D818, blue #0888E8,
+    # with a deeper blue backdrop to retain strong terminal contrast.
+    TT_UI_DEFAULT="$(printf '\033[0m')"
+    TT_UI_BACKGROUND="$(printf '\033[48;2;2;40;72m')"
+    TT_UI_TEXT="$(printf '\033[38;2;248;216;24m')"
+    TT_UI_RESET="${TT_UI_BACKGROUND}${TT_UI_TEXT}"
     TT_UI_BOLD="$(printf '\033[1m')"
-    TT_UI_BLUE="$(printf '\033[38;5;75m')"
-    TT_UI_GREEN="$(printf '\033[38;5;78m')"
-    TT_UI_YELLOW="$(printf '\033[38;5;220m')"
-    TT_UI_RED="$(printf '\033[38;5;203m')"
+    TT_UI_BLUE="$(printf '\033[38;2;8;136;232m')"
+    TT_UI_GREEN="$TT_UI_TEXT"
+    TT_UI_YELLOW="$TT_UI_TEXT"
+    TT_UI_RED="$(printf '\033[38;2;255;104;104m')"
   fi
 
   if [ "$TT_UI_ENABLED" = "1" ]; then
-    printf '\033[2J\033[H\033[?25l'
+    printf '%s%s\033[2J\033[H\033[?25l' "$TT_UI_DEFAULT" "$TT_UI_RESET"
   fi
 }
 
 tt_ui_clear() {
   if [ "$TT_UI_ENABLED" = "1" ]; then
-    printf '\033[2J\033[H'
+    printf '%s\033[2J\033[H' "$TT_UI_RESET"
   fi
 }
 
@@ -48,7 +57,7 @@ tt_ui_title() {
 
 tt_ui_reset() {
   if [ "$TT_UI_ENABLED" = "1" ]; then
-    printf '%s\033[?25h' "$TT_UI_RESET"
+    printf '%s\033[?25h' "$TT_UI_DEFAULT"
   fi
 }
 
@@ -61,7 +70,7 @@ tt_ui_progress_bar() {
   empty_bar="$(printf '%*s' "$empty" '')"
   filled_bar="$(printf '%s' "$filled_bar" | tr ' ' '#')"
   empty_bar="$(printf '%s' "$empty_bar" | tr ' ' '-')"
-  printf '[%s%s]' "$filled_bar" "$empty_bar"
+  printf '[%s%s%s%s%s]' "$TT_UI_YELLOW" "$filled_bar" "$TT_UI_BLUE" "$empty_bar" "$TT_UI_RESET"
 }
 
 tt_ui_progress() {
@@ -70,15 +79,23 @@ tt_ui_progress() {
   detail="${3:-}"
   if [ "$percent" -lt 0 ]; then percent=0; fi
   if [ "$percent" -gt 100 ]; then percent=100; fi
+  if [ "$percent" -lt "$TT_UI_LAST_PERCENT" ]; then
+    percent="$TT_UI_LAST_PERCENT"
+  else
+    TT_UI_LAST_PERCENT="$percent"
+  fi
 
   if [ "$TT_UI_ENABLED" != "1" ]; then
     printf '\n==> [%s%%] %s\n' "$percent" "$label"
+    if [ -n "$detail" ]; then
+      printf '    %s\n' "$detail"
+    fi
     return
   fi
 
   printf '\033[H'
   tt_ui_title "$label"
-  printf '%s%s  TELETOOL RASPBERRY PI SETUP%s\n' "$TT_UI_BLUE" "$TT_UI_BOLD" "$TT_UI_RESET"
+  printf '%s%s  TELETOOL RASPBERRY PI SETUP%s\n' "$TT_UI_YELLOW" "$TT_UI_BOLD" "$TT_UI_RESET"
   printf '  Installer v%s\n' "$TT_UI_INSTALLER_VERSION"
   printf '  ==============================================================================\n'
   printf '\n  %3s%%  ' "$percent"
@@ -108,7 +125,7 @@ tt_ui_completion_header() {
 
 tt_ui_web_link() {
   url="$1"
-  printf '\n  %s%sOPEN THIS ADDRESS IN A WEB BROWSER%s\n\n' "$TT_UI_BLUE" "$TT_UI_BOLD" "$TT_UI_RESET"
+  printf '\n  %s%sOPEN THIS ADDRESS IN A WEB BROWSER%s\n\n' "$TT_UI_YELLOW" "$TT_UI_BOLD" "$TT_UI_RESET"
   printf '  ==============================================================================\n'
   printf '\n      %s%s%s\n\n' "$TT_UI_BOLD" "$url" "$TT_UI_RESET"
   printf '  ==============================================================================\n'
@@ -147,6 +164,7 @@ set -eu
 if ! command -v tt_ui_init >/dev/null 2>&1; then
   TT_UI_YELLOW=""
   TT_UI_RESET=""
+  TT_UI_LAST_PERCENT=0
   tt_ui_init() { :; }
   tt_ui_reset() { :; }
   tt_ui_stage() { printf '\n==> [%s/%s] %s\n' "$1" "$2" "$3"; }
@@ -161,6 +179,69 @@ REPOSITORY_URL="${TELETOOL_REPOSITORY_URL:-https://johndevac.github.io/teletwat/
 KEYRING="/usr/share/keyrings/teletool-archive-keyring.gpg"
 SOURCE_FILE="/etc/apt/sources.list.d/teletool.sources"
 LOG_FILE="/var/log/teletool-installer.log"
+
+run_apt_with_progress() {
+  download_start="$1"
+  download_span="$2"
+  install_start="$3"
+  install_span="$4"
+  default_label="$5"
+  shift 5
+
+  progress_dir="$(mktemp -d /tmp/teletool-apt-progress.XXXXXX)"
+  progress_pipe="$progress_dir/status"
+  progress_result="$progress_dir/result"
+  mkfifo "$progress_pipe"
+
+  (
+    set +e
+    "$@" 3>"$progress_pipe" >>"$LOG_FILE" 2>&1
+    printf '%s\n' "$?" >"$progress_result"
+    exit 0
+  ) &
+  progress_pid=$!
+
+  while IFS=: read -r progress_kind progress_item progress_percent progress_description; do
+    progress_whole="${progress_percent%%.*}"
+    case "$progress_whole" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    if [ "$progress_whole" -gt 100 ]; then progress_whole=100; fi
+
+    case "$progress_kind" in
+      dlstatus)
+        overall_percent=$((download_start + progress_whole * download_span / 100))
+        progress_label="Downloading packages"
+        ;;
+      pmstatus)
+        overall_percent=$((install_start + progress_whole * install_span / 100))
+        progress_label="Installing packages"
+        ;;
+      pmerror|error)
+        overall_percent="$TT_UI_LAST_PERCENT"
+        progress_label="Package operation reported an error"
+        ;;
+      *)
+        continue
+        ;;
+    esac
+
+    if [ -z "$progress_description" ]; then
+      progress_description="$default_label"
+    fi
+    tt_ui_progress "$overall_percent" "$progress_label" "$progress_description"
+  done < "$progress_pipe"
+
+  wait "$progress_pid" || true
+  if [ -f "$progress_result" ]; then
+    progress_exit="$(cat "$progress_result")"
+  else
+    progress_exit=1
+  fi
+  rm -f "$progress_pipe" "$progress_result"
+  rmdir "$progress_dir" 2>/dev/null || true
+  return "$progress_exit"
+}
 
 tt_ui_init
 trap tt_ui_reset EXIT
@@ -200,21 +281,17 @@ Signed-By: $KEYRING
 EOF
 
 tt_ui_progress 15 "Refreshing package information" "Checking Raspberry Pi OS and TeleTool repositories"
-if ! apt-get -qq -o Dpkg::Use-Pty=0 update >>"$LOG_FILE" 2>&1; then
+if ! run_apt_with_progress 15 5 20 0 "Refreshing package information" \
+  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=3 update; then
   tt_ui_failure "Package information could not be refreshed." "$LOG_FILE"
   exit 1
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-tt_ui_progress 30 "Downloading TeleTool" "Downloading TeleTool, Tvheadend and media dependencies"
-if ! apt-get -qq -o Dpkg::Use-Pty=0 --download-only install -y teletool >>"$LOG_FILE" 2>&1; then
-  tt_ui_failure "TeleTool packages could not be downloaded." "$LOG_FILE"
-  exit 1
-fi
-
-tt_ui_progress 60 "Installing TeleTool" "Configuring Tvheadend, GStreamer and the Web UI"
+tt_ui_progress 20 "Preparing TeleTool packages" "Resolving Tvheadend, GStreamer and media dependencies"
 export TELETOOL_DEFER_COMPLETION=1
-if ! apt-get -qq -o Dpkg::Use-Pty=0 --no-download install -y teletool >>"$LOG_FILE" 2>&1; then
+if ! run_apt_with_progress 20 30 50 45 "Installing TeleTool and its dependencies" \
+  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=3 install -y teletool; then
   tt_ui_failure "TeleTool could not be installed." "$LOG_FILE"
   exit 1
 fi

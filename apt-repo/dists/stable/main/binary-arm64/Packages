@@ -1,13 +1,13 @@
 Package: teletool
-Version: 1.7.1
+Version: 1.7.2
 Architecture: arm64
 Maintainer: TeleTool Project <teletool@localhost>
 Depends: adduser, alsa-utils, avahi-daemon, binutils, dtv-scan-tables, file, gir1.2-gst-plugins-bad-1.0, gir1.2-gst-plugins-base-1.0, gir1.2-gstreamer-1.0, gstreamer1.0-alsa, gstreamer1.0-libav, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-tools, libc-bin, network-manager, python3, python3-fastapi (>= 0.100), python3-gi, python3-gi-cairo, python3-pydantic (>= 2), python3-requests, python3-urllib3 (>= 2), python3-uvicorn (>= 0.30), sudo, tvheadend
-Filename: pool/main/t/teletool/teletool_1.7.1_arm64.deb
-Size: 809038
-MD5sum: 21a4415d81f545fb3f92e1b5c91e67d9
-SHA1: 85d6958a9d013b473931a7ead7a9ab54ab0f8f9c
-SHA256: f0191c27257041b73a93b21a6b0909dcf7c1c573bda0c92063f488fc012816f1
+Filename: pool/main/t/teletool/teletool_1.7.2_arm64.deb
+Size: 810124
+MD5sum: ec61c89a41d1c4a9b81b3333bc2bd11c
+SHA1: 61ec19a2249fb5fe72f14d452a98c35d7e5f89e0
+SHA256: 730b94b15f9883c292b7e69836af3ed11e01cbd127d5cd45b416c082a9e3d70e
 Section: video
 Priority: optional
 Homepage: https://github.com/JohnDevAc/teletwat

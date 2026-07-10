@@ -100,6 +100,23 @@ run_apt_with_progress() {
   return "$progress_exit"
 }
 
+recover_tvheadend_configuration() {
+  recovery_attempt=1
+  while [ "$recovery_attempt" -le 3 ]; do
+    printf 'retry=tvheadend-configure attempt=%s wait=10s\n' \
+      "$recovery_attempt" >>"$LOG_FILE"
+    sleep 10
+    if dpkg --configure tvheadend >>"$LOG_FILE" 2>&1; then
+      printf 'retry=tvheadend-configure result=success attempt=%s\n' \
+        "$recovery_attempt" >>"$LOG_FILE"
+      return 0
+    fi
+    recovery_attempt=$((recovery_attempt + 1))
+  done
+  printf 'retry=tvheadend-configure result=failed attempts=3\n' >>"$LOG_FILE"
+  return 1
+}
+
 tt_ui_init
 trap tt_ui_reset EXIT
 tt_ui_progress 2 "Checking Raspberry Pi OS" "Confirming this unit can run TeleTool"
@@ -151,9 +168,10 @@ export TELETOOL_DEFER_COMPLETION=1
 if ! run_apt_with_progress 20 30 50 45 "Installing TeleTool" \
   "Please be patient, TeleTool is installing..." \
   apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 install -y teletool; then
-  printf 'retry=apt-fix-broken after initial package configuration failure\n' >>"$LOG_FILE"
+  printf 'retry=delayed-tvheadend-recovery after initial package configuration failure\n' >>"$LOG_FILE"
   tt_ui_progress 94 "Finalising TeleTool" "Please be patient, TeleTool is completing the installation..."
-  if ! run_apt_with_progress 90 0 90 5 "Finalising TeleTool" \
+  if ! recover_tvheadend_configuration || \
+    ! run_apt_with_progress 94 0 94 1 "Finalising TeleTool" \
     "Please be patient, TeleTool is completing the installation..." \
     apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 --fix-broken install -y; then
     tt_ui_failure "TeleTool could not be installed." "$LOG_FILE"

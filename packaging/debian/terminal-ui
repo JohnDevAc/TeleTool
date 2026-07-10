@@ -155,7 +155,7 @@ tt_ui_failure() {
   printf '  %s%s%s\n' "$TT_UI_RED" "$message" "$TT_UI_RESET"
   if [ -n "$log_file" ] && [ -f "$log_file" ]; then
     printf '\n  Last installer messages:\n\n'
-    error_lines="$(grep -Ei '(^E:|^W:|error|failed|cannot|unable|returned)' "$log_file" | tail -n 12 || true)"
+    error_lines="$(grep -Ei '(^E:|^W:|error|failed|cannot|unable|returned)' "$log_file" | awk '!seen[$0]++' | tail -n 12 || true)"
     if [ -n "$error_lines" ]; then
       printf '%s\n' "$error_lines" | sed 's/^/    /'
     else

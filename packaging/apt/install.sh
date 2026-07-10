@@ -37,7 +37,7 @@ run_apt_with_progress() {
 
   (
     set +e
-    "$@" 3>"$progress_pipe" >>"$LOG_FILE" 2>&1
+    "$@" 2>"$progress_pipe" >>"$LOG_FILE"
     printf '%s\n' "$?" >"$progress_result"
     exit 0
   ) &
@@ -64,6 +64,17 @@ run_apt_with_progress() {
         progress_label="Package operation reported an error"
         ;;
       *)
+        printf '%s' "$progress_kind" >>"$LOG_FILE"
+        if [ -n "$progress_item" ]; then
+          printf ':%s' "$progress_item" >>"$LOG_FILE"
+        fi
+        if [ -n "$progress_percent" ]; then
+          printf ':%s' "$progress_percent" >>"$LOG_FILE"
+        fi
+        if [ -n "$progress_description" ]; then
+          printf ':%s' "$progress_description" >>"$LOG_FILE"
+        fi
+        printf '\n' >>"$LOG_FILE"
         continue
         ;;
     esac
@@ -127,7 +138,7 @@ EOF
 
 tt_ui_progress 15 "Refreshing package information" "Checking Raspberry Pi OS and TeleTool repositories"
 if ! run_apt_with_progress 15 5 20 0 "Refreshing package information" \
-  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=3 update; then
+  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 update; then
   tt_ui_failure "Package information could not be refreshed." "$LOG_FILE"
   exit 1
 fi
@@ -136,7 +147,7 @@ export DEBIAN_FRONTEND=noninteractive
 tt_ui_progress 20 "Preparing TeleTool packages" "Resolving Tvheadend, GStreamer and media dependencies"
 export TELETOOL_DEFER_COMPLETION=1
 if ! run_apt_with_progress 20 30 50 45 "Installing TeleTool and its dependencies" \
-  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=3 install -y teletool; then
+  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 install -y teletool; then
   tt_ui_failure "TeleTool could not be installed." "$LOG_FILE"
   exit 1
 fi

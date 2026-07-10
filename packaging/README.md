@@ -46,16 +46,20 @@ terminal-based `install.sh` bootstrap.
 
 ## GitHub publishing
 
-The `Build TeleTool APT package` workflow uses GitHub's native ARM64 runner. Add
-an ASCII-armoured private signing key as the repository Actions secret
-`TELETOOL_APT_GPG_PRIVATE_KEY`, select GitHub Actions as the Pages publishing
-source, then run the workflow or push a version tag. Tagged builds also attach
-the `.deb` to a GitHub Release.
+The `Build TeleTool APT package` workflow uses GitHub's native ARM64 runner.
+Tagged builds attach the `.deb` to a GitHub Release. If an ASCII-armoured
+private key is supplied through the Actions secret
+`TELETOOL_APT_GPG_PRIVATE_KEY`, the repository artifact is signed as well.
+
+This project publishes GitHub Pages from the `main` branch. To release the APT
+repository, build and sign `apt-repo/`, commit that directory, and keep `main`
+and `dev` on the same tested release commit. The private signing key must remain
+outside Git and the public key is published inside `apt-repo/`.
 
 The published fresh-install command is:
 
 ```sh
-curl -fsSL https://johndevac.github.io/teletwat/install.sh | sudo sh
+curl -fsSL https://johndevac.github.io/teletwat/apt-repo/install.sh | sudo sh
 ```
 
 Never commit the private APT signing key. Existing clients must continue to use

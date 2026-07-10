@@ -10,14 +10,10 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   build:
     runs-on: ubuntu-24.04-arm
-    outputs:
-      signed: ${{ steps.signing.outputs.signed }}
     steps:
       - name: Check out TeleTool
         uses: actions/checkout@v4
@@ -75,34 +71,16 @@ jobs:
             apt-repo/
           if-no-files-found: error
 
-      - name: Configure GitHub Pages
-        if: steps.signing.outputs.signed == 'true'
-        uses: actions/configure-pages@v5
-
-      - name: Upload signed repository for GitHub Pages
-        if: steps.signing.outputs.signed == 'true'
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: apt-repo
-
       - name: Publish tagged Debian package to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${GITHUB_REF_NAME}"
+          release_args=()
+          case "$tag" in
+            *-rc*|*-test*) release_args+=(--prerelease) ;;
+          esac
           gh release view "$tag" >/dev/null 2>&1 || \
-            gh release create "$tag" --title "TeleTool $tag" --generate-notes
+            gh release create "$tag" --title "TeleTool $tag" --generate-notes "${release_args[@]}"
           gh release upload "$tag" dist/teletool_*_arm64.deb --clobber
-
-  deploy-pages:
-    if: needs.build.outputs.signed == 'true'
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy signed TeleTool APT repository
-        id: deployment
-        uses: actions/deploy-pages@v4

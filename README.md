@@ -79,7 +79,7 @@ For a fresh 64-bit Raspberry Pi OS Lite installation based on Debian Trixie,
 the recommended installer is the signed TeleTool APT repository:
 
 ```sh
-curl -fsSL https://johndevac.github.io/teletwat/install.sh | sudo sh
+curl -fsSL https://johndevac.github.io/teletwat/apt-repo/install.sh | sudo sh
 ```
 
 The repository bootstrap uses the TeleTool terminal UI, adds the signed package

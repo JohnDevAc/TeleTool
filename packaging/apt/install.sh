@@ -11,7 +11,7 @@ if ! command -v tt_ui_init >/dev/null 2>&1; then
   tt_ui_status() { printf '  [%s] %s\n' "$1" "$2"; }
 fi
 
-REPOSITORY_URL="https://johndevac.github.io/teletwat"
+REPOSITORY_URL="https://johndevac.github.io/teletwat/apt-repo"
 KEYRING="/usr/share/keyrings/teletool-archive-keyring.gpg"
 SOURCE_FILE="/etc/apt/sources.list.d/teletool.sources"
 

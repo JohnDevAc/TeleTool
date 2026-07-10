@@ -137,7 +137,7 @@ Common keys include:
 | `POST` | `/api/system/restart_program` | Restart the TeleTool process. |
 | `POST` | `/api/system/reboot` | Reboot the Pi, if permitted. |
 | `GET` | `/api/system/update_status` | Poll software update state. |
-| `POST` | `/api/system/update_from_server` | Update from GitHub branch `main` or `dev`. |
+| `POST` | `/api/system/update_from_server` | Update a checkout from GitHub, or install the latest signed APT package on package-managed units. |
 
 Manual network example:
 

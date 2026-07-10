@@ -1,0 +1,60 @@
+#!/bin/sh
+set -eu
+
+STATUS_DIR="/var/lib/teletool"
+STATUS_FILE="$STATUS_DIR/update-status.json"
+LOG_FILE="/var/log/teletool-web-update.log"
+started_at="$(date +%s)"
+
+write_status() {
+  running="$1"
+  done="$2"
+  percent="$3"
+  step="$4"
+  error_json="$5"
+  finished_at="$6"
+  restart_required="$7"
+  tmp="$(mktemp "$STATUS_DIR/.update-status.XXXXXX")"
+  printf '{\n  "running": %s,\n  "done": %s,\n  "percent": %s,\n  "step": "%s",\n  "error": %s,\n  "started_at": %s,\n  "finished_at": %s,\n  "branch": "main",\n  "package_managed": true,\n  "restart_required": %s,\n  "log": "%s"\n}\n' \
+    "$running" "$done" "$percent" "$step" "$error_json" \
+    "$started_at" "$finished_at" "$restart_required" "$LOG_FILE" >"$tmp"
+  install -o teletool -g teletool -m 0640 "$tmp" "$STATUS_FILE"
+  rm -f "$tmp"
+}
+
+update_failed() {
+  rc="$?"
+  trap - EXIT
+  write_status false true 100 "Update failed. See the update log." \
+    '"Package update failed"' "$(date +%s)" false
+  exit "$rc"
+}
+
+install -d -o teletool -g teletool -m 0750 "$STATUS_DIR"
+install -d -m 0755 /var/log
+: >"$LOG_FILE"
+chmod 0644 "$LOG_FILE"
+trap update_failed EXIT
+
+write_status true false 5 "Checking the signed TeleTool repository" null null false
+exec >>"$LOG_FILE" 2>&1
+
+apt-get -qq -o Acquire::Retries=3 -o DPkg::Lock::Timeout=300 update
+write_status true false 45 "Checking for a newer TeleTool package" null null false
+
+before="$(dpkg-query -W -f='${Version}' teletool 2>/dev/null || true)"
+write_status true false 65 "Installing the latest signed TeleTool package" null null false
+DEBIAN_FRONTEND=noninteractive apt-get -qq \
+  -o Acquire::Retries=3 -o DPkg::Lock::Timeout=300 -o Dpkg::Use-Pty=0 \
+  install --only-upgrade -y teletool
+after="$(dpkg-query -W -f='${Version}' teletool 2>/dev/null || true)"
+
+trap - EXIT
+if [ -n "$before" ] && [ "$before" = "$after" ]; then
+  write_status false true 100 "TeleTool is already up to date." null "$(date +%s)" false
+else
+  write_status false true 100 "Update complete. TeleTool has restarted." null "$(date +%s)" true
+fi
+
+exit 0
+

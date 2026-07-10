@@ -36,7 +36,10 @@ PACKAGE_MANAGED = str(os.environ.get("TELETOOL_PACKAGE_MANAGED", "0")).strip().l
     "yes",
     "on",
 }
-APP_VERSION_FALLBACK = "V1.7.1"
+PACKAGE_UPDATE_STATUS_PATH = Path(
+    os.environ.get("TELETOOL_PACKAGE_UPDATE_STATUS_PATH", "/var/lib/teletool/update-status.json")
+).expanduser()
+APP_VERSION_FALLBACK = "V1.7.2"
 CONFIG_LOCK = threading.Lock()
 NDI_RUNTIME_NAME = "libndi.so.6"
 NDI_SDK_URL = "https://ndi.video/for-developers/ndi-sdk/"
@@ -2846,9 +2849,31 @@ def _set_update_status(**patch: Any) -> Dict[str, Any]:
         return deepcopy(UPDATE_STATE)
 
 
+def _read_package_update_status() -> Optional[Dict[str, Any]]:
+    if not PACKAGE_MANAGED:
+        return None
+    try:
+        data = json.loads(PACKAGE_UPDATE_STATUS_PATH.read_text(errors="ignore"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    finished_at = int(data.get("finished_at") or 0)
+    if finished_at and time.time() - finished_at > 600:
+        return None
+    return data
+
+
 def _update_status_snapshot() -> Dict[str, Any]:
     with UPDATE_LOCK:
-        return deepcopy(UPDATE_STATE)
+        status = deepcopy(UPDATE_STATE)
+    package_status = _read_package_update_status()
+    if package_status:
+        memory_started = int(status.get("started_at") or 0)
+        package_started = int(package_status.get("started_at") or 0)
+        if package_started >= memory_started:
+            status.update(package_status)
+    return status
 
 
 def _schedule_program_restart(delay_s: float = 0.5, exit_code: int = 3) -> None:
@@ -3570,8 +3595,6 @@ def api_system_update_status():
 
 @app.post("/api/system/update_from_server")
 def api_system_update_from_server(req: ProgramUpdateReq):
-    if PACKAGE_MANAGED:
-        raise HTTPException(409, "This TeleTool installation is managed by apt. Run: sudo apt-get update && sudo apt-get upgrade")
     if not req.confirm:
         raise HTTPException(400, "Confirmation is required before updating from server")
     try:
@@ -3593,6 +3616,28 @@ def api_system_update_from_server(req: ProgramUpdateReq):
         stats=None,
         branch=branch,
     )
+    if PACKAGE_MANAGED:
+        # Keep apt/dpkg outside teletool.service's cgroup. The package postinst
+        # restarts TeleTool, which would otherwise kill its own update process.
+        status = _set_update_status(branch=DEFAULT_RELEASE_BRANCH)
+        rc, out, err = _run_cmd(
+            ["systemctl", "--no-block", "start", "teletool-update.service"],
+            sudo=True,
+            timeout_s=12,
+        )
+        if rc != 0:
+            failure = (err or out or "Could not start the TeleTool package updater").strip()
+            _set_update_status(
+                running=False,
+                done=True,
+                percent=100,
+                step="Update failed",
+                error=failure,
+                finished_at=int(time.time()),
+            )
+            raise HTTPException(500, failure)
+        return {"ok": True, "message": "Signed package update started.", "status": status}
+
     threading.Thread(target=_run_program_update_worker, args=(branch,), name="program-update-worker", daemon=True).start()
     return {"ok": True, "message": "Update started.", "status": status}
 

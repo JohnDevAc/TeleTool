@@ -42,6 +42,9 @@ jobs:
       - name: Validate Tvheadend access schema
         run: python3 scripts/check_tvheadend_access_schema.py
 
+      - name: Validate package Web updater
+        run: python3 scripts/check_package_updater.py
+
       - name: Build the Debian package
         env:
           TELETOOL_GST_NDI_PLUGIN: ${{ github.workspace }}/dist/libgstndi.so

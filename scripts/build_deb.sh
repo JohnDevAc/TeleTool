@@ -95,10 +95,14 @@ done
 
 install -m 0644 "$PROJECT_DIR/packaging/debian/teletool.service" \
   "$package_root/lib/systemd/system/teletool.service"
+install -m 0644 "$PROJECT_DIR/packaging/debian/teletool-update.service" \
+  "$package_root/lib/systemd/system/teletool-update.service"
 install -m 0440 "$PROJECT_DIR/packaging/debian/teletool.sudoers" \
   "$package_root/etc/sudoers.d/teletool"
 install -m 0755 "$PROJECT_DIR/packaging/debian/configure-tvheadend" \
   "$app_root/bin/configure-tvheadend"
+install -m 0755 "$PROJECT_DIR/packaging/debian/update-package" \
+  "$app_root/bin/update-package"
 sed "s/__INSTALLER_VERSION__/$INSTALLER_VERSION/g" \
   "$PROJECT_DIR/packaging/debian/terminal-ui" > "$app_root/bin/terminal-ui"
 chmod 0644 "$app_root/bin/terminal-ui"

@@ -91,7 +91,7 @@ The repository bootstrap uses the TeleTool terminal UI, adds the signed package
 source, runs `apt-get update`, and installs `teletool` with its Tvheadend,
 GStreamer, Python, audio, and network dependencies. The completion screen shows
 the unit Web UI link. If the NDI runtime is missing, open that link and upload
-the ARM64 `libndi.so.6` file as directed. TeleTool V1.7.1 is distributed with
+the ARM64 `libndi.so.6` file as directed. TeleTool V1.7.2 is distributed with
 installer version 1.0. Package download and installation details are written to
 `/var/log/teletool-installer.log` while the full-screen terminal UI shows the
 overall percentage and a clean patience message without exposing individual
@@ -105,6 +105,10 @@ sudo apt-get update
 sudo apt-get install teletool
 sudo apt-get upgrade
 ```
+
+Package-installed units can also install the latest signed TeleTool package
+from the System page. The Web UI runs the update in a dedicated system service
+so `apt` can safely restart TeleTool while the package is being configured.
 
 The package currently targets `arm64` and Raspberry Pi OS Trixie. See
 [`packaging/README.md`](packaging/README.md) for build, signing, publishing, and

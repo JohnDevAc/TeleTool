@@ -198,11 +198,15 @@ function renderUpdateStatus(st){
   const percent = Math.max(0, Math.min(100, Number((st && st.percent) || 0)));
   bar.style.width = `${percent}%`;
   step.textContent = error ? ("Update failed: " + error) : ((st && st.step) || "Idle");
-  if (btn) btn.disabled = packageManagedInstall || running || (done && !error);
-  if (branchSelect) branchSelect.disabled = packageManagedInstall || running || (done && !error);
+  if (btn) btn.disabled = running;
+  if (branchSelect) branchSelect.disabled = packageManagedInstall || running;
 
   if (error) toastId("toastPower", "Update failed: " + error, true, 7000);
-  else if (running) toastId("toastPower", "Updating from " + updateBranchLabel(st && st.branch) + " branch...");
+  else if (running) toastId(
+    "toastPower",
+    packageManagedInstall ? "Installing the latest signed TeleTool package..." :
+      ("Updating from " + updateBranchLabel(st && st.branch) + " branch...")
+  );
   else if (done){
     toastId("toastPower", "Update complete. Restarting program.", false, 5000);
     scheduleReturnToMainUi();
@@ -338,11 +342,14 @@ async function refreshReleaseInfo(){
       const btn = document.getElementById("updateFromServer");
       const branchSelect = document.getElementById("updateBranch");
       if (btn){
-        btn.disabled = true;
-        btn.textContent = "Managed by apt";
-        btn.title = "Run sudo apt-get update && sudo apt-get upgrade";
+        btn.textContent = "Check for Update";
+        btn.title = "Install the latest signed TeleTool package";
       }
-      if (branchSelect) branchSelect.disabled = true;
+      if (branchSelect){
+        branchSelect.value = "main";
+        branchSelect.disabled = true;
+        branchSelect.title = "Package updates use the signed stable repository";
+      }
     }
   } catch(e){
     const badge = document.getElementById("appVersionBadge");
@@ -431,7 +438,10 @@ document.getElementById("restartProgram").addEventListener("click", async () => 
 document.getElementById("updateFromServer").addEventListener("click", async () => {
   const branch = document.getElementById("updateBranch").value || "main";
   const branchLabel = updateBranchLabel(branch);
-  const ok = window.confirm(`Update from the ${branchLabel} branch now? Do not do this while TeleTool is in production. The service will restart after the update.`);
+  const prompt = packageManagedInstall ?
+    "Install the latest signed TeleTool package now? The service will restart if an update is available." :
+    `Update from the ${branchLabel} branch now? Do not do this while TeleTool is in production. The service will restart after the update.`;
+  const ok = window.confirm(prompt);
   if (!ok) return;
   const btn = document.getElementById("updateFromServer");
   btn.disabled = true;

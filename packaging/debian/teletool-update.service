@@ -1,0 +1,11 @@
+[Unit]
+Description=TeleTool signed package update
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/teletool/bin/update-package
+TimeoutStartSec=30min
+Nice=10
+

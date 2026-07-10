@@ -59,6 +59,9 @@ case "${TELETOOL_TERMINAL_UI:-auto}" in
     ;;
 esac
 
+C_DEFAULT=""
+C_BACKGROUND=""
+C_TEXT=""
 C_RESET=""
 C_BOLD=""
 C_BLUE=""
@@ -66,17 +69,20 @@ C_GREEN=""
 C_YELLOW=""
 C_RED=""
 if [ "$TERMINAL_UI" = "1" ] && [ -z "${NO_COLOR:-}" ]; then
-  C_RESET=$'\033[0m'
+  C_DEFAULT=$'\033[0m'
+  C_BACKGROUND=$'\033[48;2;2;40;72m'
+  C_TEXT=$'\033[38;2;248;216;24m'
+  C_RESET="${C_BACKGROUND}${C_TEXT}"
   C_BOLD=$'\033[1m'
-  C_BLUE=$'\033[38;5;75m'
-  C_GREEN=$'\033[38;5;78m'
-  C_YELLOW=$'\033[38;5;220m'
-  C_RED=$'\033[38;5;203m'
+  C_BLUE=$'\033[38;2;8;136;232m'
+  C_GREEN="$C_TEXT"
+  C_YELLOW="$C_TEXT"
+  C_RED=$'\033[38;2;255;104;104m'
 fi
 
 terminal_clear() {
   if [ "$TERMINAL_UI" = "1" ]; then
-    printf '\033[2J\033[H'
+    printf '%s\033[2J\033[H' "$C_RESET"
   fi
 }
 
@@ -88,7 +94,7 @@ terminal_title() {
 
 terminal_reset() {
   if [ "$TERMINAL_UI" = "1" ]; then
-    printf '%s\033[?25h' "$C_RESET"
+    printf '%s\033[?25h' "$C_DEFAULT"
   fi
 }
 
@@ -100,7 +106,7 @@ progress_bar() {
   printf -v empty_bar '%*s' "$empty" ''
   filled_bar="${filled_bar// /#}"
   empty_bar="${empty_bar// /-}"
-  printf '[%s%s]' "$filled_bar" "$empty_bar"
+  printf '[%s%s%s%s%s]' "$C_YELLOW" "$filled_bar" "$C_BLUE" "$empty_bar" "$C_RESET"
 }
 
 begin_stage() {
@@ -115,7 +121,7 @@ begin_stage() {
 
   terminal_clear
   terminal_title "$CURRENT_STAGE_LABEL"
-  printf '%s%s  TELETOOL RASPBERRY PI SETUP%s\n' "$C_BLUE" "$C_BOLD" "$C_RESET"
+  printf '%s%s  TELETOOL RASPBERRY PI SETUP%s\n' "$C_YELLOW" "$C_BOLD" "$C_RESET"
   printf '  Installer v%s\n' "$INSTALLER_VERSION"
   printf '  ==============================================================================\n'
   stage_percent=$((CURRENT_STAGE_NUMBER * 100 / TOTAL_STAGES))

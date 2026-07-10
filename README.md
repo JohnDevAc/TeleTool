@@ -89,7 +89,8 @@ the unit Web UI link. If the NDI runtime is missing, open that link and upload
 the ARM64 `libndi.so.6` file as directed. TeleTool V1.7 is distributed with
 installer version 1.0. Package download and installation details are written to
 `/var/log/teletool-installer.log` while the full-screen terminal UI shows the
-overall percentage and current phase.
+overall percentage, current package action, and APT download/install detail.
+The terminal palette uses TeleTool yellow and blue derived from the logo.
 
 After the repository is configured, normal package commands are sufficient:
 

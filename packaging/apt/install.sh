@@ -6,6 +6,7 @@ set -eu
 if ! command -v tt_ui_init >/dev/null 2>&1; then
   TT_UI_YELLOW=""
   TT_UI_RESET=""
+  TT_UI_LAST_PERCENT=0
   tt_ui_init() { :; }
   tt_ui_reset() { :; }
   tt_ui_stage() { printf '\n==> [%s/%s] %s\n' "$1" "$2" "$3"; }
@@ -20,6 +21,69 @@ REPOSITORY_URL="${TELETOOL_REPOSITORY_URL:-https://johndevac.github.io/teletwat/
 KEYRING="/usr/share/keyrings/teletool-archive-keyring.gpg"
 SOURCE_FILE="/etc/apt/sources.list.d/teletool.sources"
 LOG_FILE="/var/log/teletool-installer.log"
+
+run_apt_with_progress() {
+  download_start="$1"
+  download_span="$2"
+  install_start="$3"
+  install_span="$4"
+  default_label="$5"
+  shift 5
+
+  progress_dir="$(mktemp -d /tmp/teletool-apt-progress.XXXXXX)"
+  progress_pipe="$progress_dir/status"
+  progress_result="$progress_dir/result"
+  mkfifo "$progress_pipe"
+
+  (
+    set +e
+    "$@" 3>"$progress_pipe" >>"$LOG_FILE" 2>&1
+    printf '%s\n' "$?" >"$progress_result"
+    exit 0
+  ) &
+  progress_pid=$!
+
+  while IFS=: read -r progress_kind progress_item progress_percent progress_description; do
+    progress_whole="${progress_percent%%.*}"
+    case "$progress_whole" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    if [ "$progress_whole" -gt 100 ]; then progress_whole=100; fi
+
+    case "$progress_kind" in
+      dlstatus)
+        overall_percent=$((download_start + progress_whole * download_span / 100))
+        progress_label="Downloading packages"
+        ;;
+      pmstatus)
+        overall_percent=$((install_start + progress_whole * install_span / 100))
+        progress_label="Installing packages"
+        ;;
+      pmerror|error)
+        overall_percent="$TT_UI_LAST_PERCENT"
+        progress_label="Package operation reported an error"
+        ;;
+      *)
+        continue
+        ;;
+    esac
+
+    if [ -z "$progress_description" ]; then
+      progress_description="$default_label"
+    fi
+    tt_ui_progress "$overall_percent" "$progress_label" "$progress_description"
+  done < "$progress_pipe"
+
+  wait "$progress_pid" || true
+  if [ -f "$progress_result" ]; then
+    progress_exit="$(cat "$progress_result")"
+  else
+    progress_exit=1
+  fi
+  rm -f "$progress_pipe" "$progress_result"
+  rmdir "$progress_dir" 2>/dev/null || true
+  return "$progress_exit"
+}
 
 tt_ui_init
 trap tt_ui_reset EXIT
@@ -59,21 +123,17 @@ Signed-By: $KEYRING
 EOF
 
 tt_ui_progress 15 "Refreshing package information" "Checking Raspberry Pi OS and TeleTool repositories"
-if ! apt-get -qq -o Dpkg::Use-Pty=0 update >>"$LOG_FILE" 2>&1; then
+if ! run_apt_with_progress 15 5 20 0 "Refreshing package information" \
+  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=3 update; then
   tt_ui_failure "Package information could not be refreshed." "$LOG_FILE"
   exit 1
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-tt_ui_progress 30 "Downloading TeleTool" "Downloading TeleTool, Tvheadend and media dependencies"
-if ! apt-get -qq -o Dpkg::Use-Pty=0 --download-only install -y teletool >>"$LOG_FILE" 2>&1; then
-  tt_ui_failure "TeleTool packages could not be downloaded." "$LOG_FILE"
-  exit 1
-fi
-
-tt_ui_progress 60 "Installing TeleTool" "Configuring Tvheadend, GStreamer and the Web UI"
+tt_ui_progress 20 "Preparing TeleTool packages" "Resolving Tvheadend, GStreamer and media dependencies"
 export TELETOOL_DEFER_COMPLETION=1
-if ! apt-get -qq -o Dpkg::Use-Pty=0 --no-download install -y teletool >>"$LOG_FILE" 2>&1; then
+if ! run_apt_with_progress 20 30 50 45 "Installing TeleTool and its dependencies" \
+  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=3 install -y teletool; then
   tt_ui_failure "TeleTool could not be installed." "$LOG_FILE"
   exit 1
 fi

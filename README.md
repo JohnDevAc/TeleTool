@@ -1,5 +1,10 @@
 # TeleTool
 
+Fresh Raspberry Pi OS Lite installation (adds the signed TeleTool APT repository):
+`wget -qO- https://johndevac.github.io/teletwat/apt-repo/install.sh | sudo sh`
+
+If the TeleTool repository is already configured: `sudo apt-get update && sudo apt-get install teletool`
+
 TeleTool is a FastAPI application for a Raspberry Pi 5 that bridges Tvheadend TV services to NDI and optional local line-level audio output. It is designed for DVB-T/T2 workflows where a selected Tvheadend channel is decoded with GStreamer, published as an NDI source, and monitored from a simple web UI.
 
 The local audio path is intended for line-output devices such as a Dante AVIO USB adapter. HDMI outputs and noisy ALSA aliases are hidden from the audio device list.

@@ -1,0 +1,44 @@
+name: Deploy signed TeleTool APT repository
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+    paths:
+      - "apt-repo/**"
+      - ".github/workflows/deploy-apt-pages.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out the signed repository
+        uses: actions/checkout@v4
+
+      - name: Verify required APT repository files
+        run: |
+          test -s apt-repo/dists/stable/InRelease
+          test -s apt-repo/dists/stable/main/binary-arm64/Packages
+          test -s apt-repo/teletool-archive-keyring.gpg
+          test -x apt-repo/install.sh
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload APT repository
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: apt-repo
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,171 @@
+#!/bin/sh
+set -eu
+
+NETWORK_UUID="54e1e700000000000000000000000010"
+NETWORK_NAME="DVB-T Network"
+PROVIDER_NETWORK_NAME="United Kingdom"
+ACCESS_PREFIX="127.0.0.1/32,::1/128"
+
+command -v systemctl >/dev/null 2>&1 || exit 0
+command -v python3 >/dev/null 2>&1 || exit 0
+
+systemctl enable --now tvheadend.service 2>/dev/null || exit 0
+sleep 2
+
+tvh_dir=""
+for candidate in /home/hts/.hts/tvheadend /var/lib/tvheadend; do
+  if [ -d "$candidate" ]; then
+    tvh_dir="$candidate"
+    break
+  fi
+done
+if [ -z "$tvh_dir" ]; then
+  tvh_dir="/var/lib/tvheadend"
+  mkdir -p "$tvh_dir"
+fi
+
+tvh_user="hts"
+tvh_group="video"
+if id hts >/dev/null 2>&1; then
+  tvh_group="$(id -gn hts)"
+fi
+
+systemctl stop tvheadend.service 2>/dev/null || true
+mkdir -p \
+  "$tvh_dir/accesscontrol" \
+  "$tvh_dir/passwd" \
+  "$tvh_dir/input/dvb/networks/$NETWORK_UUID"
+
+TVH_DIR="$tvh_dir" \
+TVH_USER="$tvh_user" \
+TVH_GROUP="$tvh_group" \
+TVH_ACCESS_PREFIX="$ACCESS_PREFIX" \
+TVH_NETWORK_UUID="$NETWORK_UUID" \
+TVH_NETWORK_NAME="$NETWORK_NAME" \
+TVH_PROVIDER_NETWORK_NAME="$PROVIDER_NETWORK_NAME" \
+python3 - <<'PY'
+import json
+import os
+import shutil
+from pathlib import Path
+
+tvh_dir = Path(os.environ["TVH_DIR"])
+tvh_user = os.environ["TVH_USER"]
+tvh_group = os.environ["TVH_GROUP"]
+prefix = os.environ["TVH_ACCESS_PREFIX"]
+network_uuid = os.environ["TVH_NETWORK_UUID"]
+network_name = os.environ["TVH_NETWORK_NAME"]
+provider_network_name = os.environ["TVH_PROVIDER_NETWORK_NAME"]
+
+
+def write_json(path: Path, data: dict, mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    os.chmod(path, mode)
+    shutil.chown(path, user=tvh_user, group=tvh_group)
+
+
+write_json(
+    tvh_dir / "accesscontrol" / "54e1e700000000000000000000000001",
+    {
+        "enabled": True,
+        "username": "",
+        "prefix": prefix,
+        "streaming": True,
+        "profile": True,
+        "dvr": True,
+        "dvr_config": True,
+        "webui": True,
+        "admin": True,
+        "conn_limit_type": 0,
+        "channel_min": 0,
+        "channel_max": 0,
+        "channel_tag_exclude": False,
+        "comment": "TeleTool local admin",
+    },
+)
+write_json(
+    tvh_dir / "accesscontrol" / "54e1e700000000000000000000000003",
+    {
+        "enabled": True,
+        "username": "*",
+        "prefix": prefix,
+        "streaming": True,
+        "profile": True,
+        "dvr": True,
+        "dvr_config": True,
+        "webui": True,
+        "admin": True,
+        "conn_limit_type": 0,
+        "channel_min": 0,
+        "channel_max": 0,
+        "channel_tag_exclude": False,
+        "comment": "TeleTool wildcard local admin",
+    },
+)
+write_json(
+    tvh_dir / "passwd" / "54e1e700000000000000000000000002",
+    {"enabled": True, "username": "", "password": ""},
+)
+write_json(
+    tvh_dir / "input" / "dvb" / "networks" / network_uuid / "config",
+    {
+        "enabled": True,
+        "networkname": network_name,
+        "pnetworkname": provider_network_name,
+        "nid": 0,
+        "autodiscovery": 1,
+        "bouquet": False,
+        "skipinitscan": True,
+        "idlescan": False,
+        "sid_chnum": False,
+        "ignore_chnum": False,
+        "satip_source": 0,
+        "localtime": 0,
+        "wizard": True,
+        "class": "dvb_network_dvbt",
+    },
+)
+
+# Bind any DVB-T/T2 frontends Tvheadend has already discovered. If the tuner is
+# connected later, TeleTool's TV Setup page can bind it at that point.
+adapter_dir = tvh_dir / "input" / "linuxdvb" / "adapters"
+if adapter_dir.exists():
+    for path in adapter_dir.iterdir():
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text() or "{}")
+        except Exception:
+            continue
+        frontends = data.get("frontends")
+        if not isinstance(frontends, dict):
+            continue
+        changed = False
+        for frontend in frontends.values():
+            if not isinstance(frontend, dict):
+                continue
+            frontend_type = str(frontend.get("type") or "").upper()
+            display_name = str(frontend.get("displayname") or "").upper()
+            if "DVB-T" not in frontend_type and "DVB-T" not in display_name:
+                continue
+            networks = frontend.get("networks")
+            if not isinstance(networks, list):
+                networks = []
+            if network_uuid not in networks:
+                networks.append(network_uuid)
+            frontend["networks"] = networks
+            frontend["enabled"] = True
+            frontend["ota_epg"] = True
+            frontend["initscan"] = True
+            frontend["idlescan"] = True
+            changed = True
+        if changed:
+            write_json(path, data)
+PY
+
+chown -R "$tvh_user:$tvh_group" \
+  "$tvh_dir/accesscontrol" "$tvh_dir/passwd" "$tvh_dir/input" 2>/dev/null || true
+systemctl start tvheadend.service
+
+exit 0

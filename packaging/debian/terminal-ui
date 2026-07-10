@@ -1,0 +1,99 @@
+#!/bin/sh
+
+TT_UI_ENABLED=0
+TT_UI_RESET=""
+TT_UI_BOLD=""
+TT_UI_BLUE=""
+TT_UI_GREEN=""
+TT_UI_YELLOW=""
+TT_UI_RED=""
+
+tt_ui_init() {
+  case "${TELETOOL_TERMINAL_UI:-auto}" in
+    1|true|yes|on) TT_UI_ENABLED=1 ;;
+    0|false|no|off) TT_UI_ENABLED=0 ;;
+    *)
+      if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+        TT_UI_ENABLED=1
+      fi
+      ;;
+  esac
+
+  if [ "$TT_UI_ENABLED" = "1" ] && [ -z "${NO_COLOR:-}" ]; then
+    TT_UI_RESET='\033[0m'
+    TT_UI_BOLD='\033[1m'
+    TT_UI_BLUE='\033[38;5;75m'
+    TT_UI_GREEN='\033[38;5;78m'
+    TT_UI_YELLOW='\033[38;5;220m'
+    TT_UI_RED='\033[38;5;203m'
+  fi
+}
+
+tt_ui_clear() {
+  if [ "$TT_UI_ENABLED" = "1" ]; then
+    printf '\033[2J\033[H'
+  fi
+}
+
+tt_ui_title() {
+  if [ "$TT_UI_ENABLED" = "1" ]; then
+    printf '\033]0;TeleTool Setup - %s\007' "$1"
+  fi
+}
+
+tt_ui_reset() {
+  if [ "$TT_UI_ENABLED" = "1" ]; then
+    printf "$TT_UI_RESET\033[?25h"
+  fi
+}
+
+tt_ui_progress_bar() {
+  current="$1"
+  total="$2"
+  width=34
+  filled=$((current * width / total))
+  empty=$((width - filled))
+  filled_bar="$(printf '%*s' "$filled" '')"
+  empty_bar="$(printf '%*s' "$empty" '')"
+  filled_bar="$(printf '%s' "$filled_bar" | tr ' ' '#')"
+  empty_bar="$(printf '%s' "$empty_bar" | tr ' ' '-')"
+  printf '[%s%s]' "$filled_bar" "$empty_bar"
+}
+
+tt_ui_stage() {
+  current="$1"
+  total="$2"
+  label="$3"
+  if [ "$TT_UI_ENABLED" != "1" ]; then
+    printf '\n==> [%s/%s] %s\n' "$current" "$total" "$label"
+    return
+  fi
+  tt_ui_clear
+  tt_ui_title "$label"
+  printf "$TT_UI_BLUE$TT_UI_BOLD  TELETOOL RASPBERRY PI SETUP$TT_UI_RESET\n"
+  printf '  ==============================================================================\n'
+  printf '  Stage %s of %s  ' "$current" "$total"
+  tt_ui_progress_bar "$current" "$total"
+  printf '\n'
+  printf "  $TT_UI_BOLD%s$TT_UI_RESET\n" "$label"
+  printf '  ==============================================================================\n\n'
+}
+
+tt_ui_completion_header() {
+  tt_ui_clear
+  tt_ui_title "Complete"
+  printf "$TT_UI_GREEN$TT_UI_BOLD  TELETOOL INSTALLATION COMPLETE$TT_UI_RESET\n"
+  printf '  ==============================================================================\n\n'
+}
+
+tt_ui_status() {
+  state="$1"
+  message="$2"
+  colour="$TT_UI_BLUE"
+  case "$state" in
+    OK|READY) colour="$TT_UI_GREEN" ;;
+    ACTION|WARN) colour="$TT_UI_YELLOW" ;;
+    ERROR) colour="$TT_UI_RED" ;;
+  esac
+  printf "  $colour[%s]$TT_UI_RESET %s\n" "$state" "$message"
+}

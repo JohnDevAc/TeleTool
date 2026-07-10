@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="__NDI_DROP_PATH__"
+TARGET="/usr/local/lib/libndi.so.6"
+MARKER="/var/lib/teletool/ndi-runtime-verified"
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "This helper must run as root." >&2
+  exit 1
+fi
+if [ "$#" -ne 0 ]; then
+  echo "This helper does not accept command-line arguments." >&2
+  exit 1
+fi
+CANDIDATE="$SOURCE"
+if [ ! -f "$CANDIDATE" ] || [ -L "$CANDIDATE" ]; then
+  if [ -f "$TARGET" ] && [ ! -L "$TARGET" ]; then
+    CANDIDATE="$TARGET"
+  else
+    echo "NDI runtime upload is missing or is not a regular file: $SOURCE" >&2
+    exit 1
+  fi
+fi
+if [ "$(stat -c %s "$CANDIDATE")" -lt 65536 ]; then
+  echo "The uploaded file is too small to be the NDI runtime." >&2
+  exit 1
+fi
+if ! readelf -h "$CANDIDATE" 2>/dev/null | awk '
+  /Class:/ && /ELF64/ { elf64 = 1 }
+  /Machine:/ && /AArch64/ { arm64 = 1 }
+  END { exit !(elf64 && arm64) }
+'; then
+  echo "The uploaded file is not a 64-bit ARM/AArch64 ELF library." >&2
+  exit 1
+fi
+if ! gst-inspect-1.0 ndisink >/dev/null 2>&1 || ! gst-inspect-1.0 ndisinkcombiner >/dev/null 2>&1; then
+  echo "The GStreamer NDI plugin does not provide ndisink and ndisinkcombiner." >&2
+  exit 1
+fi
+
+install -d -m 0755 /usr/local/lib
+tmp_runtime="$(mktemp /usr/local/lib/.libndi.so.6.teletool.XXXXXX)"
+cleanup() {
+  rm -f "$tmp_runtime"
+}
+trap cleanup EXIT
+install -m 0755 "$CANDIDATE" "$tmp_runtime"
+
+if ! readelf --dyn-syms --wide "$tmp_runtime" 2>/dev/null | awk '
+  /NDIlib_v(4|5|6)_load/ { found = 1 }
+  END { exit !found }
+'; then
+  echo "The uploaded library does not expose a supported NDI SDK loader function." >&2
+  exit 1
+fi
+
+mv -f "$tmp_runtime" "$TARGET"
+trap - EXIT
+/sbin/ldconfig
+
+if ! /sbin/ldconfig -p 2>/dev/null | awk '
+  $1 == "libndi.so.6" { found = 1 }
+  END { exit !found }
+'; then
+  rm -f "$TARGET"
+  /sbin/ldconfig
+  echo "libndi.so.6 was installed but is not visible to the dynamic linker." >&2
+  exit 1
+fi
+
+install -d -o root -g root -m 0755 "$(dirname "$MARKER")"
+tmp_marker="$(mktemp)"
+{
+  printf 'runtime=%s\n' "$TARGET"
+  printf 'sha256=%s\n' "$(sha256sum "$TARGET" | awk '{print $1}')"
+  printf 'verified_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} > "$tmp_marker"
+install -o root -g root -m 0644 "$tmp_marker" "$MARKER"
+rm -f "$tmp_marker"
+
+echo "Validated and installed $TARGET"

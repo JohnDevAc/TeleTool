@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+systemctl daemon-reload 2>/dev/null || true
+
+if [ "$1" = "purge" ]; then
+  rm -f /var/lib/teletool/config.json
+  rm -f /var/lib/teletool/ndi-runtime-verified
+  # Preserve the user-supplied proprietary library, if present.
+  if [ -f /var/lib/teletool/libndi.so.6 ]; then
+    echo "Preserved /var/lib/teletool/libndi.so.6"
+  fi
+fi
+
+exit 0

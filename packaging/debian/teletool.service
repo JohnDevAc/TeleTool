@@ -1,0 +1,26 @@
+[Unit]
+Description=TeleTool Tvheadend to NDI and line-audio bridge
+Wants=network-online.target tvheadend.service
+After=network-online.target tvheadend.service
+Conflicts=tvh_ndi_bridge.service tvh-ndi-bridge.service
+
+[Service]
+Type=simple
+User=teletool
+Group=teletool
+SupplementaryGroups=audio video
+WorkingDirectory=/usr/lib/teletool
+Environment=PYTHONUNBUFFERED=1
+Environment=TELETOOL_PACKAGE_MANAGED=1
+Environment=TELETOOL_CONFIG_PATH=/var/lib/teletool/config.json
+Environment=TELETOOL_RELEASE_MARKER_PATH=/usr/lib/teletool/.teletool_release.json
+Environment=TELETOOL_VERSION_PATH=/usr/lib/teletool/VERSION
+Environment=TELETOOL_NDI_LIB=/var/lib/teletool/libndi.so.6
+Environment=TELETOOL_NDI_INSTALL_HELPER=/usr/lib/teletool/bin/install-ndi-runtime
+ExecStart=/usr/bin/python3 -m uvicorn app:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

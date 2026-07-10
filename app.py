@@ -1,3 +1,4 @@
+import html
 import json
 import ipaddress
 import os
@@ -17,18 +18,86 @@ from typing import Dict, List, Optional, Tuple, Any
 from urllib.parse import urlparse
 from urllib.request import Request as UrlRequest, urlopen
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import requests
 from tvh import TELETOOL_UK_AUTO_SCANFILE, TvheadendClient
 from gst_ndi import GstNDIBridge
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.json"
-RELEASE_MARKER_PATH = BASE_DIR / ".teletool_release.json"
-VERSION_PATH = BASE_DIR / "VERSION"
+CONFIG_PATH = Path(os.environ.get("TELETOOL_CONFIG_PATH", str(BASE_DIR / "config.json"))).expanduser()
+RELEASE_MARKER_PATH = Path(
+    os.environ.get("TELETOOL_RELEASE_MARKER_PATH", str(BASE_DIR / ".teletool_release.json"))
+).expanduser()
+VERSION_PATH = Path(os.environ.get("TELETOOL_VERSION_PATH", str(BASE_DIR / "VERSION"))).expanduser()
+PACKAGE_MANAGED = str(os.environ.get("TELETOOL_PACKAGE_MANAGED", "0")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 APP_VERSION_FALLBACK = "V1.6.03"
 CONFIG_LOCK = threading.Lock()
+NDI_RUNTIME_NAME = "libndi.so.6"
+NDI_SDK_URL = "https://ndi.video/for-developers/ndi-sdk/"
+NDI_RUNTIME_PATH = Path(os.environ.get("TELETOOL_NDI_RUNTIME_PATH", "/usr/local/lib/libndi.so.6")).expanduser()
+NDI_DROP_PATH = Path(os.environ.get("TELETOOL_NDI_LIB", str(Path.home() / NDI_RUNTIME_NAME))).expanduser()
+NDI_INSTALL_HELPER = Path(
+    os.environ.get("TELETOOL_NDI_INSTALL_HELPER", "/usr/local/sbin/teletool-install-ndi-runtime")
+).expanduser()
+NDI_VERIFICATION_MARKER = Path(
+    os.environ.get("TELETOOL_NDI_VERIFICATION_MARKER", "/var/lib/teletool/ndi-runtime-verified")
+).expanduser()
+NDI_UPLOAD_MIN_BYTES = 64 * 1024
+NDI_UPLOAD_MAX_BYTES = 128 * 1024 * 1024
+NDI_UPLOAD_LOCK = threading.Lock()
+
+
+def _ndi_runtime_status() -> Dict[str, Any]:
+    runtime_dir = str(os.environ.get("NDI_RUNTIME_DIR_V6") or "").strip()
+    runtime_candidates = [NDI_RUNTIME_PATH]
+    if runtime_dir:
+        runtime_candidates.append(Path(runtime_dir).expanduser() / NDI_RUNTIME_NAME)
+
+    installed_path = next((path for path in runtime_candidates if path.is_file()), None)
+    installed = installed_path is not None
+    verified = NDI_VERIFICATION_MARKER.is_file()
+    staged = NDI_DROP_PATH.is_file()
+    return {
+        "ready": installed and verified,
+        "installed": installed,
+        "verified": verified,
+        "installed_path": str(installed_path) if installed_path else None,
+        "staged": staged,
+        "drop_path": str(NDI_DROP_PATH),
+        "drop_directory": str(NDI_DROP_PATH.parent),
+        "runtime_name": NDI_RUNTIME_NAME,
+        "sdk_url": NDI_SDK_URL,
+        "setup_command": (
+            "sudo apt-get install --reinstall teletool"
+            if PACKAGE_MANAGED
+            else f"bash {BASE_DIR / 'scripts' / 'pi_full_setup.sh'}"
+        ),
+        "upload_enabled": NDI_INSTALL_HELPER.is_file() and os.access(NDI_INSTALL_HELPER, os.X_OK),
+        "upload_max_bytes": NDI_UPLOAD_MAX_BYTES,
+    }
+
+
+def _validate_ndi_upload_header(path: Path, size: int) -> None:
+    if size < NDI_UPLOAD_MIN_BYTES:
+        raise HTTPException(400, "The uploaded file is too small to be the NDI runtime library.")
+    with path.open("rb") as handle:
+        header = handle.read(20)
+    if len(header) < 20 or header[:4] != b"\x7fELF":
+        raise HTTPException(400, "The uploaded file is not an ELF shared library.")
+    if header[4] != 2:
+        raise HTTPException(400, "The uploaded file is not a 64-bit ELF library.")
+    if header[5] not in {1, 2}:
+        raise HTTPException(400, "The uploaded file uses an unsupported ELF byte order.")
+    byte_order = "little" if header[5] == 1 else "big"
+    machine = int.from_bytes(header[18:20], byte_order)
+    if machine != 183:
+        raise HTTPException(400, "The uploaded file is not built for ARM64/AArch64.")
 
 
 def _load_config() -> Dict[str, Any]:
@@ -1246,6 +1315,32 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
 app = FastAPI(title="TV to NDI/Line Audio Bridge")
 static_dir = BASE_DIR / "static"
 static_dir.mkdir(exist_ok=True)
+
+NDI_GATED_UI_PATHS = {
+    "/",
+    "/audio",
+    "/system",
+    "/manager",
+    "/static/index.html",
+    "/static/audio.html",
+    "/static/system.html",
+    "/static/manager.html",
+}
+
+
+@app.middleware("http")
+async def require_ndi_runtime_for_ui(request: Request, call_next):
+    path = request.url.path.rstrip("/") or "/"
+    if request.method in {"GET", "HEAD"} and path in NDI_GATED_UI_PATHS:
+        if not _ndi_runtime_status()["ready"]:
+            return RedirectResponse(
+                url="/ndi-setup",
+                status_code=307,
+                headers={"Cache-Control": "no-store"},
+            )
+    return await call_next(request)
+
+
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 # ---------------- Static pages ----------------
 def _ensure_static_pages():
@@ -1254,7 +1349,7 @@ def _ensure_static_pages():
     To avoid surprises (and to make local dev easier), we also copy any root-level
     *.html into ./static if the static copy is missing.
     """
-    for name in ("index.html", "audio.html", "system.html", "manager.html", "common.css", "common.js"):
+    for name in ("index.html", "audio.html", "system.html", "manager.html", "ndi-setup.html", "common.css", "common.js"):
         dst = static_dir / name
         if dst.exists():
             continue
@@ -1266,6 +1361,51 @@ def _ensure_static_pages():
                 # Non-fatal: the user can still place the files manually.
                 pass
 _ensure_static_pages()
+
+
+@app.get("/ndi-setup")
+def ndi_setup_page():
+    status = _ndi_runtime_status()
+    if status["ready"]:
+        return RedirectResponse(url="/", status_code=302)
+
+    page = static_dir / "ndi-setup.html"
+    if not page.exists():
+        raise HTTPException(500, "static/ndi-setup.html missing")
+
+    if status["installed"] and not status["verified"]:
+        stage_class = "warn"
+        stage_label = "Runtime installed but verification is required"
+    elif status["staged"]:
+        stage_class = "warn"
+        stage_label = "Runtime file detected; installation is required"
+    else:
+        stage_class = "bad"
+        stage_label = "Runtime file not detected"
+    upload_disabled = "" if status["upload_enabled"] else "disabled"
+    upload_hint = (
+        "Drop the ARM64 NDI runtime here; TeleTool will validate and install it automatically."
+        if status["upload_enabled"]
+        else "The privileged installer helper is unavailable. Rerun the full TeleTool setup once, then refresh this page."
+    )
+    replacements = {
+        "{{STAGE_CLASS}}": stage_class,
+        "{{STAGE_LABEL}}": html.escape(stage_label),
+        "{{SDK_URL}}": html.escape(str(status["sdk_url"]), quote=True),
+        "{{RUNTIME_NAME}}": html.escape(str(status["runtime_name"])),
+        "{{DROP_PATH}}": html.escape(str(status["drop_path"])),
+        "{{DROP_DIRECTORY}}": html.escape(str(status["drop_directory"])),
+        "{{SETUP_COMMAND}}": html.escape(str(status["setup_command"])),
+        "{{UPLOAD_DISABLED}}": upload_disabled,
+        "{{UPLOAD_HINT}}": html.escape(upload_hint),
+        "{{UPLOAD_MAX_MIB}}": str(int(status["upload_max_bytes"]) // (1024 * 1024)),
+    }
+    content = page.read_text(encoding="utf-8")
+    for marker, value in replacements.items():
+        content = content.replace(marker, value)
+    return HTMLResponse(content, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/")
 def root():
     index = static_dir / "index.html"
@@ -1296,6 +1436,75 @@ def manager_page(request: Request):
         raise HTTPException(500, "static/manager.html missing")
     return FileResponse(str(page))
 # ---------------- Existing API ----------------
+
+
+@app.get("/api/ndi/runtime")
+def api_ndi_runtime():
+    return _ndi_runtime_status()
+
+
+@app.post("/api/ndi/runtime/upload")
+async def api_upload_ndi_runtime(request: Request):
+    if _ndi_runtime_status()["ready"]:
+        raise HTTPException(409, "The NDI SDK runtime is already installed.")
+    if not (NDI_INSTALL_HELPER.is_file() and os.access(NDI_INSTALL_HELPER, os.X_OK)):
+        raise HTTPException(503, "The NDI runtime installer helper is not installed. Rerun the full TeleTool setup.")
+    if not NDI_UPLOAD_LOCK.acquire(blocking=False):
+        raise HTTPException(409, "Another NDI runtime upload is already in progress.")
+
+    upload_tmp = NDI_DROP_PATH.with_name(f".{NDI_RUNTIME_NAME}.upload-{uuid.uuid4().hex}")
+    total = 0
+    try:
+        content_length = str(request.headers.get("content-length") or "").strip()
+        if content_length:
+            try:
+                if int(content_length) > NDI_UPLOAD_MAX_BYTES:
+                    raise HTTPException(413, f"The upload exceeds the {NDI_UPLOAD_MAX_BYTES // (1024 * 1024)} MiB limit.")
+            except ValueError as exc:
+                raise HTTPException(400, "Invalid Content-Length header.") from exc
+        NDI_DROP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with upload_tmp.open("xb") as handle:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > NDI_UPLOAD_MAX_BYTES:
+                    raise HTTPException(413, f"The upload exceeds the {NDI_UPLOAD_MAX_BYTES // (1024 * 1024)} MiB limit.")
+                handle.write(chunk)
+        os.chmod(upload_tmp, 0o600)
+        _validate_ndi_upload_header(upload_tmp, total)
+        os.replace(upload_tmp, NDI_DROP_PATH)
+
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", str(NDI_INSTALL_HELPER)],
+                capture_output=True,
+                text=True,
+                timeout=90,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(500, "NDI runtime verification timed out.") from exc
+
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "NDI runtime verification failed.").strip()
+            raise HTTPException(400, detail[-2000:])
+
+        status = _ndi_runtime_status()
+        if not status["ready"]:
+            raise HTTPException(500, "The runtime installer completed but libndi.so.6 is still unavailable.")
+        return {
+            "ok": True,
+            "message": "The NDI SDK runtime was validated and installed successfully.",
+            "runtime": status,
+        }
+    finally:
+        try:
+            upload_tmp.unlink(missing_ok=True)
+        finally:
+            NDI_UPLOAD_LOCK.release()
+
+
 @app.get("/api/channels")
 def api_channels(force_refresh: bool = Query(False)):
     try:
@@ -2717,6 +2926,7 @@ def _release_info() -> Dict[str, Any]:
         "label": GITHUB_UPDATE_BRANCHES.get(branch, branch.title()),
         "development": branch == "dev",
         "version": _app_version(),
+        "package_managed": PACKAGE_MANAGED,
     }
 
 
@@ -3360,6 +3570,8 @@ def api_system_update_status():
 
 @app.post("/api/system/update_from_server")
 def api_system_update_from_server(req: ProgramUpdateReq):
+    if PACKAGE_MANAGED:
+        raise HTTPException(409, "This TeleTool installation is managed by apt. Run: sudo apt-get update && sudo apt-get upgrade")
     if not req.confirm:
         raise HTTPException(400, "Confirmation is required before updating from server")
     try:

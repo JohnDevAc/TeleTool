@@ -605,6 +605,77 @@
   }
 }
 
+/* NDI runtime holding page */
+.ndiHoldWrap{
+  min-height:100vh;
+  display:grid;
+  place-items:center;
+  padding:32px 18px;
+}
+.ndiHoldCard{
+  width:min(780px, 100%);
+  padding:clamp(22px, 5vw, 42px);
+  background:linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.025));
+  border:1px solid var(--border);
+  border-radius:24px;
+  box-shadow:var(--shadow);
+  text-align:center;
+}
+.ndiHoldLogo{
+  display:block;
+  width:clamp(130px, 24vw, 180px);
+  height:auto;
+  margin:0 auto 18px;
+}
+.ndiHoldCard h1{ font-size:clamp(24px, 4vw, 34px); margin:0 0 24px; color:var(--bad); }
+.ndiUploadBox{
+  margin:0 0 26px;
+  padding:30px 24px 24px;
+  border:1px dashed rgba(122,162,255,.48);
+  border-radius:16px;
+  background:rgba(122,162,255,.07);
+  text-align:center;
+  transition:border-color .15s ease, background .15s ease, transform .15s ease;
+}
+.ndiUploadBox.isDragging{
+  border-color:var(--accent);
+  background:rgba(122,162,255,.15);
+  transform:translateY(-1px);
+}
+.ndiUploadBox.isBusy{ opacity:.7; pointer-events:none; }
+.ndiUploadIcon{
+  width:64px;
+  height:64px;
+  display:grid;
+  place-items:center;
+  margin:0 auto 14px;
+  border-radius:50%;
+  background:rgba(122,162,255,.13);
+  color:var(--accent);
+}
+.ndiUploadIcon svg{
+  width:34px;
+  height:34px;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:2.5;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.ndiUploadHint{ margin:0 auto 18px; max-width:570px; color:var(--muted); font-size:14px; line-height:1.45; }
+.ndiUploadFile{ margin:12px 0 0; color:#d7deea; font-size:12px; overflow-wrap:anywhere; }
+.ndiUploadResult{ min-height:20px; margin-top:12px; font-size:13px; }
+.ndiUploadResult.good{ color:#bdf7de; }
+.ndiUploadResult.bad{ color:#ffd0d0; }
+.ndiUploadResult.warn{ color:#fff1c2; }
+.ndiUploadActions{ display:flex; flex-wrap:wrap; justify-content:center; gap:10px; }
+.ndiHoldDivider{ display:flex; align-items:center; gap:12px; margin:24px 0; color:var(--muted); font-size:12px; }
+.ndiHoldDivider::before,.ndiHoldDivider::after{ content:""; height:1px; flex:1; background:var(--border); }
+.ndiHoldSource{ margin:0 auto; max-width:600px; color:var(--muted); line-height:1.55; }
+.ndiHoldSource code{ color:var(--text); }
+.ndiHoldActions{ display:flex; flex-wrap:wrap; justify-content:center; gap:10px; margin-top:20px; }
+.ndiHoldActions a{ text-decoration:none; }
+
 /* Keep live logs and setup output inside their panels even when TV returns long mux/file strings. */
 .card, .tvSetupSection, .field, .actions, details, summary{
   min-width:0;

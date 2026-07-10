@@ -3,12 +3,15 @@ from collections import deque
 from dataclasses import dataclass, asdict
 from typing import Any, Deque, Dict, List, Optional
 import json
+import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
 
-_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+_DEFAULT_CONFIG_PATH = Path(
+    os.environ.get("TELETOOL_CONFIG_PATH", str(Path(__file__).resolve().parent / "config.json"))
+).expanduser()
 
 def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     """Load config.json for pipeline defaults.

@@ -73,10 +73,37 @@ Common settings:
 
 Use `/system` or `POST /api/config/ui` to change UI-managed settings.
 
+## Raspberry Pi APT Installation
+
+For a fresh 64-bit Raspberry Pi OS Lite installation based on Debian Trixie,
+the recommended installer is the signed TeleTool APT repository:
+
+```sh
+curl -fsSL https://johndevac.github.io/teletwat/install.sh | sudo sh
+```
+
+The repository bootstrap uses the TeleTool terminal UI, adds the signed package
+source, runs `apt-get update`, and installs `teletool` with its Tvheadend,
+GStreamer, Python, audio, and network dependencies. The completion screen shows
+the unit Web UI link. If the NDI runtime is missing, open that link and upload
+the ARM64 `libndi.so.6` file as directed.
+
+After the repository is configured, normal package commands are sufficient:
+
+```sh
+sudo apt-get update
+sudo apt-get install teletool
+sudo apt-get upgrade
+```
+
+The package currently targets `arm64` and Raspberry Pi OS Trixie. See
+[`packaging/README.md`](packaging/README.md) for build, signing, publishing, and
+repository maintenance instructions.
+
 ## Clean Raspberry Pi Setup
 
-On a fresh Raspberry Pi OS Lite install, run the full bootstrap as the normal
-service user, for example `admin`:
+The checkout-based bootstrap remains available for development or recovery. Run
+it as the normal service user, for example `admin`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/JohnDevAc/teletwat/dev/scripts/pi_full_setup.sh | bash
@@ -86,7 +113,10 @@ The full setup script installs OS packages, Tvheadend, DVB scan tables,
 GStreamer, Python dependencies, the TeleTool systemd service, and the sudo rules
 needed for System page network/power controls. It also creates Tvheadend blank
 username/blank password local admin access so TeleTool can use the local
-Tvheadend API without interactive first-run setup.
+Tvheadend API without interactive first-run setup. When run in a terminal it
+uses a full-screen stage display and progress bar. Its completion screen shows
+the unit's TeleTool Web UI link and the remaining browser-based setup action.
+Redirected output automatically uses plain text for clean logs.
 
 By default the bootstrap installs the `dev` branch and seeds the Crystal Palace
 DVB-T/T2 scanfile:
@@ -104,12 +134,27 @@ Useful clean-install options:
 - `TELETOOL_DVBT_SCANFILE=<scanfile>` - default TV transmitter/region
 - `TELETOOL_TVH_NETWORK_NAME=<name>` - seeded Tvheadend DVB-T network name
 - `TELETOOL_TVH_OPEN_LAN=1` - make the blank Tvheadend admin access LAN-wide
-- `TELETOOL_NDI_DEB=/path/to/ndi-plugin.deb` - install a supplied NDI package
+- `TELETOOL_NDI_LIB=/path/to/libndi.so.6` - override the NDI runtime drop path
 - `TELETOOL_APT_UPGRADE=1` - run `apt full-upgrade` before installing packages
+- `TELETOOL_TERMINAL_UI=0` - disable the full-screen terminal presentation
 
-NDI support is not bundled in this repository. The script can install a supplied
-`.deb`, but otherwise you must install an ARM64 NDI runtime/GStreamer plugin
-that provides `ndisink`.
+The setup script builds and installs the open-source GStreamer NDI plugin that
+provides `ndisink` and `ndisinkcombiner`. The proprietary NDI SDK runtime is not
+bundled. Download the NDI SDK for Linux from
+[NDI SDK for Developers](https://ndi.video/for-developers/ndi-sdk/), extract the
+ARM64 library named `libndi.so.6`, then open the TeleTool link printed on the
+installer completion screen and drop the file onto the upload box. TeleTool
+installs the runtime, refreshes the dynamic linker cache, verifies the required
+NDI elements, and opens the normal UI automatically.
+
+Until `libndi.so.6` is installed, `/`, `/audio`, `/system`, and `/manager`
+redirect to `/ndi-setup`. The holding page links to the official SDK, shows the
+required filename, and provides a drag-and-drop upload box. TeleTool streams the
+upload with a size limit, verifies that it is an ARM64 ELF library exposing the
+NDI loader API, installs it through a fixed root-owned helper, refreshes the
+dynamic linker cache, and confirms the GStreamer NDI elements. The normal UI
+unlocks only after every check succeeds. API endpoints remain available for
+diagnostics while the UI is held.
 
 After the script finishes, open TeleTool, confirm the DVB-T/T2 transmitter in TV
 Setup, and run the scan. For the Crystal Palace area, use the specific Crystal
@@ -124,7 +169,8 @@ TeleTool expects:
 - Tvheadend available locally or on the configured URL
 - Python 3 with PyGObject
 - GStreamer base/good/bad/ugly/libav and ALSA plugins
-- An ARM64 NDI runtime/GStreamer plugin that provides `ndisink`
+- The ARM64 NDI SDK 6 runtime file `libndi.so.6`; the setup script builds the
+  GStreamer plugin that provides `ndisink`
 
 On the Pi, after syncing the project:
 
@@ -137,7 +183,9 @@ It installs common Debian/Raspberry Pi OS packages, creates `.venv` with system
 site packages, installs Python requirements, and installs the systemd service.
 Use `scripts/pi_full_setup.sh` for a clean Raspberry Pi OS Lite bootstrap.
 
-NDI support is external to this repository. Verify it with:
+The smaller project setup does not build the NDI plugin. Use the full bootstrap
+for a clean OS installation, including the GStreamer plugin build and the
+`libndi.so.6` drop-file workflow. Verify the result with:
 
 ```sh
 gst-inspect-1.0 ndisink

@@ -23,6 +23,8 @@ FastAPI also publishes generated docs at `/docs` and the OpenAPI schema at `/ope
 | --- | --- | --- |
 | `GET` | `/api/channels?force_refresh=0` | List Tvheadend channels. |
 | `GET` | `/api/status?lite=1&stats=1&logs=0` | Current NDI, RF, audio, and supervisor status. |
+| `GET` | `/api/ndi/runtime` | NDI SDK runtime readiness, paths, SDK URL, and upload availability. |
+| `POST` | `/api/ndi/runtime/upload` | Upload, validate, and install an ARM64 `libndi.so.6` request body. |
 | `POST` | `/api/start` | Start or restart the NDI stream. |
 | `POST` | `/api/stop` | Stop NDI and local audio output. |
 
@@ -51,6 +53,11 @@ curl -X POST http://teletool.local:8000/api/start \
   -H "Content-Type: application/json" \
   -d '{"channel_uuid":"<uuid>","ndi_name":"TeleTool","profile":"pass"}'
 ```
+
+The runtime upload endpoint accepts the library itself as an
+`application/octet-stream` request body. It is intended for the `/ndi-setup`
+holding page and rejects non-ELF, non-64-bit, non-AArch64, oversized, or
+non-NDI files.
 
 ## Local Audio Output
 

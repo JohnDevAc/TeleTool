@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>TeleTool Setup</title>
+  <link rel="stylesheet" href="/static/common.css" />
+</head>
+<body>
+  <main class="ndiHoldWrap">
+    <section class="ndiHoldCard" aria-labelledby="ndiHoldTitle">
+      <img class="ndiHoldLogo" src="/static/TeleTwat_V1_0_all_black_transparent.png" alt="TeleTool logo" />
+      <h1 id="ndiHoldTitle">NDI SDK REQUIRED</h1>
+
+      <div id="ndiUploadBox" class="ndiUploadBox">
+        <input id="ndiRuntimeFile" type="file" accept=".so,.6,application/octet-stream" hidden {{UPLOAD_DISABLED}} />
+        <div class="ndiUploadIcon" aria-hidden="true">
+          <svg viewBox="0 0 48 48">
+            <path d="M24 31V9m0 0-8 8m8-8 8 8M10 31v6a4 4 0 0 0 4 4h20a4 4 0 0 0 4-4v-6" />
+          </svg>
+        </div>
+        <p class="ndiUploadHint">Drop the ARM64 <strong>{{RUNTIME_NAME}}</strong> file here or choose it below.</p>
+        <div class="ndiUploadActions">
+          <button id="ndiChooseFile" class="primary" type="button" {{UPLOAD_DISABLED}}>Choose {{RUNTIME_NAME}}</button>
+          <button id="ndiInstallFile" type="button" disabled>Upload and install</button>
+        </div>
+        <div id="ndiSelectedFile" class="ndiUploadFile">No file selected</div>
+        <div id="ndiUploadResult" class="ndiUploadResult" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="ndiHoldDivider">Where to get the file</div>
+
+      <p class="ndiHoldSource">
+        Download the <strong>NDI SDK for Linux</strong> and extract the ARM64 file named
+        <code>{{RUNTIME_NAME}}</code>.
+      </p>
+
+      <div class="ndiHoldActions">
+        <a class="miniBtn" href="{{SDK_URL}}" target="_blank" rel="noopener">Download NDI SDK</a>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const fileInput = document.getElementById("ndiRuntimeFile");
+    const chooseButton = document.getElementById("ndiChooseFile");
+    const installButton = document.getElementById("ndiInstallFile");
+    const uploadBox = document.getElementById("ndiUploadBox");
+    const selectedFile = document.getElementById("ndiSelectedFile");
+    const uploadResult = document.getElementById("ndiUploadResult");
+    let runtimeFile = null;
+
+    function showResult(message, kind="") {
+      uploadResult.textContent = message;
+      uploadResult.className = "ndiUploadResult" + (kind ? ` ${kind}` : "");
+    }
+
+    function selectRuntimeFile(file) {
+      if (chooseButton.disabled) {
+        showResult("The installer helper is not available yet. Rerun the full setup and refresh this page.", "bad");
+        return;
+      }
+      if (!file) return;
+      runtimeFile = file;
+      selectedFile.textContent = `${file.name} — ${(file.size / (1024 * 1024)).toFixed(1)} MiB`;
+      installButton.disabled = false;
+      showResult("Ready to upload and verify.");
+    }
+
+    chooseButton.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => selectRuntimeFile(fileInput.files[0]));
+    for (const eventName of ["dragenter", "dragover"]) {
+      uploadBox.addEventListener(eventName, event => {
+        event.preventDefault();
+        uploadBox.classList.add("isDragging");
+      });
+    }
+    for (const eventName of ["dragleave", "drop"]) {
+      uploadBox.addEventListener(eventName, event => {
+        event.preventDefault();
+        uploadBox.classList.remove("isDragging");
+      });
+    }
+    uploadBox.addEventListener("drop", event => selectRuntimeFile(event.dataTransfer.files[0]));
+
+    installButton.addEventListener("click", async () => {
+      if (!runtimeFile) return;
+      uploadBox.classList.add("isBusy");
+      installButton.disabled = true;
+      chooseButton.disabled = true;
+      showResult("Uploading, validating and installing the runtime…", "warn");
+      try {
+        const response = await fetch("/api/ndi/runtime/upload", {
+          method: "POST",
+          headers: {"Content-Type": "application/octet-stream"},
+          body: runtimeFile
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.detail || `Installation failed (${response.status})`);
+        showResult(payload.message || "NDI runtime installed. Opening TeleTool…", "good");
+        window.setTimeout(() => window.location.replace("/"), 1200);
+      } catch (error) {
+        showResult(error.message || String(error), "bad");
+        uploadBox.classList.remove("isBusy");
+        chooseButton.disabled = false;
+        installButton.disabled = false;
+      }
+    });
+
+    window.setInterval(async () => {
+      try {
+        const response = await fetch("/api/ndi/runtime", {cache: "no-store"});
+        const status = await response.json();
+        if (status && status.ready) window.location.replace("/");
+      } catch (_) {
+        // The service may briefly restart during maintenance.
+      }
+    }, 4000);
+  </script>
+</body>
+</html>

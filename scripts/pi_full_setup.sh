@@ -11,30 +11,147 @@ set -euo pipefail
 #   TELETOOL_PROJECT_DIR=/home/admin/tvh_ndi_bridge
 #   TELETOOL_SERVICE_USER=admin
 #   TELETOOL_DVBT_SCANFILE=dvb-t/uk/dvb-t_uk-CrystalPalac
-#   TELETOOL_NDI_DEB=/home/admin/path/to/ndi-plugin.deb
+#   TELETOOL_NDI_LIB=/home/admin/libndi.so.6
 
 REPO_URL="${TELETOOL_REPO_URL:-https://github.com/JohnDevAc/teletwat.git}"
 BRANCH="${TELETOOL_BRANCH:-dev}"
 INSTALL_TVHEADEND="${TELETOOL_INSTALL_TVHEADEND:-1}"
 TVH_LOCAL_ACCESS="${TELETOOL_TVH_LOCAL_ACCESS:-1}"
 APT_UPGRADE="${TELETOOL_APT_UPGRADE:-0}"
-NDI_DEB="${TELETOOL_NDI_DEB:-}"
+NDI_LIB_OVERRIDE="${TELETOOL_NDI_LIB:-}"
+GST_NDI_VERSION="${TELETOOL_GST_NDI_VERSION:-0.13.5}"
+GST_NDI_SHA256="${TELETOOL_GST_NDI_SHA256:-ec8417e75002857f4c8e8fd2f2f1a7521937eaac3de264f7bb6904a0d22cba23}"
+NDI_SDK_URL="https://ndi.video/for-developers/ndi-sdk/"
+LDCONFIG="${TELETOOL_LDCONFIG:-/sbin/ldconfig}"
+NDI_HELPER_PATH="/usr/local/sbin/teletool-install-ndi-runtime"
+NDI_VERIFICATION_MARKER="/var/lib/teletool/ndi-runtime-verified"
 TVH_NETWORK_UUID="${TELETOOL_TVH_NETWORK_UUID:-54e1e700000000000000000000000010}"
 TVH_NETWORK_NAME="${TELETOOL_TVH_NETWORK_NAME:-DVB-T Network}"
 TVH_PROVIDER_NETWORK_NAME="${TELETOOL_TVH_PROVIDER_NETWORK_NAME:-London}"
 DVBT_SCANFILE="${TELETOOL_DVBT_SCANFILE:-dvb-t/uk/dvb-t_uk-CrystalPalac}"
 export TELETOOL_DVBT_SCANFILE="$DVBT_SCANFILE"
 
+TOTAL_STAGES=8
+CURRENT_STAGE_NUMBER=0
+CURRENT_STAGE_LABEL="Initial checks"
+SETUP_COMPLETE=0
+TERMINAL_UI=0
+
+case "${TELETOOL_TERMINAL_UI:-auto}" in
+  1|true|yes|on)
+    TERMINAL_UI=1
+    ;;
+  0|false|no|off)
+    TERMINAL_UI=0
+    ;;
+  auto)
+    if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+      TERMINAL_UI=1
+    fi
+    ;;
+  *)
+    printf 'WARNING: TELETOOL_TERMINAL_UI must be auto, 1, or 0; using auto.\n' >&2
+    if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+      TERMINAL_UI=1
+    fi
+    ;;
+esac
+
+C_RESET=""
+C_BOLD=""
+C_BLUE=""
+C_GREEN=""
+C_YELLOW=""
+C_RED=""
+if [ "$TERMINAL_UI" = "1" ] && [ -z "${NO_COLOR:-}" ]; then
+  C_RESET=$'\033[0m'
+  C_BOLD=$'\033[1m'
+  C_BLUE=$'\033[38;5;75m'
+  C_GREEN=$'\033[38;5;78m'
+  C_YELLOW=$'\033[38;5;220m'
+  C_RED=$'\033[38;5;203m'
+fi
+
+terminal_clear() {
+  if [ "$TERMINAL_UI" = "1" ]; then
+    printf '\033[2J\033[H'
+  fi
+}
+
+terminal_title() {
+  if [ "$TERMINAL_UI" = "1" ]; then
+    printf '\033]0;TeleTool Setup - %s\007' "$1"
+  fi
+}
+
+terminal_reset() {
+  if [ "$TERMINAL_UI" = "1" ]; then
+    printf '%s\033[?25h' "$C_RESET"
+  fi
+}
+
+progress_bar() {
+  local current="$1" total="$2" width=34 filled empty filled_bar empty_bar
+  filled=$((current * width / total))
+  empty=$((width - filled))
+  printf -v filled_bar '%*s' "$filled" ''
+  printf -v empty_bar '%*s' "$empty" ''
+  filled_bar="${filled_bar// /#}"
+  empty_bar="${empty_bar// /-}"
+  printf '[%s%s]' "$filled_bar" "$empty_bar"
+}
+
+begin_stage() {
+  CURRENT_STAGE_NUMBER="$1"
+  CURRENT_STAGE_LABEL="$2"
+
+  if [ "$TERMINAL_UI" != "1" ]; then
+    printf '\n==> [%s/%s] %s\n' "$CURRENT_STAGE_NUMBER" "$TOTAL_STAGES" "$CURRENT_STAGE_LABEL"
+    return
+  fi
+
+  terminal_clear
+  terminal_title "$CURRENT_STAGE_LABEL"
+  printf '%s%s  TELETOOL RASPBERRY PI SETUP%s\n' "$C_BLUE" "$C_BOLD" "$C_RESET"
+  printf '  ==============================================================================\n'
+  printf '  Stage %s of %s  ' "$CURRENT_STAGE_NUMBER" "$TOTAL_STAGES"
+  progress_bar "$CURRENT_STAGE_NUMBER" "$TOTAL_STAGES"
+  printf '\n'
+  printf '  %s%s%s\n' "$C_BOLD" "$CURRENT_STAGE_LABEL" "$C_RESET"
+  printf '  ==============================================================================\n\n'
+}
+
+status_line() {
+  local state="$1" message="$2" colour="$C_BLUE"
+  case "$state" in
+    OK|READY) colour="$C_GREEN" ;;
+    ACTION|WARN) colour="$C_YELLOW" ;;
+    ERROR) colour="$C_RED" ;;
+  esac
+  printf '  %s[%s]%s %s\n' "$colour" "$state" "$C_RESET" "$message"
+}
+
+on_exit() {
+  local exit_code=$?
+  terminal_reset
+  if [ "$exit_code" -ne 0 ] && [ "$SETUP_COMPLETE" != "1" ]; then
+    printf '\n%s%s  SETUP STOPPED%s\n' "$C_RED" "$C_BOLD" "$C_RESET" >&2
+    printf '  Stage %s of %s: %s\n' "$CURRENT_STAGE_NUMBER" "$TOTAL_STAGES" "$CURRENT_STAGE_LABEL" >&2
+    printf '  Fix the error shown above and run the installer again.\n' >&2
+  fi
+}
+trap on_exit EXIT
+
 log() {
-  printf '\n==> %s\n' "$*"
+  printf '\n%s%s==>%s %s\n' "$C_BLUE" "$C_BOLD" "$C_RESET" "$*"
 }
 
 warn() {
-  printf 'WARNING: %s\n' "$*" >&2
+  printf '%sWARNING:%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2
 }
 
 die() {
-  printf 'ERROR: %s\n' "$*" >&2
+  printf '%sERROR:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2
   exit 1
 }
 
@@ -68,6 +185,7 @@ getent passwd "$SERVICE_USER" >/dev/null || die "Service user '$SERVICE_USER' do
 SERVICE_HOME="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
 PROJECT_DIR="${TELETOOL_PROJECT_DIR:-$SERVICE_HOME/tvh_ndi_bridge}"
 SERVICE_NAME="tvh_ndi_bridge.service"
+NDI_LIB_SOURCE="${NDI_LIB_OVERRIDE:-$SERVICE_HOME/libndi.so.6}"
 
 run_as_service_user() {
   if [ "$(id -un)" = "$SERVICE_USER" ]; then
@@ -94,6 +212,13 @@ apt_install_optional() {
   done
 }
 
+ndi_runtime_available() {
+  "$LDCONFIG" -p 2>/dev/null | awk '
+    $1 == "libndi.so.6" { found = 1 }
+    END { exit !found }
+  '
+}
+
 detect_project_dir_from_script() {
   local script_dir candidate
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
@@ -112,10 +237,16 @@ install_base_packages() {
 
   apt_install \
     ca-certificates \
+    build-essential \
+    cargo \
     curl \
     git \
     jq \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    pkg-config \
     rsync \
+    rustc \
     sudo \
     tar \
     unzip \
@@ -150,13 +281,62 @@ install_base_packages() {
   run_root systemctl enable --now NetworkManager 2>/dev/null || true
 }
 
-install_optional_ndi_package() {
-  if [ -z "$NDI_DEB" ]; then
+install_gstreamer_ndi_plugin() {
+  local plugin_dir plugin_file build_dir archive source_dir
+
+  plugin_dir="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
+  [ -n "$plugin_dir" ] || die "Could not determine the GStreamer plugin directory."
+  plugin_file="$plugin_dir/libgstndi.so"
+
+  if [ -f "$plugin_file" ]; then
+    log "GStreamer NDI plugin is already installed"
     return
   fi
-  [ -f "$NDI_DEB" ] || die "TELETOOL_NDI_DEB points to a missing file: $NDI_DEB"
-  log "Installing supplied NDI package"
-  run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$NDI_DEB"
+
+  log "Building GStreamer NDI plugin $GST_NDI_VERSION"
+  build_dir="$(mktemp -d)"
+  archive="$build_dir/gst-plugin-ndi-$GST_NDI_VERSION.crate"
+  source_dir="$build_dir/gst-plugin-ndi-$GST_NDI_VERSION"
+
+  curl -A "TeleTool pi_full_setup" -fL \
+    "https://static.crates.io/crates/gst-plugin-ndi/gst-plugin-ndi-$GST_NDI_VERSION.crate" \
+    -o "$archive"
+  printf '%s  %s\n' "$GST_NDI_SHA256" "$archive" | sha256sum -c -
+  tar -xzf "$archive" -C "$build_dir"
+  [ -f "$source_dir/Cargo.toml" ] || die "The GStreamer NDI source archive was not extracted as expected."
+
+  run_root chown -R "$SERVICE_USER":"$(id -gn "$SERVICE_USER")" "$build_dir"
+  run_as_service_user env \
+    HOME="$SERVICE_HOME" \
+    CARGO_HOME="$SERVICE_HOME/.cargo" \
+    cargo build --locked --release --manifest-path "$source_dir/Cargo.toml"
+
+  [ -f "$source_dir/target/release/libgstndi.so" ] || die "GStreamer NDI plugin build did not produce libgstndi.so."
+  run_root install -d -m 0755 "$plugin_dir"
+  run_root install -m 0644 "$source_dir/target/release/libgstndi.so" "$plugin_file"
+  run_root "$LDCONFIG"
+  rm -rf "$build_dir"
+}
+
+install_ndi_runtime() {
+  if ndi_runtime_available && [ -f "$NDI_VERIFICATION_MARKER" ]; then
+    log "NDI SDK 6 runtime is already installed and verified"
+    return
+  fi
+
+  if [ ! -f "$NDI_LIB_SOURCE" ] && ! ndi_runtime_available; then
+    warn "NDI SDK runtime is not present at $NDI_LIB_SOURCE"
+    return
+  fi
+
+  [ -x "$NDI_HELPER_PATH" ] || die "Missing verified NDI runtime installer: $NDI_HELPER_PATH"
+  log "Validating and installing user-supplied NDI SDK 6 runtime"
+  run_root "$NDI_HELPER_PATH"
+
+  if [ -d "$SERVICE_HOME/.cache/gstreamer-1.0" ]; then
+    run_as_service_user find "$SERVICE_HOME/.cache/gstreamer-1.0" \
+      -maxdepth 1 -type f -name 'registry.*.bin' -delete
+  fi
 }
 
 ensure_project_checkout() {
@@ -425,35 +605,91 @@ PY
 install_teletool_service() {
   log "Installing TeleTool Python environment and systemd service"
   run_root chown -R "$SERVICE_USER":"$(id -gn "$SERVICE_USER")" "$PROJECT_DIR"
-  env TELETOOL_SERVICE_USER="$SERVICE_USER" bash "$PROJECT_DIR/scripts/pi_setup.sh"
+  env \
+    TELETOOL_SERVICE_USER="$SERVICE_USER" \
+    TELETOOL_NDI_LIB="$NDI_LIB_SOURCE" \
+    bash "$PROJECT_DIR/scripts/pi_setup.sh"
 }
 
 print_summary() {
-  local ip
-  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  local ip host web_host teletool_url tvheadend_url
+  local teletool_ok=0 tvheadend_ok=0 ndi_plugin_ok=0 ndi_runtime_ok=0 alsa_ok=0
 
-  log "Final checks"
-  systemctl --no-pager --full status "$SERVICE_NAME" || true
-  systemctl --no-pager --full status tvheadend 2>/dev/null || true
-
-  if gst-inspect-1.0 ndisink >/dev/null 2>&1; then
-    printf 'NDI GStreamer sink: found\n'
-  else
-    warn "NDI GStreamer sink was not found. Install an ARM64 NDI runtime/GStreamer plugin that provides ndisink."
-  fi
-
-  if gst-inspect-1.0 alsasink >/dev/null 2>&1; then
-    printf 'ALSA GStreamer sink: found\n'
-  else
-    warn "ALSA GStreamer sink was not found."
-  fi
-
-  printf '\nTeleTool setup complete.\n'
+  ip="$(hostname -I 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+\./ && $i !~ /^127\./) {print $i; exit}}')"
+  host="$(hostname -s 2>/dev/null || printf 'teletool')"
   if [ -n "$ip" ]; then
-    printf 'TeleTool UI:   http://%s:8000/\n' "$ip"
-    printf 'Tvheadend UI:  http://%s:9981/\n' "$ip"
+    web_host="$ip"
+  else
+    web_host="$host.local"
   fi
-  printf '\nNext step: open TeleTool, choose the correct DVB-T/T2 transmitter in TV Setup, then run the scan.\n'
+  teletool_url="http://$web_host:8000/"
+  tvheadend_url="http://$web_host:9981/"
+
+  systemctl is-active --quiet "$SERVICE_NAME" && teletool_ok=1
+  if [ "$INSTALL_TVHEADEND" = "1" ]; then
+    systemctl is-active --quiet tvheadend && tvheadend_ok=1
+  fi
+  if gst-inspect-1.0 ndisink >/dev/null 2>&1 && \
+     gst-inspect-1.0 ndisinkcombiner >/dev/null 2>&1; then
+    ndi_plugin_ok=1
+  fi
+  if ndi_runtime_available && [ -f "$NDI_VERIFICATION_MARKER" ]; then
+    ndi_runtime_ok=1
+  fi
+  gst-inspect-1.0 alsasink >/dev/null 2>&1 && alsa_ok=1
+
+  if [ "$TERMINAL_UI" = "1" ]; then
+    terminal_clear
+    terminal_title "Complete"
+  else
+    printf '\n'
+  fi
+
+  printf '%s%s  TELETOOL INSTALLATION COMPLETE%s\n' "$C_GREEN" "$C_BOLD" "$C_RESET"
+  printf '  ==============================================================================\n\n'
+
+  [ "$teletool_ok" = "1" ] && \
+    status_line OK "TeleTool service is running" || \
+    status_line ERROR "TeleTool service is not running; check systemctl status $SERVICE_NAME"
+  if [ "$INSTALL_TVHEADEND" = "1" ]; then
+    [ "$tvheadend_ok" = "1" ] && \
+      status_line OK "Tvheadend service is running" || \
+      status_line WARN "Tvheadend is not running; check systemctl status tvheadend"
+  fi
+  [ "$ndi_plugin_ok" = "1" ] && \
+    status_line OK "GStreamer NDI plugin is installed" || \
+    status_line ERROR "GStreamer NDI plugin verification failed"
+  [ "$alsa_ok" = "1" ] && \
+    status_line OK "GStreamer ALSA audio output is installed" || \
+    status_line WARN "GStreamer ALSA audio output was not detected"
+  if [ "$ndi_runtime_ok" = "1" ]; then
+    status_line READY "NDI SDK runtime is installed and verified"
+  else
+    status_line ACTION "NDI SDK runtime must be uploaded in the TeleTool Web UI"
+  fi
+
+  printf '\n  %s%sOPEN THE UNIT WEB UI%s\n' "$C_BLUE" "$C_BOLD" "$C_RESET"
+  printf '  ------------------------------------------------------------------------------\n'
+  printf '  %s%s%s\n' "$C_BOLD" "$teletool_url" "$C_RESET"
+  printf '  ------------------------------------------------------------------------------\n'
+
+  if [ "$ndi_runtime_ok" != "1" ]; then
+    printf '\n  %sFinish NDI setup in the browser:%s\n' "$C_BOLD" "$C_RESET"
+    printf '  1. Open the TeleTool link above.\n'
+    printf '  2. Download the NDI SDK for Linux from:\n'
+    printf '     %s\n' "$NDI_SDK_URL"
+    printf '  3. Extract the ARM64 file named libndi.so.6.\n'
+    printf '  4. Drop it onto the upload box. TeleTool will install and verify it.\n'
+    printf '  5. When verification completes, TeleTool opens normally.\n'
+  else
+    printf '\n  TeleTool is ready to use.\n'
+  fi
+
+  printf '\n  Next: choose the DVB-T/T2 transmitter in TV Setup and run the scan.\n'
+  if [ "$INSTALL_TVHEADEND" = "1" ]; then
+    printf '  Tvheadend UI: %s\n' "$tvheadend_url"
+  fi
+  printf '\n  This completion screen remains in the terminal for reference.\n\n'
 }
 
 main() {
@@ -461,20 +697,39 @@ main() {
     die "sudo is required when not running as root."
   fi
 
-  log "TeleTool full Raspberry Pi OS Lite setup"
-  printf 'Service user: %s\n' "$SERVICE_USER"
-  printf 'Project dir:  %s\n' "$PROJECT_DIR"
-  printf 'Branch:       %s\n' "$BRANCH"
-  printf 'DVB-T region: %s\n' "$DVBT_SCANFILE"
-
+  begin_stage 1 "Installing Raspberry Pi OS packages"
+  printf '  Service user:  %s\n' "$SERVICE_USER"
+  printf '  Project dir:   %s\n' "$PROJECT_DIR"
+  printf '  Branch:        %s\n' "$BRANCH"
+  printf '  DVB-T region:  %s\n' "$DVBT_SCANFILE"
+  printf '  NDI drop path: %s\n' "$NDI_LIB_SOURCE"
+  printf '\n'
   install_base_packages
-  install_optional_ndi_package
+
+  begin_stage 2 "Installing the GStreamer NDI plugin"
+  install_gstreamer_ndi_plugin
+
+  begin_stage 3 "Preparing the TeleTool application"
   ensure_project_checkout
   write_release_marker
+
+  begin_stage 4 "Preparing the TeleTool configuration"
   ensure_config_json
+
+  begin_stage 5 "Configuring Tvheadend"
   configure_tvheadend
+
+  begin_stage 6 "Installing and starting TeleTool"
   install_teletool_service
+
+  begin_stage 7 "Checking the NDI SDK runtime"
+  install_ndi_runtime
+
+  begin_stage 8 "Running final checks"
   print_summary
+  SETUP_COMPLETE=1
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

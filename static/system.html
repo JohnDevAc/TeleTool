@@ -141,6 +141,7 @@
 let updatePollTimer = null;
 let updateReturnTimer = null;
 let updateReturnStarted = false;
+let packageManagedInstall = false;
 
 function netFieldFocused(){
   const a = document.activeElement;
@@ -197,8 +198,8 @@ function renderUpdateStatus(st){
   const percent = Math.max(0, Math.min(100, Number((st && st.percent) || 0)));
   bar.style.width = `${percent}%`;
   step.textContent = error ? ("Update failed: " + error) : ((st && st.step) || "Idle");
-  if (btn) btn.disabled = running || (done && !error);
-  if (branchSelect) branchSelect.disabled = running || (done && !error);
+  if (btn) btn.disabled = packageManagedInstall || running || (done && !error);
+  if (branchSelect) branchSelect.disabled = packageManagedInstall || running || (done && !error);
 
   if (error) toastId("toastPower", "Update failed: " + error, true, 7000);
   else if (running) toastId("toastPower", "Updating from " + updateBranchLabel(st && st.branch) + " branch...");
@@ -332,6 +333,17 @@ async function refreshReleaseInfo(){
     const version = info && info.version ? String(info.version) : "-";
     badge.textContent = `Version ${version}`;
     if (info && info.label) badge.title = `${info.label} branch`;
+    packageManagedInstall = !!(info && info.package_managed);
+    if (packageManagedInstall){
+      const btn = document.getElementById("updateFromServer");
+      const branchSelect = document.getElementById("updateBranch");
+      if (btn){
+        btn.disabled = true;
+        btn.textContent = "Managed by apt";
+        btn.title = "Run sudo apt-get update && sudo apt-get upgrade";
+      }
+      if (branchSelect) branchSelect.disabled = true;
+    }
   } catch(e){
     const badge = document.getElementById("appVersionBadge");
     if (badge) badge.textContent = "Version -";

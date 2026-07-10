@@ -1,0 +1,15 @@
+# TeleTool Web UI privileges. The service runs as the unprivileged teletool user.
+teletool ALL=(root) NOPASSWD: /usr/lib/teletool/bin/install-ndi-runtime ""
+teletool ALL=(root) NOPASSWD: /usr/bin/nmcli *
+teletool ALL=(root) NOPASSWD: /usr/bin/systemctl restart NetworkManager
+teletool ALL=(root) NOPASSWD: /usr/bin/systemctl restart dhcpcd
+teletool ALL=(root) NOPASSWD: /usr/bin/systemctl restart avahi-daemon
+teletool ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
+teletool ALL=(root) NOPASSWD: /usr/sbin/reboot
+teletool ALL=(root) NOPASSWD: /usr/sbin/shutdown -r now
+teletool ALL=(root) NOPASSWD: /usr/bin/hostnamectl set-hostname *
+teletool ALL=(root) NOPASSWD: /usr/bin/hostname *
+teletool ALL=(root) NOPASSWD: /usr/bin/mkdir -p /etc/cloud/cloud.cfg.d
+teletool ALL=(root) NOPASSWD: /usr/bin/cp /tmp/tvh_bridge_dhcpcd.conf /etc/dhcpcd.conf
+teletool ALL=(root) NOPASSWD: /usr/bin/cp /tmp/hosts.tmp /etc/hosts
+teletool ALL=(root) NOPASSWD: /usr/bin/cp /tmp/cloudhost.tmp /etc/cloud/cloud.cfg.d/99-webui-preserve-hostname.cfg

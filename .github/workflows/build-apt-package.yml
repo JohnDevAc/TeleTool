@@ -1,0 +1,106 @@
+name: Build TeleTool APT package
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      signed: ${{ steps.signing.outputs.signed }}
+    steps:
+      - name: Check out TeleTool
+        uses: actions/checkout@v4
+
+      - name: Install ARM64 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            apt-utils \
+            binutils \
+            build-essential \
+            cargo \
+            curl \
+            dpkg-dev \
+            file \
+            gstreamer1.0-tools \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            pkg-config \
+            rustc \
+            xz-utils
+
+      - name: Build the ARM64 GStreamer NDI plugin
+        run: scripts/build_gst_ndi_plugin.sh dist/libgstndi.so
+
+      - name: Build the Debian package
+        env:
+          TELETOOL_GST_NDI_PLUGIN: ${{ github.workspace }}/dist/libgstndi.so
+        run: scripts/build_deb.sh dist
+
+      - name: Import the APT repository signing key
+        id: signing
+        env:
+          TELETOOL_APT_GPG_PRIVATE_KEY: ${{ secrets.TELETOOL_APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TELETOOL_APT_GPG_PRIVATE_KEY" ]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s' "$TELETOOL_APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          fingerprint="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" {print $10; exit}')"
+          test -n "$fingerprint"
+          echo "TELETOOL_GPG_KEY=$fingerprint" >> "$GITHUB_ENV"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build the APT repository
+        run: scripts/build_apt_repo.sh dist apt-repo
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: teletool-arm64-package
+          path: |
+            dist/*.deb
+            apt-repo/
+          if-no-files-found: error
+
+      - name: Configure GitHub Pages
+        if: steps.signing.outputs.signed == 'true'
+        uses: actions/configure-pages@v5
+
+      - name: Upload signed repository for GitHub Pages
+        if: steps.signing.outputs.signed == 'true'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: apt-repo
+
+      - name: Publish tagged Debian package to GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "TeleTool $tag" --generate-notes
+          gh release upload "$tag" dist/teletool_*_arm64.deb --clobber
+
+  deploy-pages:
+    if: needs.build.outputs.signed == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy signed TeleTool APT repository
+        id: deployment
+        uses: actions/deploy-pages@v4

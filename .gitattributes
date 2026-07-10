@@ -14,3 +14,6 @@
 *.png binary
 *.img binary
 *.xz binary
+*.deb binary
+*.gpg binary
+*.gz binary

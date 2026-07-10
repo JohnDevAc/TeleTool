@@ -36,7 +36,7 @@ PACKAGE_MANAGED = str(os.environ.get("TELETOOL_PACKAGE_MANAGED", "0")).strip().l
     "yes",
     "on",
 }
-APP_VERSION_FALLBACK = "V1.6.03"
+APP_VERSION_FALLBACK = "V1.7.1"
 CONFIG_LOCK = threading.Lock()
 NDI_RUNTIME_NAME = "libndi.so.6"
 NDI_SDK_URL = "https://ndi.video/for-developers/ndi-sdk/"

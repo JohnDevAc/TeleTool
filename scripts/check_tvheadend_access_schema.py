@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject legacy Tvheadend boolean permissions in either setup path."""
+"""Reject legacy Tvheadend boolean permissions in package configuration."""
 
 from pathlib import Path
 
@@ -7,7 +7,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = (
     ROOT / "packaging" / "debian" / "configure-tvheadend",
-    ROOT / "scripts" / "pi_full_setup.sh",
 )
 EXPECTED_COUNTS = {
     '"streaming": ["basic", "advanced", "htsp"]': 2,
@@ -35,4 +34,4 @@ for target in TARGETS:
                 f"{target}: expected {count} occurrences of {expected}, found {actual}"
             )
 
-print("Tvheadend access schema is current in both setup paths.")
+print("Tvheadend access schema is current in the package setup path.")

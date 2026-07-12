@@ -15,6 +15,8 @@ INSTALLER_VERSION text eol=lf
 packaging/debian/* text eol=lf
 apt-repo/install.sh text eol=lf
 apt-repo/dists/** text eol=lf
+apt-repo-dev/install.sh text eol=lf
+apt-repo-dev/dists/** text eol=lf
 
 *.png binary
 *.img binary

@@ -1,17 +1,17 @@
 Package: teletool
-Version: 1.7.3
+Version: 1.7.4
 Architecture: arm64
 Maintainer: TeleTool Project <teletool@localhost>
 Depends: adduser, alsa-utils, avahi-daemon, binutils, dtv-scan-tables, file, gir1.2-gst-plugins-bad-1.0, gir1.2-gst-plugins-base-1.0, gir1.2-gstreamer-1.0, gstreamer1.0-alsa, gstreamer1.0-libav, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-tools, libc-bin, network-manager, python3, python3-fastapi (>= 0.100), python3-gi, python3-gi-cairo, python3-pydantic (>= 2), python3-requests, python3-urllib3 (>= 2), python3-uvicorn (>= 0.30), sudo, tvheadend
-Filename: pool/main/t/teletool/teletool_1.7.3_arm64.deb
-Size: 810610
-MD5sum: 1c7fab43e21fd51599aa98fd6486fdb6
-SHA1: adf5f07340884cd35bffc5817d96fbccc14b87bb
-SHA256: 4f8cb7b7d2ffc45a29e2b5f6d90bd2ff2e1aeabc80fe6cb91f3136d5c2a96ec0
+Filename: pool/main/t/teletool/teletool_1.7.4_arm64.deb
+Size: 886076
+MD5sum: f29cedebb737c253b6c403ee0dfb55b1
+SHA1: 7f98d55ae25f6eb21684ea475380b9f9a087186b
+SHA256: 25220144f4ab61cf780dec27aa51582c95ac675d8bfe4a6843816ebb52f6a881
 Section: video
 Priority: optional
 Homepage: https://github.com/JohnDevAc/teletwat
-Description: Tvheadend to NDI and local-audio bridge for Raspberry Pi
+Description: Tvheadend to NDI® and local-audio bridge for Raspberry Pi
  TeleTool provides a FastAPI Web UI and GStreamer bridge for sending
  Tvheadend services to NDI and local line-level audio outputs. This package
  includes the ARM64 GStreamer NDI plugin; the proprietary NDI SDK runtime is

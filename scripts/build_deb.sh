@@ -10,6 +10,7 @@ VERSION="${VERSION#V}"
 VERSION="${VERSION#v}"
 INSTALLER_VERSION="${TELETOOL_INSTALLER_VERSION:-$(tr -d '\r\n' < "$PROJECT_DIR/INSTALLER_VERSION")}"
 RELEASE_BRANCH="${TELETOOL_RELEASE_BRANCH:-main}"
+GST_NDI_VERSION="${TELETOOL_GST_NDI_VERSION:-0.13.5}"
 
 if ! [[ "$VERSION" =~ ^[0-9][0-9A-Za-z.+:~-]*$ ]]; then
   echo "Invalid TeleTool package version: $VERSION" >&2
@@ -52,6 +53,18 @@ if [ -z "$plugin_source" ] || [ ! -f "$plugin_source" ]; then
   echo "Set TELETOOL_GST_NDI_PLUGIN to a built ARM64 libgstndi.so." >&2
   exit 1
 fi
+plugin_dir="$(cd "$(dirname "$plugin_source")" && pwd)"
+plugin_notices="${TELETOOL_GST_NDI_NOTICES_DIR:-$plugin_dir/gst-plugin-ndi-licenses}"
+plugin_source_archive="${TELETOOL_GST_NDI_SOURCE_ARCHIVE:-$plugin_dir/gst-plugin-ndi-$GST_NDI_VERSION.crate}"
+if [ ! -d "$plugin_notices" ] || [ ! -f "$plugin_notices/DEPENDENCIES.tsv" ]; then
+  echo "Missing GStreamer NDI dependency notices: $plugin_notices" >&2
+  echo "Build the plugin with scripts/build_gst_ndi_plugin.sh before packaging." >&2
+  exit 1
+fi
+if [ ! -f "$plugin_source_archive" ]; then
+  echo "Missing GStreamer NDI corresponding source: $plugin_source_archive" >&2
+  exit 1
+fi
 if ! file "$plugin_source" | grep -Eq 'ELF 64-bit.*(ARM aarch64|aarch64)'; then
   echo "$plugin_source is not an ARM64 ELF shared library." >&2
   file "$plugin_source" >&2
@@ -76,7 +89,8 @@ install -d \
   "$package_root/etc/sudoers.d" \
   "$package_root/lib/systemd/system" \
   "$package_root/usr/lib/$multiarch/gstreamer-1.0" \
-  "$package_root/usr/share/doc/teletool"
+  "$package_root/usr/share/doc/teletool/third-party/licenses" \
+  "$package_root/usr/share/doc/teletool/third-party/source"
 
 for source_file in app.py gst_base.py gst_ndi.py tvh.py config.example.json INSTALLER_VERSION; do
   install -m 0644 "$PROJECT_DIR/$source_file" "$app_root/$source_file"
@@ -86,6 +100,14 @@ chmod 0644 "$app_root/VERSION"
 cp -a "$PROJECT_DIR/static/." "$app_root/static/"
 install -m 0644 "$PROJECT_DIR/README.md" "$package_root/usr/share/doc/teletool/README.md"
 install -m 0644 "$PROJECT_DIR/API.md" "$package_root/usr/share/doc/teletool/API.md"
+install -m 0644 "$PROJECT_DIR/License.md" "$package_root/usr/share/doc/teletool/License.md"
+install -m 0644 "$PROJECT_DIR/THIRD_PARTY_NOTICES.md" \
+  "$package_root/usr/share/doc/teletool/THIRD_PARTY_NOTICES.md"
+install -m 0644 "$PROJECT_DIR/packaging/debian/copyright" \
+  "$package_root/usr/share/doc/teletool/copyright"
+cp -a "$plugin_notices/." "$package_root/usr/share/doc/teletool/third-party/licenses/"
+install -m 0644 "$plugin_source_archive" \
+  "$package_root/usr/share/doc/teletool/third-party/source/gst-plugin-ndi-$GST_NDI_VERSION.crate"
 
 cat > "$app_root/.teletool_release.json" <<JSON
 {

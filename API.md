@@ -1,6 +1,7 @@
 # TeleTool API
 
 TeleTool exposes a small JSON API from the same FastAPI service as the web UI.
+It controls NDI® output and related Tvheadend and local-audio functions.
 
 Base URL:
 

@@ -1,0 +1,37 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: TeleTool
+Upstream-Contact: John Lightfoot
+Source: https://github.com/JohnDevAc/teletwat
+Disclaimer: TeleTool includes a separately licensed MPL-2.0 GStreamer plugin.
+ The proprietary NDI® runtime is not included in this package.
+
+Files: *
+Copyright: 2026 John Lightfoot
+License: TeleTool-Proprietary
+ Permission is granted, free of charge, to install and run unmodified copies
+ of TeleTool obtained from an authorised TeleTool distribution solely for
+ lawful non-commercial use. Commercial use requires a separate written
+ licence from the copyright holder.
+ .
+ No permission is granted to copy, modify, adapt, publish, distribute,
+ sublicense, sell, or create derivative works from TeleTool without prior
+ written permission from the copyright holder.
+ .
+ TeleTool is provided "AS IS", without warranty of any kind. See
+ /usr/share/doc/teletool/License.md for the complete terms.
+
+Files: usr/lib/*/gstreamer-1.0/libgstndi.so
+Copyright: GStreamer gst-plugins-rs contributors
+License: MPL-2.0
+ The plugin is distributed under the Mozilla Public License, version 2.0.
+ On Debian systems, the complete licence is available at
+ /usr/share/common-licenses/MPL-2.0.
+ .
+ Corresponding source for the exact plugin build is installed at
+ /usr/share/doc/teletool/third-party/source/gst-plugin-ndi-0.13.5.crate.
+ The upstream source is also available from
+ https://crates.io/crates/gst-plugin-ndi/0.13.5.
+
+Files: static/TeleTwat_V1_0_all_black_transparent.png
+Copyright: 2026 John Lightfoot
+License: TeleTool-Proprietary

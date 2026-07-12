@@ -184,8 +184,22 @@ async function setTeleToolPageTitle(){
   document.title = title;
 }
 
+function addLegalFooter(){
+  if (document.querySelector(".legalFooter")) return;
+  const footer = document.createElement("footer");
+  footer.className = "legalFooter";
+  footer.innerHTML = `
+    <div>© 2026 John Lightfoot. TeleTool is proprietary software, free for non-commercial use.</div>
+    <div>TeleTool is independent and is not affiliated with or endorsed by Vizrt NDI AB.</div>
+    <div><a href="https://ndi.video/" target="_blank" rel="noopener">NDI®</a> is a registered trademark of Vizrt NDI AB.</div>
+  `;
+  const wrap = document.querySelector(".wrap") || document.body;
+  wrap.appendChild(footer);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   setTeleToolPageTitle();
   setDevelopmentReleaseBanner();
   setTvLinks();
+  addLegalFooter();
 });

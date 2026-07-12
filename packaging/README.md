@@ -1,9 +1,16 @@
 # TeleTool Debian Package and APT Repository
 
 TeleTool is packaged for 64-bit Raspberry Pi OS based on Debian Trixie. The
-binary package contains the application and a prebuilt ARM64 `libgstndi.so`, so
+binary package contains the application and a prebuilt ARM64 NDI®
+`libgstndi.so`, so
 an end user's Pi does not need Rust, Cargo, compilers, or GStreamer development
 headers.
+
+TeleTool is proprietary software made available free of charge for
+non-commercial use. Commercial use requires a separate written licence. The
+package carries the complete TeleTool terms, Debian copyright metadata, the
+MPL-2.0 plugin source, and notices for every Rust dependency compiled into the
+plugin.
 
 ## Package layout
 
@@ -27,7 +34,10 @@ scripts/build_gst_ndi_plugin.sh dist/libgstndi.so
 TELETOOL_GST_NDI_PLUGIN="$PWD/dist/libgstndi.so" scripts/build_deb.sh dist
 ```
 
-The result is `dist/teletool_<version>_arm64.deb`.
+The plugin build also creates `dist/gst-plugin-ndi-0.13.5.crate` and
+`dist/gst-plugin-ndi-licenses/`. The package build intentionally fails if these
+compliance artifacts are missing. The result is
+`dist/teletool_<version>_arm64.deb`.
 
 Application and installer versions are tracked separately in `VERSION` and
 `INSTALLER_VERSION`. The installer version is displayed by the terminal UI and

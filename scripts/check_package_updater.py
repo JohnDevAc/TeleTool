@@ -49,6 +49,7 @@ require(
     "app.py",
     'unit = f"teletool-update@{branch}.service"',
     "_read_package_update_status",
+    "Updates require a package installation created by the published WGET installer.",
 )
 require(
     "static/system.html",
@@ -59,5 +60,35 @@ require(
 for path in (ROOT / "app.py", ROOT / "static" / "system.html"):
     if "Managed by apt" in path.read_text(encoding="utf-8"):
         raise SystemExit(f"{path}: obsolete APT update lockout remains")
+
+app_text = (ROOT / "app.py").read_text(encoding="utf-8")
+for obsolete in (
+    "_run_program_update_worker",
+    "_download_github_update_archive",
+    "archive/refs/heads",
+    "pi_full_setup.sh",
+    "install_network_privileges.sh",
+):
+    if obsolete in app_text:
+        raise SystemExit(f"app.py: unsupported source updater remains: {obsolete}")
+
+for obsolete_path in (
+    ".vscode",
+    "deploy",
+    "requirements.txt",
+    "install_network_privileges.sh",
+    "scripts/pi_full_setup.sh",
+    "scripts/pi_make_golden_image.sh",
+    "scripts/pi_setup.sh",
+    "scripts/pi_sync.ps1",
+):
+    if (ROOT / obsolete_path).exists():
+        raise SystemExit(f"Obsolete project artifact remains: {obsolete_path}")
+
+require(
+    "README.md",
+    "## Install with WGET",
+    "wget -qO- https://johndevac.github.io/teletwat/apt-repo/install.sh | sudo sh",
+)
 
 print("Package-managed Web updater is wired end to end.")

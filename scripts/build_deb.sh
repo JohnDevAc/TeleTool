@@ -140,7 +140,7 @@ sed "s/__INSTALLER_VERSION__/$INSTALLER_VERSION/g" \
   "$PROJECT_DIR/packaging/debian/terminal-ui" > "$app_root/bin/terminal-ui"
 chmod 0644 "$app_root/bin/terminal-ui"
 sed 's|__NDI_DROP_PATH__|/var/lib/teletool/libndi.so.6|g' \
-  "$PROJECT_DIR/deploy/ndi/teletool-install-ndi-runtime" > \
+  "$PROJECT_DIR/packaging/debian/install-ndi-runtime" > \
   "$app_root/bin/install-ndi-runtime"
 chmod 0755 "$app_root/bin/install-ndi-runtime"
 install -m 0644 "$plugin_source" \

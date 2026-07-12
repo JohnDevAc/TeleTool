@@ -23,10 +23,9 @@ config.json
 .DS_Store
 Thumbs.db
 
-# Sync/build scratch
+# Build scratch
 *.tar.gz
 *.zip
-golden-images/
 /dist/
 /build/
 /.codex-tmp/

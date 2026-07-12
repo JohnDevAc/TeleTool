@@ -14,8 +14,8 @@ This is a FastAPI app for a Raspberry Pi 5 that bridges Tvheadend streams to NDI
 ## Raspberry Pi Notes
 
 - The Pi needs system GStreamer packages, PyGObject, an NDI GStreamer sink plugin that provides `ndisink`, and ALSA output support for USB audio devices such as Dante AVIO.
-- `scripts/pi_setup.sh` installs common Debian/Raspberry Pi OS packages, creates `.venv` with system site packages, installs Python dependencies, and installs the systemd service.
-- `scripts/pi_sync.ps1` is designed for VS Code on Windows. By default it does not overwrite `config.json` on the Pi because the web UI edits that file at runtime.
+- The only supported installation is the signed APT repository bootstrap published at `apt-repo/install.sh` and invoked through the WGET command in `README.md`.
+- Runtime updates use the signed Main and Dev APT repositories; checkout-based installation and source ZIP updates are unsupported.
 
 ## Validation
 
@@ -30,6 +30,6 @@ On the Pi, also check:
 ```sh
 gst-inspect-1.0 ndisink
 gst-inspect-1.0 alsasink
-systemctl status tvh_ndi_bridge.service
-journalctl -u tvh_ndi_bridge.service -f
+systemctl status teletool.service
+journalctl -u teletool.service -f
 ```

@@ -6,17 +6,14 @@ import re
 import shutil
 import socket
 import subprocess
-import tempfile
 import time
 import threading
 import uuid
-import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from urllib.parse import urlparse
-from urllib.request import Request as UrlRequest, urlopen
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -39,14 +36,14 @@ PACKAGE_MANAGED = str(os.environ.get("TELETOOL_PACKAGE_MANAGED", "0")).strip().l
 PACKAGE_UPDATE_STATUS_PATH = Path(
     os.environ.get("TELETOOL_PACKAGE_UPDATE_STATUS_PATH", "/var/lib/teletool/update-status.json")
 ).expanduser()
-APP_VERSION_FALLBACK = "V1.7.3"
+APP_VERSION_FALLBACK = "V1.7.4"
 CONFIG_LOCK = threading.Lock()
 NDI_RUNTIME_NAME = "libndi.so.6"
 NDI_SDK_URL = "https://ndi.video/for-developers/ndi-sdk/"
 NDI_RUNTIME_PATH = Path(os.environ.get("TELETOOL_NDI_RUNTIME_PATH", "/usr/local/lib/libndi.so.6")).expanduser()
 NDI_DROP_PATH = Path(os.environ.get("TELETOOL_NDI_LIB", str(Path.home() / NDI_RUNTIME_NAME))).expanduser()
 NDI_INSTALL_HELPER = Path(
-    os.environ.get("TELETOOL_NDI_INSTALL_HELPER", "/usr/local/sbin/teletool-install-ndi-runtime")
+    os.environ.get("TELETOOL_NDI_INSTALL_HELPER", "/usr/lib/teletool/bin/install-ndi-runtime")
 ).expanduser()
 NDI_VERIFICATION_MARKER = Path(
     os.environ.get("TELETOOL_NDI_VERIFICATION_MARKER", "/var/lib/teletool/ndi-runtime-verified")
@@ -76,11 +73,7 @@ def _ndi_runtime_status() -> Dict[str, Any]:
         "drop_directory": str(NDI_DROP_PATH.parent),
         "runtime_name": NDI_RUNTIME_NAME,
         "sdk_url": NDI_SDK_URL,
-        "setup_command": (
-            "sudo apt-get install --reinstall teletool"
-            if PACKAGE_MANAGED
-            else f"bash {BASE_DIR / 'scripts' / 'pi_full_setup.sh'}"
-        ),
+        "setup_command": "wget -qO- https://johndevac.github.io/teletwat/apt-repo/install.sh | sudo sh",
         "upload_enabled": NDI_INSTALL_HELPER.is_file() and os.access(NDI_INSTALL_HELPER, os.X_OK),
         "upload_max_bytes": NDI_UPLOAD_MAX_BYTES,
     }
@@ -2808,8 +2801,8 @@ def api_audio_stop():
 NETWORK_PRIVILEGE_HELP = (
     "Network changes need root privileges. The web service tried to run the required "
     "network command directly and with sudo -n, but the operating system did not allow it. "
-    "Run install_network_privileges.sh once, or configure passwordless sudo for the "
-    "tvh_ndi_bridge service user and nmcli/systemctl network commands."
+    "Reinstall TeleTool with the published WGET installer to restore the package-owned "
+    "sudo rules for the teletool service."
 )
 
 GITHUB_UPDATE_BRANCHES = {
@@ -2817,18 +2810,6 @@ GITHUB_UPDATE_BRANCHES = {
     "dev": "Dev",
 }
 DEFAULT_RELEASE_BRANCH = "main"
-UPDATE_EXCLUDED_NAMES = {
-    ".git",
-    ".venv",
-    "venv",
-    "golden-images",
-    "__pycache__",
-    ".pytest_cache",
-    "config.json",
-    ".teletool_release.json",
-    ".env",
-    ".env.local",
-}
 UPDATE_LOCK = threading.Lock()
 UPDATE_STATE: Dict[str, Any] = {
     "running": False,
@@ -2883,38 +2864,12 @@ def _schedule_program_restart(delay_s: float = 0.5, exit_code: int = 3) -> None:
     threading.Thread(target=_do_exit, daemon=True).start()
 
 
-def _is_update_excluded(rel_path: Path) -> bool:
-    parts = rel_path.parts
-    if not parts:
-        return True
-    if any(part in UPDATE_EXCLUDED_NAMES for part in parts):
-        return True
-    name = rel_path.name
-    if name.endswith(".pyc"):
-        return True
-    if name.startswith(".env."):
-        return True
-    return False
-
-
 def _normalise_update_branch(branch: Optional[str]) -> str:
     value = str(branch or DEFAULT_RELEASE_BRANCH).strip().lower()
     if value not in GITHUB_UPDATE_BRANCHES:
         allowed = ", ".join(GITHUB_UPDATE_BRANCHES.values())
         raise ValueError(f"Unknown update branch. Choose one of: {allowed}")
     return value
-
-
-def _git_checkout_branch() -> Optional[str]:
-    head = BASE_DIR / ".git" / "HEAD"
-    try:
-        text = head.read_text(errors="ignore").strip()
-    except Exception:
-        return None
-    if text.startswith("ref: refs/heads/"):
-        branch = text.rsplit("/", 1)[-1].strip().lower()
-        return branch if branch in GITHUB_UPDATE_BRANCHES else None
-    return None
 
 
 def _read_release_marker_branch() -> Optional[str]:
@@ -2933,7 +2888,7 @@ def _current_release_branch() -> str:
             return _normalise_update_branch(env_branch)
         except ValueError:
             pass
-    return _read_release_marker_branch() or _git_checkout_branch() or DEFAULT_RELEASE_BRANCH
+    return _read_release_marker_branch() or DEFAULT_RELEASE_BRANCH
 
 
 def _app_version() -> str:
@@ -2954,140 +2909,6 @@ def _release_info() -> Dict[str, Any]:
         "package_managed": PACKAGE_MANAGED,
     }
 
-
-def _write_release_marker(branch: str) -> Dict[str, Any]:
-    branch = _normalise_update_branch(branch)
-    payload = {
-        "branch": branch,
-        "label": GITHUB_UPDATE_BRANCHES[branch],
-        "development": branch == "dev",
-        "updated_at": int(time.time()),
-    }
-    tmp = RELEASE_MARKER_PATH.with_suffix(RELEASE_MARKER_PATH.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2) + "\n")
-    tmp.replace(RELEASE_MARKER_PATH)
-    return payload
-
-
-def _download_github_update_archive(dest: Path, branch: str) -> int:
-    url = f"https://github.com/JohnDevAc/teletwat/archive/refs/heads/{branch}.zip"
-    req = UrlRequest(
-        url,
-        headers={
-            "User-Agent": "TeleTool updater",
-            "Accept": "application/zip,application/octet-stream,*/*",
-        },
-    )
-    with urlopen(req, timeout=30) as response:
-        total = 0
-        with dest.open("wb") as out:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                out.write(chunk)
-    return total
-
-
-def _extract_github_archive(archive_path: Path, dest_dir: Path) -> Path:
-    with zipfile.ZipFile(archive_path) as archive:
-        names = [n for n in archive.namelist() if n and not n.endswith("/")]
-        if not names:
-            raise RuntimeError("Downloaded update package was empty")
-        root = names[0].split("/", 1)[0]
-        source_dir = dest_dir / root
-        for info in archive.infolist():
-            name = info.filename.replace("\\", "/")
-            if not name or name.endswith("/"):
-                continue
-            parts = Path(name).parts
-            if not parts or parts[0] != root:
-                continue
-            rel = Path(*parts[1:])
-            if not rel.parts or rel.is_absolute() or ".." in rel.parts:
-                raise RuntimeError(f"Unsafe path in update package: {name}")
-            target = dest_dir / root / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(info) as src, target.open("wb") as out:
-                shutil.copyfileobj(src, out)
-        if not source_dir.exists():
-            raise RuntimeError("Downloaded update package did not contain a project folder")
-        return source_dir
-
-
-def _copy_update_files(source_dir: Path, project_dir: Path) -> Dict[str, Any]:
-    copied = 0
-    skipped = 0
-    for src in source_dir.rglob("*"):
-        if not src.is_file():
-            continue
-        rel = src.relative_to(source_dir)
-        if _is_update_excluded(rel):
-            skipped += 1
-            continue
-        dst = project_dir / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-        copied += 1
-
-    for executable in (
-        project_dir / "scripts" / "pi_setup.sh",
-        project_dir / "scripts" / "pi_make_golden_image.sh",
-        project_dir / "install_network_privileges.sh",
-    ):
-        if executable.exists():
-            try:
-                executable.chmod(executable.stat().st_mode | 0o111)
-            except Exception:
-                pass
-
-    return {"copied": copied, "skipped": skipped}
-
-
-def _run_program_update_worker(branch: str) -> None:
-    try:
-        branch = _normalise_update_branch(branch)
-        _set_update_status(percent=8, step="Preparing update", error=None, branch=branch)
-        with tempfile.TemporaryDirectory(prefix="teletool-update-") as tmp_s:
-            tmp = Path(tmp_s)
-            archive = tmp / "update.zip"
-
-            _set_update_status(percent=20, step="Downloading update")
-            bytes_downloaded = _download_github_update_archive(archive, branch)
-
-            _set_update_status(percent=50, step="Preparing files")
-            source_dir = _extract_github_archive(archive, tmp / "src")
-
-            _set_update_status(percent=75, step="Installing update")
-            copy_stats = _copy_update_files(source_dir, BASE_DIR)
-            copy_stats["bytes_downloaded"] = bytes_downloaded
-            copy_stats["branch"] = branch
-            try:
-                copy_stats["release"] = _write_release_marker(branch)
-            except Exception as e:
-                copy_stats["release_marker_error"] = str(e)
-
-        _set_update_status(
-            running=False,
-            done=True,
-            percent=100,
-            step="Update complete. Restarting program.",
-            error=None,
-            finished_at=int(time.time()),
-            stats=copy_stats,
-            branch=branch,
-        )
-        _schedule_program_restart(1.0)
-    except Exception as e:
-        _set_update_status(
-            running=False,
-            done=True,
-            percent=100,
-            step="Update failed",
-            error=str(e),
-            finished_at=int(time.time()),
-        )
 
 def _run_cmd(argv: List[str], sudo: bool = False, timeout_s: int = 8) -> Tuple[int, str, str]:
     """
@@ -3597,6 +3418,11 @@ def api_system_update_status():
 def api_system_update_from_server(req: ProgramUpdateReq):
     if not req.confirm:
         raise HTTPException(400, "Confirmation is required before updating from server")
+    if not PACKAGE_MANAGED:
+        raise HTTPException(
+            409,
+            "Updates require a package installation created by the published WGET installer.",
+        )
     try:
         branch = _normalise_update_branch(req.branch)
     except ValueError as e:
@@ -3616,30 +3442,26 @@ def api_system_update_from_server(req: ProgramUpdateReq):
         stats=None,
         branch=branch,
     )
-    if PACKAGE_MANAGED:
-        # Keep apt/dpkg outside teletool.service's cgroup. The package postinst
-        # restarts TeleTool, which would otherwise kill its own update process.
-        unit = f"teletool-update@{branch}.service"
-        rc, out, err = _run_cmd(
-            ["systemctl", "--no-block", "start", unit],
-            sudo=True,
-            timeout_s=12,
+    # Keep apt/dpkg outside teletool.service's cgroup. The package postinst
+    # restarts TeleTool, which would otherwise kill its own update process.
+    unit = f"teletool-update@{branch}.service"
+    rc, out, err = _run_cmd(
+        ["systemctl", "--no-block", "start", unit],
+        sudo=True,
+        timeout_s=12,
+    )
+    if rc != 0:
+        failure = (err or out or "Could not start the TeleTool package updater").strip()
+        _set_update_status(
+            running=False,
+            done=True,
+            percent=100,
+            step="Update failed",
+            error=failure,
+            finished_at=int(time.time()),
         )
-        if rc != 0:
-            failure = (err or out or "Could not start the TeleTool package updater").strip()
-            _set_update_status(
-                running=False,
-                done=True,
-                percent=100,
-                step="Update failed",
-                error=failure,
-                finished_at=int(time.time()),
-            )
-            raise HTTPException(500, failure)
-        return {"ok": True, "message": "Signed package update started.", "status": status}
-
-    threading.Thread(target=_run_program_update_worker, args=(branch,), name="program-update-worker", daemon=True).start()
-    return {"ok": True, "message": "Update started.", "status": status}
+        raise HTTPException(500, failure)
+    return {"ok": True, "message": "Signed package update started.", "status": status}
 
 
 @app.post("/api/system/reboot")
@@ -3667,8 +3489,8 @@ def api_system_reboot():
     detail = "; ".join(errors) or "unknown error"
     raise HTTPException(
         403,
-        "Reboot not permitted. Run install_network_privileges.sh once, or configure "
-        "passwordless sudo for systemctl reboot, shutdown -r now, or reboot. "
+        "Reboot not permitted. Reinstall TeleTool with the published WGET installer "
+        "to restore the package-owned sudo rules. "
         f"Details: {detail}",
     )
 def _prefix_from_subnet_mask(mask: str) -> int:

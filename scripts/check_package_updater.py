@@ -44,6 +44,18 @@ require(
     "teletool-arm64-dev-package",
     "TELETOOL_APT_SUITE: dev",
     "TELETOOL_RELEASE_BRANCH: dev",
+    "teletool-dev-apt",
+    "teletool-stable-apt",
+    "scripts/sign_apt_repo.sh",
+    "git push --atomic origin HEAD:main HEAD:dev",
+)
+require(
+    "scripts/sign_apt_repo.sh",
+    "TELETOOL_APT_GPG_PRIVATE_KEY",
+    "TELETOOL_APT_GPG_FINGERPRINT",
+    "dpkg-deb -f",
+    "gpgv --keyring",
+    "sha256sum",
 )
 require(
     "app.py",

@@ -69,14 +69,27 @@ failures before the installer stops and presents the filtered error summary.
 ## GitHub publishing
 
 The `Build TeleTool APT package` workflow uses GitHub's native ARM64 runner.
-Build output is retained as a maintainer artifact and is not published as an
-alternative installer. If an ASCII-armoured private key is supplied through the Actions secret
-`TELETOOL_APT_GPG_PRIVATE_KEY`, the repository artifact is signed as well.
+The build job creates unsigned repository artifacts and cannot access the APT
+private key. Publication happens in a separate environment-gated job only after
+the build and validation steps pass:
 
-This project publishes GitHub Pages from the `main` branch. To release the APT
-repository, build and sign `apt-repo/`, commit that directory, and keep `main`
-and `dev` on the same tested release commit. The private signing key must remain
-outside Git and the public key is published inside `apt-repo/`.
+- A `dev` build waits for approval in `teletool-dev-apt`, signs and verifies the
+  artifact, then commits `apt-repo-dev/` back to `dev`.
+- A `v*` tag waits for approval in `teletool-stable-apt`, confirms the tag
+  matches `VERSION`, signs and verifies the stable artifact, fast-forwards
+  `main` to the tested tag, and atomically aligns `main` and `dev` on the stable
+  publication commit.
+
+Both jobs reject stale builds if their source branch advanced while approval
+was pending. `scripts/sign_apt_repo.sh` verifies package identity, ARM64
+architecture, version, indexed SHA-256, signing-key fingerprint, and both APT
+signatures before publication. The ASCII-armoured private key is supplied only
+through the Actions secret `TELETOOL_APT_GPG_PRIVATE_KEY`; the private key must
+never be committed. The public key remains in each published repository.
+
+This project publishes GitHub Pages from the `main` branch. Configure JohnDevAc
+as a required reviewer on both publication environments so signed feeds cannot
+change without an explicit approval.
 
 Development packages use the separately signed `apt-repo-dev/` repository on
 the `dev` branch with suite `dev` and Debian versions such as

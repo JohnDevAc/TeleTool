@@ -17,9 +17,21 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04-arm
+    outputs:
+      stable_version: ${{ steps.base_version.outputs.version }}
+      dev_version: ${{ steps.dev_version.outputs.version }}
     steps:
       - name: Check out TeleTool
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Resolve the package version
+        id: base_version
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          version="${version#V}"
+          version="${version#v}"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install ARM64 build dependencies
         run: |
@@ -52,21 +64,6 @@ jobs:
         env:
           TELETOOL_GST_NDI_PLUGIN: ${{ github.workspace }}/dist/libgstndi.so
         run: scripts/build_deb.sh dist
-
-      - name: Import the APT repository signing key
-        id: signing
-        env:
-          TELETOOL_APT_GPG_PRIVATE_KEY: ${{ secrets.TELETOOL_APT_GPG_PRIVATE_KEY }}
-        run: |
-          if [ -z "$TELETOOL_APT_GPG_PRIVATE_KEY" ]; then
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          printf '%s' "$TELETOOL_APT_GPG_PRIVATE_KEY" | gpg --batch --import
-          fingerprint="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" {print $10; exit}')"
-          test -n "$fingerprint"
-          echo "TELETOOL_GPG_KEY=$fingerprint" >> "$GITHUB_ENV"
-          echo "signed=true" >> "$GITHUB_OUTPUT"
 
       - name: Build the APT repository
         run: scripts/build_apt_repo.sh dist build/apt-repo
@@ -112,3 +109,122 @@ jobs:
             dist-dev/*.deb
             build/apt-repo-dev/
           if-no-files-found: error
+
+  publish-dev:
+    name: Approve and publish Dev APT repository
+    if: github.ref == 'refs/heads/dev'
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: teletool-dev-apt
+      url: https://raw.githubusercontent.com/JohnDevAc/TeleTool/dev/apt-repo-dev/dists/dev/InRelease
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the current Dev branch
+        uses: actions/checkout@v5
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Reject a stale Dev build
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]; then
+            echo "Dev advanced after this build started; refusing to publish a stale package." >&2
+            exit 1
+          fi
+
+      - name: Download the Dev repository artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: teletool-arm64-dev-package
+          path: publication
+
+      - name: Sign and verify the Dev repository
+        env:
+          TELETOOL_APT_GPG_PRIVATE_KEY: ${{ secrets.TELETOOL_APT_GPG_PRIVATE_KEY }}
+          TELETOOL_APT_GPG_FINGERPRINT: A46E39F187DF1ECE21FA7B49DD7229CDF89BF37C
+        run: |
+          bash scripts/sign_apt_repo.sh \
+            publication/build/apt-repo-dev \
+            dev \
+            "${{ needs.build.outputs.dev_version }}"
+
+      - name: Publish the Dev repository
+        env:
+          PACKAGE_VERSION: ${{ needs.build.outputs.dev_version }}
+        run: |
+          rm -rf apt-repo-dev
+          mv publication/build/apt-repo-dev apt-repo-dev
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A apt-repo-dev
+          if git diff --cached --quiet; then
+            echo "The Dev repository already advertises $PACKAGE_VERSION."
+            exit 0
+          fi
+          git commit -m "Publish TeleTool $PACKAGE_VERSION Dev package"
+          git push origin HEAD:dev
+
+  publish-stable:
+    name: Approve and publish stable APT repository
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: teletool-stable-apt
+      url: https://johndevac.github.io/TeleTool/apt-repo/dists/stable/InRelease
+    permissions:
+      contents: write
+    steps:
+      - name: Check out Main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fast-forward Main to the tested tag
+        env:
+          PACKAGE_VERSION: ${{ needs.build.outputs.stable_version }}
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$tag_version" != "$PACKAGE_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match VERSION ($PACKAGE_VERSION)." >&2
+            exit 1
+          fi
+          git fetch origin dev main --tags
+          if [ "$(git rev-parse origin/dev)" != "$GITHUB_SHA" ]; then
+            echo "Dev advanced after this tag was built; refusing to publish a stale stable release." >&2
+            exit 1
+          fi
+          git merge --ff-only "$GITHUB_SHA"
+
+      - name: Download the stable repository artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: teletool-arm64-package
+          path: publication
+
+      - name: Sign and verify the stable repository
+        env:
+          TELETOOL_APT_GPG_PRIVATE_KEY: ${{ secrets.TELETOOL_APT_GPG_PRIVATE_KEY }}
+          TELETOOL_APT_GPG_FINGERPRINT: A46E39F187DF1ECE21FA7B49DD7229CDF89BF37C
+        run: |
+          bash scripts/sign_apt_repo.sh \
+            publication/build/apt-repo \
+            stable \
+            "${{ needs.build.outputs.stable_version }}"
+
+      - name: Publish stable and align Main with Dev
+        env:
+          PACKAGE_VERSION: ${{ needs.build.outputs.stable_version }}
+        run: |
+          rm -rf apt-repo
+          mv publication/build/apt-repo apt-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A apt-repo
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish TeleTool $PACKAGE_VERSION packages"
+          fi
+          git push --atomic origin HEAD:main HEAD:dev

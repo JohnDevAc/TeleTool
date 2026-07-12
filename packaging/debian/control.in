@@ -5,7 +5,7 @@ X-TeleTool-Installer-Version: __INSTALLER_VERSION__
 Maintainer: TeleTool Project <teletool@localhost>
 Section: video
 Priority: optional
-Homepage: https://github.com/JohnDevAc/teletwat
+Homepage: https://github.com/JohnDevAc/TeleTool
 Depends: adduser, alsa-utils, avahi-daemon, binutils, dtv-scan-tables, file, gir1.2-gst-plugins-bad-1.0, gir1.2-gst-plugins-base-1.0, gir1.2-gstreamer-1.0, gstreamer1.0-alsa, gstreamer1.0-libav, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-tools, libc-bin, network-manager, python3, python3-fastapi (>= 0.100), python3-gi, python3-gi-cairo, python3-pydantic (>= 2), python3-requests, python3-urllib3 (>= 2), python3-uvicorn (>= 0.30), sudo, tvheadend
 Description: Tvheadend to NDI® and local-audio bridge for Raspberry Pi
  TeleTool provides a FastAPI Web UI and GStreamer bridge for sending

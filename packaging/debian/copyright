@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: TeleTool
 Upstream-Contact: John Lightfoot
-Source: https://github.com/JohnDevAc/teletwat
+Source: https://github.com/JohnDevAc/TeleTool
 Disclaimer: TeleTool includes a separately licensed MPL-2.0 GStreamer plugin.
  The proprietary NDI® runtime is not included in this package.
 

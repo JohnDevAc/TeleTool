@@ -12,12 +12,12 @@ started_at="$(date +%s)"
 case "$channel" in
   main)
     channel_label="Main"
-    repository_url="https://johndevac.github.io/teletwat/apt-repo"
+    repository_url="https://johndevac.github.io/TeleTool/apt-repo"
     suite="stable"
     ;;
   dev)
     channel_label="Dev"
-    repository_url="https://raw.githubusercontent.com/JohnDevAc/teletwat/dev/apt-repo-dev"
+    repository_url="https://raw.githubusercontent.com/JohnDevAc/TeleTool/dev/apt-repo-dev"
     suite="dev"
     ;;
   *)

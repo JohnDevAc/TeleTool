@@ -5,7 +5,7 @@
 On a Raspberry Pi 5 running 64-bit Raspberry Pi OS Lite:
 
 ```sh
-wget -qO- https://johndevac.github.io/teletwat/apt-repo/install.sh | sudo sh
+wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh
 ```
 
 The installer adds the signed TeleTool package repository, installs TeleTool

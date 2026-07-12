@@ -88,7 +88,7 @@ for obsolete_path in (
 require(
     "README.md",
     "## Install with WGET",
-    "wget -qO- https://johndevac.github.io/teletwat/apt-repo/install.sh | sudo sh",
+    "wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh",
 )
 
 print("Package-managed Web updater is wired end to end.")

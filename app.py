@@ -36,7 +36,7 @@ PACKAGE_MANAGED = str(os.environ.get("TELETOOL_PACKAGE_MANAGED", "0")).strip().l
 PACKAGE_UPDATE_STATUS_PATH = Path(
     os.environ.get("TELETOOL_PACKAGE_UPDATE_STATUS_PATH", "/var/lib/teletool/update-status.json")
 ).expanduser()
-APP_VERSION_FALLBACK = "V1.7.4"
+APP_VERSION_FALLBACK = "V1.7.5"
 CONFIG_LOCK = threading.Lock()
 NDI_RUNTIME_NAME = "libndi.so.6"
 NDI_SDK_URL = "https://ndi.video/for-developers/ndi-sdk/"
@@ -73,7 +73,7 @@ def _ndi_runtime_status() -> Dict[str, Any]:
         "drop_directory": str(NDI_DROP_PATH.parent),
         "runtime_name": NDI_RUNTIME_NAME,
         "sdk_url": NDI_SDK_URL,
-        "setup_command": "wget -qO- https://johndevac.github.io/teletwat/apt-repo/install.sh | sudo sh",
+        "setup_command": "wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh",
         "upload_enabled": NDI_INSTALL_HELPER.is_file() and os.access(NDI_INSTALL_HELPER, os.X_OK),
         "upload_max_bytes": NDI_UPLOAD_MAX_BYTES,
     }

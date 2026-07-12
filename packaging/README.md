@@ -80,7 +80,7 @@ outside Git and the public key is published inside `apt-repo/`.
 
 Development packages use the separately signed `apt-repo-dev/` repository on
 the `dev` branch with suite `dev` and Debian versions such as
-`1.7.5+dev.<run>`. Package-managed units can switch between Main and Dev from
+`1.7.6+dev.<run>`. Package-managed units can switch between Main and Dev from
 the System page; the updater rewrites only the TeleTool source and installs the
 exact version advertised by the selected signed repository.
 

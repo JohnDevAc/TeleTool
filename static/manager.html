@@ -69,7 +69,7 @@ let pollTimer = null;
 let refreshBusy = false;
 let managerAdopted = false;
 let latestUnits = [];
-const MANAGER_POLL_MS = 1000;
+const MANAGER_POLL_MS = 3000;
 
 function escapeHtml(value){
   return String(value ?? "").replace(/[&<>"']/g, ch => ({

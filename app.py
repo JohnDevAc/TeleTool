@@ -6,9 +6,11 @@ import re
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from pathlib import Path
@@ -36,7 +38,7 @@ PACKAGE_MANAGED = str(os.environ.get("TELETOOL_PACKAGE_MANAGED", "0")).strip().l
 PACKAGE_UPDATE_STATUS_PATH = Path(
     os.environ.get("TELETOOL_PACKAGE_UPDATE_STATUS_PATH", "/var/lib/teletool/update-status.json")
 ).expanduser()
-APP_VERSION_FALLBACK = "V1.7.5"
+APP_VERSION_FALLBACK = "V1.7.6"
 CONFIG_LOCK = threading.Lock()
 NDI_RUNTIME_NAME = "libndi.so.6"
 NDI_SDK_URL = "https://ndi.video/for-developers/ndi-sdk/"
@@ -103,7 +105,37 @@ def _load_config() -> Dict[str, Any]:
 
 
 def _save_config(next_cfg: Dict[str, Any]) -> Dict[str, Any]:
-    CONFIG_PATH.write_text(json.dumps(next_cfg, indent=2) + "\n")
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(next_cfg, indent=2) + "\n"
+    existing_mode = None
+    try:
+        existing_mode = CONFIG_PATH.stat().st_mode & 0o777
+    except OSError:
+        pass
+
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{CONFIG_PATH.name}.", dir=str(CONFIG_PATH.parent))
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_path, existing_mode if existing_mode is not None else 0o640)
+        os.replace(tmp_path, CONFIG_PATH)
+        # Persist the directory entry as well as the file contents on Linux.
+        try:
+            dir_fd = os.open(CONFIG_PATH.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
     return next_cfg
 
 
@@ -162,16 +194,15 @@ def _update_stored_config(patch: Dict[str, Any]) -> Dict[str, Any]:
         return deepcopy(cfg)
 
 
-cfg = _load_config()
-
-tvh = _build_tvh_client(cfg)
-ndi_bridge = GstNDIBridge(config=cfg)
+cfg: Dict[str, Any] = {}
+tvh: Any = None
+ndi_bridge: Any = None
 
 # TVH stream profile used to resolve the current channel's stream URL.
-_active_profile: str = cfg.get("tvh_stream_profile", "pass")
+_active_profile: str = "pass"
 
 # Default (fixed) NDI delay applied when starting the pipeline
-NDI_DELAY_DEFAULT_MS: int = int(cfg.get("ndi_delay_ms", 250))
+NDI_DELAY_DEFAULT_MS: int = 250
 
 
 # ---------------- NDI supervision / auto-reconnect ----------------
@@ -180,6 +211,9 @@ NDI_DELAY_DEFAULT_MS: int = int(cfg.get("ndi_delay_ms", 250))
 # simply stop rendering frames. This supervisor owns the desired channel state
 # and restarts the NDI pipeline with a freshly resolved tvheadend URL.
 NDI_SUPERVISOR_LOCK = threading.RLock()
+NDI_SUPERVISOR_STOP = threading.Event()
+NDI_SUPERVISOR_THREAD: Optional[threading.Thread] = None
+MANAGER_EXECUTOR: Optional[ThreadPoolExecutor] = None
 NDI_SUPERVISOR_STATE: Dict[str, Any] = {
     "desired": False,
     "request": None,
@@ -252,7 +286,7 @@ def _channel_summary_for_uuid(channel_uuid: Optional[str]) -> Dict[str, Any]:
 
 RF_STATUS_LOCK = threading.Lock()
 RF_STATUS_CACHE: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
-RF_STATUS_DEFAULT_TTL_S = 1.0
+RF_STATUS_DEFAULT_TTL_S = 3.0
 
 
 def _rf_status_cache_ttl_s() -> float:
@@ -260,7 +294,7 @@ def _rf_status_cache_ttl_s() -> float:
         value = float(cfg.get("rf_status_ttl_s", RF_STATUS_DEFAULT_TTL_S))
     except Exception:
         value = RF_STATUS_DEFAULT_TTL_S
-    return max(1.0, min(120.0, value))
+    return max(RF_STATUS_DEFAULT_TTL_S, min(120.0, value))
 
 
 def _rf_number(value: Any) -> Optional[float]:
@@ -659,7 +693,11 @@ def _rf_status_for_channel(channel_uuid: Optional[str] = None, channel_name: Opt
             out["cache_ttl_s"] = ttl
             return out
 
-        value = _rf_status_for_channel_uncached(channel_uuid=channel_uuid, channel_name=channel_name)
+    # Tvheadend calls can take seconds during a restart or retune. Do not hold the
+    # cache lock while performing network I/O; unrelated status requests should
+    # remain responsive and can safely converge on the same refreshed value.
+    value = _rf_status_for_channel_uncached(channel_uuid=channel_uuid, channel_name=channel_name)
+    with RF_STATUS_LOCK:
         value["cached"] = False
         value["cache_ttl_s"] = ttl
         value["last_updated_at"] = int(time.time())
@@ -752,9 +790,10 @@ def _restart_ndi_pipeline(reason: str) -> None:
 
 
 def _ndi_supervisor_loop() -> None:
-    while True:
+    while not NDI_SUPERVISOR_STOP.is_set():
         cfg_s = _ndi_supervisor_config()
-        time.sleep(cfg_s["poll_s"])
+        if NDI_SUPERVISOR_STOP.wait(cfg_s["poll_s"]):
+            break
         if not cfg_s["enabled"]:
             continue
 
@@ -849,8 +888,6 @@ def _ndi_supervisor_loop() -> None:
         if (now - float(last_attempt)) >= backoff:
             _restart_ndi_pipeline("pipeline stopped unexpectedly")
 
-
-threading.Thread(target=_ndi_supervisor_loop, name="ndi-supervisor", daemon=True).start()
 
 TV_SETUP_STATE: Dict[str, Any] = {
     "running": False,
@@ -1308,7 +1345,56 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
             finished_at=int(time.time()),
         )
 
-app = FastAPI(title="TV to NDI/Line Audio Bridge")
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI):
+    global cfg, tvh, ndi_bridge, _active_profile, NDI_DELAY_DEFAULT_MS
+    global NDI_SUPERVISOR_THREAD, MANAGER_EXECUTOR
+
+    cfg = _load_config()
+    tvh = _build_tvh_client(cfg)
+    ndi_bridge = GstNDIBridge(config=cfg)
+    _active_profile = str(cfg.get("tvh_stream_profile", "pass"))
+    NDI_DELAY_DEFAULT_MS = int(cfg.get("ndi_delay_ms", 250))
+
+    NDI_SUPERVISOR_STOP.clear()
+    NDI_SUPERVISOR_THREAD = threading.Thread(
+        target=_ndi_supervisor_loop,
+        name="ndi-supervisor",
+        daemon=True,
+    )
+    NDI_SUPERVISOR_THREAD.start()
+    MANAGER_EXECUTOR = ThreadPoolExecutor(max_workers=12, thread_name_prefix="teletool-manager")
+
+    try:
+        yield
+    finally:
+        NDI_SUPERVISOR_STOP.set()
+        if NDI_SUPERVISOR_THREAD is not None and NDI_SUPERVISOR_THREAD.is_alive():
+            NDI_SUPERVISOR_THREAD.join(timeout=3.0)
+        NDI_SUPERVISOR_THREAD = None
+
+        if MANAGER_EXECUTOR is not None:
+            MANAGER_EXECUTOR.shutdown(wait=True, cancel_futures=True)
+        MANAGER_EXECUTOR = None
+        try:
+            _close_manager_http_sessions()
+        except Exception:
+            pass
+        try:
+            ndi_bridge.lineout_stop()
+        except Exception:
+            pass
+        try:
+            ndi_bridge.stop()
+        except Exception:
+            pass
+        try:
+            tvh.close()
+        except Exception:
+            pass
+
+
+app = FastAPI(title="TV to NDI/Line Audio Bridge", lifespan=_app_lifespan)
 static_dir = BASE_DIR / "static"
 static_dir.mkdir(exist_ok=True)
 
@@ -1508,7 +1594,12 @@ def api_channels(force_refresh: bool = Query(False)):
     except Exception as e:
         raise HTTPException(500, f"Failed to list channels: {e}")
 @app.get("/api/status")
-def api_status(lite: bool = Query(False), logs: bool = Query(False), stats: bool = Query(False)):
+def api_status(
+    lite: bool = Query(False),
+    logs: bool = Query(False),
+    stats: bool = Query(False),
+    rf: bool = Query(True),
+):
     """
     Status endpoint.
 
@@ -1530,10 +1621,11 @@ def api_status(lite: bool = Query(False), logs: bool = Query(False), stats: bool
     else:
         st["active_channel_name"] = None
         st["active_channel_number"] = None
-    st["rf"] = _rf_status_for_channel(
-        st.get("channel_uuid") or req_d.get("channel_uuid"),
-        st.get("active_channel_name") or req_d.get("channel_name"),
-    )
+    if rf:
+        st["rf"] = _rf_status_for_channel(
+            st.get("channel_uuid") or req_d.get("channel_uuid"),
+            st.get("active_channel_name") or req_d.get("channel_name"),
+        )
     st["supervisor"] = {
         "desired": bool(sup.get("desired")),
         "restart_count": int(sup.get("restart_count") or 0),
@@ -1557,13 +1649,31 @@ def api_status(lite: bool = Query(False), logs: bool = Query(False), stats: bool
     return st
 
 
+@app.get("/api/rf")
+def api_rf_status():
+    st = ndi_bridge.status_lite(include_logs=False, include_stats=False)
+    with NDI_SUPERVISOR_LOCK:
+        req_d = deepcopy(NDI_SUPERVISOR_STATE.get("request") or {})
+    return _rf_status_for_channel(
+        st.get("channel_uuid") or req_d.get("channel_uuid"),
+        req_d.get("channel_name"),
+    )
+
+
 MANAGER_CONFIG_KEY = "manager_units"
 MANAGER_ID_CONFIG_KEY = "manager_id"
 MANAGER_CONNECT_TIMEOUT_S = 0.7
 MANAGER_READ_TIMEOUT_S = 1.8
 MANAGER_CONTROL_READ_TIMEOUT_S = 12.0
 MANAGER_ADOPTION_TTL_S = 20.0
+MANAGER_HEARTBEAT_INTERVAL_S = 8.0
 MANAGER_ADOPTION_LOCK = threading.Lock()
+MANAGER_HEARTBEAT_LOCK = threading.Lock()
+MANAGER_HEARTBEAT_LAST: Dict[str, float] = {}
+MANAGER_HTTP_CLIENTS_LOCK = threading.Lock()
+MANAGER_HTTP_CLIENTS: Dict[str, Dict[str, Any]] = {}
+MANAGER_METADATA_LOCK = threading.Lock()
+MANAGER_METADATA_CACHE: Dict[str, Any] = {"at": 0.0, "key": None, "value": None}
 MANAGER_ADOPTION_STATE: Dict[str, Any] = {
     "manager_id": None,
     "manager_url": None,
@@ -1864,13 +1974,66 @@ def _manager_channel_label(status: Dict[str, Any], base_url: str) -> Tuple[Optio
     return None, None, None
 
 
+def _manager_http_client(base_url: str) -> Dict[str, Any]:
+    key = base_url.rstrip("/")
+    with MANAGER_HTTP_CLIENTS_LOCK:
+        client = MANAGER_HTTP_CLIENTS.get(key)
+        if client is None:
+            session = requests.Session()
+            session.headers.update({"Accept": "application/json", "User-Agent": "TeleTool-Fleet-Manager/1"})
+            client = {"session": session, "lock": threading.Lock()}
+            MANAGER_HTTP_CLIENTS[key] = client
+        return client
+
+
+def _close_manager_http_sessions() -> None:
+    with MANAGER_HTTP_CLIENTS_LOCK:
+        clients = list(MANAGER_HTTP_CLIENTS.values())
+        MANAGER_HTTP_CLIENTS.clear()
+    for client in clients:
+        try:
+            client["session"].close()
+        except Exception:
+            pass
+
+
+def _manager_heartbeat_due(unit_id: str) -> bool:
+    now = time.monotonic()
+    with MANAGER_HEARTBEAT_LOCK:
+        last = float(MANAGER_HEARTBEAT_LAST.get(unit_id) or 0.0)
+        return (now - last) >= MANAGER_HEARTBEAT_INTERVAL_S
+
+
+def _manager_mark_heartbeat(unit_id: str) -> None:
+    with MANAGER_HEARTBEAT_LOCK:
+        MANAGER_HEARTBEAT_LAST[unit_id] = time.monotonic()
+
+
+def _manager_local_metadata() -> Dict[str, Any]:
+    cache_key = str(cfg.get("ndi_default_name") or "")
+    now = time.monotonic()
+    with MANAGER_METADATA_LOCK:
+        cached = MANAGER_METADATA_CACHE.get("value")
+        if cached and MANAGER_METADATA_CACHE.get("key") == cache_key and (now - float(MANAGER_METADATA_CACHE.get("at") or 0.0)) < 30.0:
+            return deepcopy(cached)
+    value = {
+        "release": _release_info(),
+        "hostname": {"hostname": _get_persistent_hostname()},
+        "config": {"ndi_default_name": cfg.get("ndi_default_name")},
+    }
+    with MANAGER_METADATA_LOCK:
+        MANAGER_METADATA_CACHE.update({"at": time.monotonic(), "key": cache_key, "value": deepcopy(value)})
+    return value
+
+
 def _manager_fetch_json(base_url: str, path: str, *, read_timeout_s: Optional[float] = None) -> Dict[str, Any]:
     url = base_url.rstrip("/") + path
-    response = requests.get(
-        url,
-        timeout=(MANAGER_CONNECT_TIMEOUT_S, read_timeout_s or MANAGER_READ_TIMEOUT_S),
-        headers={"Accept": "application/json"},
-    )
+    client = _manager_http_client(base_url)
+    with client["lock"]:
+        response = client["session"].get(
+            url,
+            timeout=(MANAGER_CONNECT_TIMEOUT_S, read_timeout_s or MANAGER_READ_TIMEOUT_S),
+        )
     response.raise_for_status()
     try:
         data = response.json()
@@ -1883,12 +2046,13 @@ def _manager_fetch_json(base_url: str, path: str, *, read_timeout_s: Optional[fl
 
 def _manager_post_json(base_url: str, path: str, payload: Dict[str, Any], *, read_timeout_s: Optional[float] = None) -> Dict[str, Any]:
     url = base_url.rstrip("/") + path
-    response = requests.post(
-        url,
-        json=payload,
-        timeout=(MANAGER_CONNECT_TIMEOUT_S, read_timeout_s or MANAGER_READ_TIMEOUT_S),
-        headers={"Accept": "application/json"},
-    )
+    client = _manager_http_client(base_url)
+    with client["lock"]:
+        response = client["session"].post(
+            url,
+            json=payload,
+            timeout=(MANAGER_CONNECT_TIMEOUT_S, read_timeout_s or MANAGER_READ_TIMEOUT_S),
+        )
     response.raise_for_status()
     try:
         data = response.json()
@@ -2120,17 +2284,53 @@ def _manager_status_for_unit(unit: Dict[str, Any], manager_identity: Dict[str, s
         "latency_ms": None,
     }
 
+    snapshot: Optional[Dict[str, Any]] = None
+    heartbeat_due = _manager_heartbeat_due(unit["id"])
     try:
-        status = _manager_fetch_json(unit["base_url"], "/api/status?lite=1")
+        snapshot = _manager_post_json(
+            unit["base_url"],
+            "/api/manager/snapshot",
+            {**manager_identity, "heartbeat": heartbeat_due},
+        )
+    except requests.HTTPError as e:
+        # Rolling upgrades can temporarily leave older units without the snapshot
+        # endpoint. Preserve the legacy multi-request path until every unit updates.
+        if e.response is None or e.response.status_code != 404:
+            result["error"] = str(e)
+            result["latency_ms"] = int((time.monotonic() - started) * 1000)
+            return result
     except Exception as e:
         result["error"] = str(e)
         result["latency_ms"] = int((time.monotonic() - started) * 1000)
         return result
 
+    if snapshot is not None:
+        status = snapshot.get("status")
+        if not isinstance(status, dict):
+            result["error"] = "Remote snapshot returned an invalid status payload"
+            result["latency_ms"] = int((time.monotonic() - started) * 1000)
+            return result
+        adoption_payload = snapshot.get("adoption") if isinstance(snapshot.get("adoption"), dict) else {}
+        adoption = {
+            "ok": bool(adoption_payload.get("ok")),
+            "error": None if adoption_payload.get("ok") else "Adopted by another active Fleet Manager",
+        }
+        if heartbeat_due and adoption["ok"]:
+            _manager_mark_heartbeat(unit["id"])
+    else:
+        try:
+            status = _manager_fetch_json(unit["base_url"], "/api/status?lite=1&rf=1")
+        except Exception as e:
+            result["error"] = str(e)
+            result["latency_ms"] = int((time.monotonic() - started) * 1000)
+            return result
+        adoption = _manager_heartbeat_unit(unit, manager_identity)
+        if adoption.get("ok"):
+            _manager_mark_heartbeat(unit["id"])
+
     result["online"] = True
     result["system_status"] = "online"
     result["control_error"] = None
-    adoption = _manager_heartbeat_unit(unit, manager_identity)
     result["adoption_ok"] = bool(adoption.get("ok"))
     result["adoption_error"] = adoption.get("error")
     supervisor = status.get("supervisor") if isinstance(status.get("supervisor"), dict) else {}
@@ -2154,33 +2354,42 @@ def _manager_status_for_unit(unit: Dict[str, Any], manager_identity: Dict[str, s
     if not control_channel_uuid:
         result["control_error"] = "Open this unit UI and choose a channel before starting NDI from Fleet Manager."
 
-    try:
-        result.update(_manager_release_fields(_manager_fetch_json(unit["base_url"], "/api/release")))
-    except Exception:
-        pass
+    if snapshot is not None:
+        result.update(_manager_release_fields(snapshot.get("release") if isinstance(snapshot.get("release"), dict) else {}))
+        host_info = snapshot.get("hostname") if isinstance(snapshot.get("hostname"), dict) else {}
+        unit_config = snapshot.get("config") if isinstance(snapshot.get("config"), dict) else {}
+    else:
+        try:
+            result.update(_manager_release_fields(_manager_fetch_json(unit["base_url"], "/api/release")))
+        except Exception:
+            pass
+        try:
+            host_info = _manager_fetch_json(unit["base_url"], "/api/system/hostname")
+        except Exception:
+            host_info = {}
+        try:
+            unit_config = _manager_fetch_json(unit["base_url"], "/api/config/ui")
+        except Exception:
+            unit_config = {}
 
-    try:
-        host_info = _manager_fetch_json(unit["base_url"], "/api/system/hostname")
-        hostname = host_info.get("hostname")
-        if isinstance(hostname, str) and hostname.strip():
-            result["hostname"] = hostname.strip()
-    except Exception:
-        pass
-
-    try:
-        unit_config = _manager_fetch_json(unit["base_url"], "/api/config/ui")
-        default_ndi_name = unit_config.get("ndi_default_name")
-        if isinstance(default_ndi_name, str) and default_ndi_name.strip():
-            result["default_ndi_name"] = default_ndi_name.strip()
-    except Exception:
-        pass
+    hostname = host_info.get("hostname")
+    if isinstance(hostname, str) and hostname.strip():
+        result["hostname"] = hostname.strip()
+    default_ndi_name = unit_config.get("ndi_default_name")
+    if isinstance(default_ndi_name, str) and default_ndi_name.strip():
+        result["default_ndi_name"] = default_ndi_name.strip()
 
     ndi_name = status.get("ndi_name") or supervisor.get("desired_ndi_name") or result["default_ndi_name"]
     if isinstance(ndi_name, str) and ndi_name.strip():
         result["ndi_name"] = ndi_name.strip()
 
     if running:
-        channel_name, channel_number, channel_label = _manager_channel_label(status, unit["base_url"])
+        if snapshot is not None:
+            channel_name = status.get("active_channel_name")
+            channel_number = status.get("active_channel_number")
+            channel_label = str(channel_name or result.get("channel_uuid") or "") or None
+        else:
+            channel_name, channel_number, channel_label = _manager_channel_label(status, unit["base_url"])
         result["channel_name"] = channel_name
         result["channel_number"] = channel_number
         result["channel_label"] = channel_label
@@ -2193,7 +2402,7 @@ def _manager_status_for_self(base_url: str) -> Dict[str, Any]:
     checked_at = int(time.time())
     parsed = urlparse(base_url)
     hostname = socket.gethostname() or "TeleTool"
-    status = api_status(lite=True, logs=False, stats=False)
+    status = api_status(lite=True, logs=False, stats=False, rf=True)
     supervisor = status.get("supervisor") if isinstance(status.get("supervisor"), dict) else {}
     last_req = _manager_last_start_request(status)
     running = bool(status.get("running"))
@@ -2259,6 +2468,10 @@ class ManagerAdoptionHeartbeatReq(BaseModel):
     manager_name: Optional[str] = Field(default=None, max_length=120)
 
 
+class ManagerSnapshotReq(ManagerAdoptionHeartbeatReq):
+    heartbeat: bool = True
+
+
 class ManagerAdoptionReleaseReq(BaseModel):
     manager_id: str = Field(min_length=1, max_length=120)
 
@@ -2271,6 +2484,25 @@ def api_manager_units():
 @app.get("/api/manager/adoption")
 def api_manager_adoption():
     return _manager_adoption_snapshot()
+
+
+@app.post("/api/manager/snapshot")
+def api_manager_snapshot(req: ManagerSnapshotReq):
+    if req.heartbeat:
+        try:
+            adoption_ok, adoption = _manager_adoption_heartbeat(req.manager_id, req.manager_url, req.manager_name)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    else:
+        adoption = _manager_adoption_snapshot()
+        adoption_ok = bool(adoption.get("adopted")) and adoption.get("manager_id") == req.manager_id
+
+    metadata = _manager_local_metadata()
+    return {
+        "status": api_status(lite=True, logs=False, stats=False, rf=True),
+        **metadata,
+        "adoption": {"ok": adoption_ok, "state": adoption},
+    }
 
 
 @app.post("/api/manager/adoption/heartbeat")
@@ -2458,8 +2690,11 @@ def api_manager_status(request: Request):
 
     manager_identity = _manager_identity(base_url + "/manager")
     statuses: List[Optional[Dict[str, Any]]] = [None] * len(units)
-    max_workers = min(12, max(1, len(units)))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    executor = MANAGER_EXECUTOR
+    owns_executor = executor is None
+    if executor is None:
+        executor = ThreadPoolExecutor(max_workers=min(12, max(1, len(units))))
+    try:
         future_to_index = {executor.submit(_manager_status_for_unit, unit, manager_identity): index for index, unit in enumerate(units)}
         for future in as_completed(future_to_index):
             index = future_to_index[future]
@@ -2477,6 +2712,9 @@ def api_manager_status(request: Request):
                     "checked_at": int(time.time()),
                 })
                 statuses[index] = failed
+    finally:
+        if owns_executor:
+            executor.shutdown(wait=True, cancel_futures=True)
 
     return {"units": [self_status] + [status for status in statuses if status is not None], "checked_at": int(time.time())}
 
@@ -3621,19 +3859,3 @@ def api_system_hostname(req: HostnameReq):
         "hostname_detail": {"persisted": persisted, "runtime": runtime},
         "message": f"Hostname set to '{persisted}'.",
     }
-
-# ---------------- Graceful shutdown ----------------
-@app.on_event("shutdown")
-def _shutdown():
-    try:
-        ndi_bridge.lineout_stop()
-    except Exception:
-        pass
-    try:
-        ndi_bridge.stop()
-    except Exception:
-        pass
-    try:
-        tvh.close()
-    except Exception:
-        pass

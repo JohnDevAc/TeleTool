@@ -14,7 +14,7 @@
   "ndi_stall_timeout_s": 15.0,
   "ndi_reconnect_initial_backoff_s": 1.0,
   "ndi_reconnect_max_backoff_s": 15.0,
-  "rf_status_ttl_s": 1.0,
+  "rf_status_ttl_s": 3.0,
   "lineout_default_device": null,
   "lineout_volume": 0.8,
   "lineout_sink_sync": true,

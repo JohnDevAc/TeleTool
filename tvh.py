@@ -1,6 +1,7 @@
 import time
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -55,6 +56,7 @@ class TvheadendClient:
         self._retries = int(retries)
         self._backoff_s = float(backoff_s)
         self._pool_maxsize = int(pool_maxsize)
+        self._session_lock = threading.RLock()
 
         self._sess = self._build_session(retries=self._retries, backoff_s=self._backoff_s, pool_maxsize=self._pool_maxsize)
 
@@ -100,52 +102,55 @@ class TvheadendClient:
         member after network changes. If we see a RequestException, we rebuild
         the session and try once more.
         """
-        try:
-            r = self._sess.get(url, params=params, timeout=self._timeout, auth=self._auth, verify=self._verify_tls)
-            r.raise_for_status()
-            return r
-        except requests.RequestException:
-            # Rebuild session and retry once.
+        with self._session_lock:
+            try:
+                r = self._sess.get(url, params=params, timeout=self._timeout, auth=self._auth, verify=self._verify_tls)
+                r.raise_for_status()
+                return r
+            except requests.RequestException:
+                # Rebuild session and retry once.
+                try:
+                    self._sess.close()
+                except Exception:
+                    pass
+                self._sess = self._build_session(
+                    retries=self._retries,
+                    backoff_s=self._backoff_s,
+                    pool_maxsize=self._pool_maxsize,
+                )
+                r = self._sess.get(url, params=params, timeout=self._timeout, auth=self._auth, verify=self._verify_tls)
+                r.raise_for_status()
+                return r
+
+    def close(self) -> None:
+        """Close the underlying HTTP session."""
+        with self._session_lock:
             try:
                 self._sess.close()
             except Exception:
                 pass
-            self._sess = self._build_session(
-                retries=self._retries,
-                backoff_s=self._backoff_s,
-                pool_maxsize=self._pool_maxsize,
-            )
-            r = self._sess.get(url, params=params, timeout=self._timeout, auth=self._auth, verify=self._verify_tls)
-            r.raise_for_status()
-            return r
-
-    def close(self) -> None:
-        """Close the underlying HTTP session."""
-        try:
-            self._sess.close()
-        except Exception:
-            pass
 
 
     def _post(self, url: str, *, data: Optional[Dict] = None) -> requests.Response:
         """POST with the same self-healing approach as _get."""
-        try:
-            r = self._sess.post(url, data=data, timeout=self._timeout, auth=self._auth, verify=self._verify_tls)
-            r.raise_for_status()
-            return r
-        except requests.RequestException:
+        with self._session_lock:
             try:
-                self._sess.close()
-            except Exception:
-                pass
-            self._sess = self._build_session(
-                retries=self._retries,
-                backoff_s=self._backoff_s,
-                pool_maxsize=self._pool_maxsize,
-            )
-            r = self._sess.post(url, data=data, timeout=self._timeout, auth=self._auth, verify=self._verify_tls)
-            r.raise_for_status()
-            return r
+                r = self._sess.post(url, data=data, timeout=self._timeout, auth=self._auth, verify=self._verify_tls)
+                r.raise_for_status()
+                return r
+            except requests.RequestException:
+                try:
+                    self._sess.close()
+                except Exception:
+                    pass
+                self._sess = self._build_session(
+                    retries=self._retries,
+                    backoff_s=self._backoff_s,
+                    pool_maxsize=self._pool_maxsize,
+                )
+                r = self._sess.post(url, data=data, timeout=self._timeout, auth=self._auth, verify=self._verify_tls)
+                r.raise_for_status()
+                return r
 
     def _cache_valid(self, t: float) -> bool:
         return (time.time() - t) < self.cache_ttl_s

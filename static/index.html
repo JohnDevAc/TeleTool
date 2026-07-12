@@ -392,13 +392,21 @@ async function loadChannels(forceRefresh=false) {
 }
 
 let statusPollTimer = null;
+let rfPollTimer = null;
 let lastStatusKey = "";
 let lastUptimeText = "";
+let latestRfStatus = null;
 const STATUS_POLL_MS = 1000;
+const RF_POLL_MS = 3000;
 
 function scheduleStatusPoll(delayMs){
   if (statusPollTimer) clearTimeout(statusPollTimer);
   statusPollTimer = setTimeout(async () => { await refreshStatus(); }, delayMs);
+}
+
+function scheduleRfPoll(delayMs=RF_POLL_MS){
+  if (rfPollTimer) clearTimeout(rfPollTimer);
+  rfPollTimer = setTimeout(refreshRfStatus, delayMs);
 }
 
 function renderRfStatus(rf){
@@ -416,7 +424,8 @@ function renderRfStatus(rf){
 
 async function refreshStatus() {
   if (document.visibilityState === "hidden") return;
-  const st = await jget("/api/status?lite=1");
+  const st = await jget("/api/status?lite=1&rf=0");
+  const rf = latestRfStatus;
   const running = !!st.running;
   setRunningUI(running);
   setFormDisabled(running);
@@ -426,8 +435,8 @@ async function refreshStatus() {
     running,
     pipeline_state: st.pipeline_state || (running ? "PLAYING" : "NULL"),
     ndi_name: running ? (st.ndi_name || "—") : "—",
-    rf_label: rfSignalLabel(st.rf),
-    rf_kind: rfSignalKind(st.rf),
+    rf_label: rfSignalLabel(rf),
+    rf_kind: rfSignalKind(rf),
     last_error: st.last_error || "",
     last_warning: st.last_warning || ""
   });
@@ -445,13 +454,26 @@ async function refreshStatus() {
     stUptime.textContent = uptimeText;
     lastUptimeText = uptimeText;
   }
-  renderRfStatus(st.rf);
+  if (rf) renderRfStatus(rf);
 
   if (st.last_error) setAlertBadge("bad", st.last_error);
   else if (st.last_warning) setAlertBadge("warn", st.last_warning);
   else setAlertBadge("", "");
 
   scheduleStatusPoll(STATUS_POLL_MS);
+}
+
+
+async function refreshRfStatus(){
+  if (document.visibilityState === "hidden") return;
+  try{
+    latestRfStatus = await jget("/api/rf");
+    renderRfStatus(latestRfStatus);
+  }catch(e){
+    console.warn("RF status failed", e);
+  }finally{
+    scheduleRfPoll();
+  }
 }
 
 document.getElementById("start").addEventListener("click", async () => {
@@ -518,16 +540,25 @@ const refreshBtn = document.getElementById("refresh");
 if (refreshBtn) refreshBtn.addEventListener("click", refreshStatus);
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") refreshStatus();
-  else if (statusPollTimer) {
-    clearTimeout(statusPollTimer);
-    statusPollTimer = null;
+  if (document.visibilityState === "visible") {
+    refreshStatus();
+    refreshRfStatus();
+  } else {
+    if (statusPollTimer) {
+      clearTimeout(statusPollTimer);
+      statusPollTimer = null;
+    }
+    if (rfPollTimer) {
+      clearTimeout(rfPollTimer);
+      rfPollTimer = null;
+    }
   }
 });
 
 (async () => {
   await loadUiConfig();
   await loadChannels();
+  await refreshRfStatus();
   await refreshStatus();
   await loadTvSetupRegions();
   await refreshTvSetupStatus();

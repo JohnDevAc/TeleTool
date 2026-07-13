@@ -31,7 +31,7 @@ PACKAGE_MANAGED = str(os.environ.get("TELETOOL_PACKAGE_MANAGED", "0")).strip().l
 PACKAGE_UPDATE_STATUS_PATH = Path(
     os.environ.get("TELETOOL_PACKAGE_UPDATE_STATUS_PATH", "/var/lib/teletool/update-status.json")
 ).expanduser()
-APP_VERSION_FALLBACK = "V1.7.6"
+APP_VERSION_FALLBACK = "V1.8.0"
 
 router = APIRouter()
 

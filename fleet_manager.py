@@ -105,10 +105,6 @@ def shutdown() -> None:
     _close_manager_http_sessions()
 
 
-def adoption_snapshot() -> Dict[str, Any]:
-    return _manager_adoption_snapshot()
-
-
 MANAGER_CONFIG_KEY = "manager_units"
 MANAGER_ID_CONFIG_KEY = "manager_id"
 MANAGER_CONNECT_TIMEOUT_S = 0.7

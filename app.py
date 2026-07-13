@@ -1509,12 +1509,7 @@ def system_page():
         raise HTTPException(500, "static/system.html missing")
     return FileResponse(str(page))
 @app.get("/manager")
-def manager_page(request: Request):
-    adoption = fleet_manager.adoption_snapshot()
-    manager_url = str(adoption.get("manager_url") or "").strip()
-    current_url = str(request.url).rstrip("/")
-    if adoption.get("adopted") and manager_url and manager_url.rstrip("/") != current_url:
-        return RedirectResponse(manager_url, status_code=302)
+def manager_page():
     page = static_dir / "manager.html"
     if not page.exists():
         raise HTTPException(500, "static/manager.html missing")

@@ -193,11 +193,20 @@ jobs:
             exit 1
           fi
           git fetch origin dev main --tags
-          if [ "$(git rev-parse origin/dev)" != "$GITHUB_SHA" ]; then
-            echo "Dev advanced after this tag was built; refusing to publish a stale stable release." >&2
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/dev; then
+            echo "The tested tag is not an ancestor of the current Dev branch." >&2
             exit 1
           fi
-          git merge --ff-only "$GITHUB_SHA"
+          unexpected_changes="$(
+            git diff --name-only "$GITHUB_SHA"..origin/dev |
+              grep -v '^apt-repo-dev/' || true
+          )"
+          if [ -n "$unexpected_changes" ]; then
+            echo "Dev contains source changes after this tag; refusing to publish a stale stable release:" >&2
+            printf '%s\n' "$unexpected_changes" >&2
+            exit 1
+          fi
+          git merge --ff-only origin/dev
 
       - name: Download the stable repository artifact
         uses: actions/download-artifact@v8

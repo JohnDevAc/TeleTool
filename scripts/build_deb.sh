@@ -93,7 +93,7 @@ install -d \
   "$package_root/usr/share/doc/teletool/third-party/licenses" \
   "$package_root/usr/share/doc/teletool/third-party/source"
 
-for source_file in app.py fleet_manager.py gst_base.py gst_ndi.py tvh.py config.example.json INSTALLER_VERSION; do
+for source_file in app.py fleet_manager.py system_manager.py gst_base.py gst_ndi.py tvh.py config.example.json INSTALLER_VERSION; do
   install -m 0644 "$PROJECT_DIR/$source_file" "$app_root/$source_file"
 done
 printf 'V%s\n' "$VERSION" >"$app_root/VERSION"

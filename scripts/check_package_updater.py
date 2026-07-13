@@ -58,7 +58,7 @@ require(
     "sha256sum",
 )
 require(
-    "app.py",
+    "system_manager.py",
     'unit = f"teletool-update@{branch}.service"',
     "_read_package_update_status",
     "Updates require a package installation created by the published WGET installer.",
@@ -69,11 +69,14 @@ require(
     'branchSelect.disabled = false',
 )
 
-for path in (ROOT / "app.py", ROOT / "static" / "system.html"):
+for path in (ROOT / "app.py", ROOT / "system_manager.py", ROOT / "static" / "system.html"):
     if "Managed by apt" in path.read_text(encoding="utf-8"):
         raise SystemExit(f"{path}: obsolete APT update lockout remains")
 
-app_text = (ROOT / "app.py").read_text(encoding="utf-8")
+python_source = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in (ROOT / "app.py", ROOT / "system_manager.py")
+)
 for obsolete in (
     "_run_program_update_worker",
     "_download_github_update_archive",
@@ -81,8 +84,8 @@ for obsolete in (
     "pi_full_setup.sh",
     "install_network_privileges.sh",
 ):
-    if obsolete in app_text:
-        raise SystemExit(f"app.py: unsupported source updater remains: {obsolete}")
+    if obsolete in python_source:
+        raise SystemExit(f"Python source: unsupported source updater remains: {obsolete}")
 
 for obsolete_path in (
     ".vscode",

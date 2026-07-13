@@ -1617,5 +1617,3 @@ def api_manager_status(request: Request):
             executor.shutdown(wait=True, cancel_futures=True)
 
     return {"units": [self_status] + [status for status in statuses if status is not None], "checked_at": int(time.time())}
-
-

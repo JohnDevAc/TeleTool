@@ -89,6 +89,7 @@ let latestUnits = [];
 let discoveredUnits = [];
 let discoveryHasRun = false;
 let discoveryBusy = false;
+const selectedDiscoveryUnits = new Set();
 const MANAGER_POLL_MS = 3000;
 
 function escapeHtml(value){
@@ -124,6 +125,10 @@ function updateAdoptSelectedButton(){
   button.textContent = selected > 0 ? `Adopt Selected (${selected})` : "Adopt Selected";
 }
 
+function discoverySelectionKey(unit){
+  return String(unit.device_id || unit.mac_address || unit.id || unit.address || unit.host || "");
+}
+
 function renderDiscoveredUnits(){
   const panel = document.getElementById("discoveryPanel");
   const summary = document.getElementById("discoverySummary");
@@ -143,6 +148,8 @@ function renderDiscoveredUnits(){
 
   results.innerHTML = discoveredUnits.map(unit => {
     const disabled = unit.selectable && !managerAdopted ? "" : " disabled";
+    const selectionKey = discoverySelectionKey(unit);
+    const checked = unit.selectable && selectedDiscoveryUnits.has(selectionKey) ? " checked" : "";
     const version = unit.version ? `${unit.version}${unit.release_branch ? ` ${unit.release_branch}` : ""}` : "Version unavailable";
     const primaryUrl = unit.manager_url || (unit.state === "primary" && unit.base_url ? `${String(unit.base_url).replace(/\/$/, "")}/manager` : "");
     const managerLink = primaryUrl
@@ -150,7 +157,7 @@ function renderDiscoveredUnits(){
       : "";
     return `
       <label class="managerDiscoveryUnit ${unit.selectable ? "isSelectable" : ""}">
-        <input type="checkbox" data-discovery-select value="${escapeHtml(unit.address || unit.host || "")}"${disabled} />
+        <input type="checkbox" data-discovery-select data-discovery-key="${escapeHtml(selectionKey)}" value="${escapeHtml(unit.address || unit.host || "")}"${checked}${disabled} />
         <span class="managerDiscoveryIdentity">
           <span class="managerDiscoveryName">${escapeHtml(unit.hostname || unit.host || "TeleTool")}</span>
           <span class="small mono">${escapeHtml(unit.address || unit.host || "-")}</span>
@@ -446,6 +453,7 @@ async function adoptUnitHosts(host, inputToClear=null){
 async function scanNetwork(){
   if (discoveryBusy || managerAdopted) return;
   discoveryBusy = true;
+  selectedDiscoveryUnits.clear();
   const button = document.getElementById("scanUnits");
   button.disabled = true;
   button.textContent = "Scanning...";
@@ -492,7 +500,14 @@ document.getElementById("toggleManualAdd").addEventListener("click", () => {
 });
 
 document.getElementById("discoveryResults").addEventListener("change", (event) => {
-  if (event.target.matches("[data-discovery-select]")) updateAdoptSelectedButton();
+  if (event.target.matches("[data-discovery-select]")) {
+    const key = String(event.target.dataset.discoveryKey || "");
+    if (key) {
+      if (event.target.checked) selectedDiscoveryUnits.add(key);
+      else selectedDiscoveryUnits.delete(key);
+    }
+    updateAdoptSelectedButton();
+  }
 });
 
 document.getElementById("adoptSelected").addEventListener("click", async () => {

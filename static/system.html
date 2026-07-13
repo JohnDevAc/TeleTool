@@ -138,8 +138,9 @@
 <script src="/static/common.js"></script>
 <script>
 let updatePollTimer = null;
-let updateReturnTimer = null;
-let updateReturnStarted = false;
+let updateCompletionTimer = null;
+let updateStartedHere = false;
+let updateCompletionShown = false;
 let packageManagedInstall = false;
 
 function netFieldFocused(){
@@ -191,7 +192,8 @@ function renderUpdateStatus(st){
   const running = !!(st && st.running);
   const done = !!(st && st.done);
   const error = st && st.error ? String(st.error) : "";
-  const show = running || done || error;
+  const showTerminalState = updateStartedHere && (done || !!error);
+  const show = running || showTerminalState;
 
   wrap.classList.toggle("hidden", !show);
   const percent = Math.max(0, Math.min(100, Number((st && st.percent) || 0)));
@@ -200,41 +202,28 @@ function renderUpdateStatus(st){
   if (btn) btn.disabled = running;
   if (branchSelect) branchSelect.disabled = running;
 
-  if (error) toastId("toastPower", "Update failed: " + error, true, 7000);
+  if (error && updateStartedHere) toastId("toastPower", "Update failed: " + error, true, 7000);
   else if (running) toastId(
     "toastPower",
     packageManagedInstall ?
       ("Installing the signed TeleTool " + updateBranchLabel(st && st.branch) + " channel...") :
       ("Updating from " + updateBranchLabel(st && st.branch) + " branch...")
   );
-  else if (done){
-    toastId("toastPower", "Update complete. Restarting program.", false, 5000);
-    scheduleReturnToMainUi();
+  else if (done && updateStartedHere){
+    if (!updateCompletionShown) {
+      updateCompletionShown = true;
+      toastId("toastPower", "Update complete. Program restarted.", false, 5000);
+    }
+    if (updateCompletionTimer) clearTimeout(updateCompletionTimer);
+    updateCompletionTimer = setTimeout(() => {
+      updateStartedHere = false;
+      renderUpdateStatus(null);
+    }, 5000);
   }
 }
 
 function updateBranchLabel(branch){
   return String(branch || "main").toLowerCase() === "dev" ? "Dev" : "Main";
-}
-
-async function returnToMainUiWhenReady(){
-  try{
-    const r = await fetch("/", { cache: "no-store" });
-    if (r.ok){
-      window.location.replace("/");
-      return;
-    }
-  }catch(e){
-    // Service may still be restarting; try again shortly.
-  }
-  updateReturnTimer = setTimeout(returnToMainUiWhenReady, 1500);
-}
-
-function scheduleReturnToMainUi(){
-  if (updateReturnStarted) return;
-  updateReturnStarted = true;
-  if (updateReturnTimer) clearTimeout(updateReturnTimer);
-  updateReturnTimer = setTimeout(returnToMainUiWhenReady, 4500);
 }
 
 function scheduleUpdatePoll(delayMs=1000){
@@ -443,6 +432,9 @@ document.getElementById("updateFromServer").addEventListener("click", async () =
   if (!ok) return;
   const btn = document.getElementById("updateFromServer");
   btn.disabled = true;
+  updateStartedHere = true;
+  updateCompletionShown = false;
+  if (updateCompletionTimer) clearTimeout(updateCompletionTimer);
   renderUpdateStatus({ running: true, done: false, percent: 1, step: "Starting update", branch });
   try{
     await jpost("/api/system/update_from_server", { confirm: true, branch });

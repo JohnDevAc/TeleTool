@@ -151,10 +151,6 @@ function renderDiscoveredUnits(){
     const selectionKey = discoverySelectionKey(unit);
     const checked = unit.selectable && selectedDiscoveryUnits.has(selectionKey) ? " checked" : "";
     const version = unit.version ? `${unit.version}${unit.release_branch ? ` ${unit.release_branch}` : ""}` : "Version unavailable";
-    const primaryUrl = unit.manager_url || (unit.state === "primary" && unit.base_url ? `${String(unit.base_url).replace(/\/$/, "")}/manager` : "");
-    const managerLink = primaryUrl
-      ? `<a class="inlineLink" href="${escapeHtml(primaryUrl)}" target="_blank" rel="noopener">Open primary</a>`
-      : "";
     return `
       <label class="managerDiscoveryUnit ${unit.selectable ? "isSelectable" : ""}">
         <input type="checkbox" data-discovery-select data-discovery-key="${escapeHtml(selectionKey)}" value="${escapeHtml(unit.address || unit.host || "")}"${checked}${disabled} />
@@ -165,7 +161,6 @@ function renderDiscoveredUnits(){
         </span>
         <span class="managerDiscoveryState">
           <span class="${badgeClass(discoveryStateKind(unit))}">${escapeHtml(unit.state_label || "Unavailable")}</span>
-          ${managerLink}
         </span>
       </label>
     `;

@@ -86,6 +86,7 @@ install -d \
   "$control_root" \
   "$app_root/bin" \
   "$app_root/static" \
+  "$package_root/etc/avahi/services" \
   "$package_root/etc/sudoers.d" \
   "$package_root/lib/systemd/system" \
   "$package_root/usr/lib/$multiarch/gstreamer-1.0" \
@@ -128,6 +129,8 @@ done
 
 install -m 0644 "$PROJECT_DIR/packaging/debian/teletool.service" \
   "$package_root/lib/systemd/system/teletool.service"
+install -m 0644 "$PROJECT_DIR/packaging/debian/teletool-avahi.service" \
+  "$package_root/etc/avahi/services/teletool.service"
 install -m 0644 "$PROJECT_DIR/packaging/debian/teletool-update@.service" \
   "$package_root/lib/systemd/system/teletool-update@.service"
 install -m 0440 "$PROJECT_DIR/packaging/debian/teletool.sudoers" \

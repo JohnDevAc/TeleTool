@@ -118,7 +118,7 @@ Common keys include:
 ```json
 {
   "tvh_stream_profile": "pass",
-  "tvh_dvbt_scanfile": "teletool/uk-auto-dvbt-dvbt2",
+  "tvh_dvbt_scanfile": "",
   "ndi_default_name": "TeleTool",
   "ndi_delay_ms": 500,
   "ndi_deinterlace": false,
@@ -126,6 +126,10 @@ Common keys include:
   "lineout_volume": 0.8
 }
 ```
+
+An empty `tvh_dvbt_scanfile` selects Tvheadend's Generic Auto Default entry.
+After TV setup completes, TeleTool stores the exact scanfile key returned by the
+installed Tvheadend version.
 
 ## System
 
@@ -176,6 +180,8 @@ Update example:
 | --- | --- | --- |
 | `GET` | `/api/manager/status` | Combined status for the primary and managed units. |
 | `GET` | `/api/manager/units` | List managed units. |
+| `GET` | `/api/manager/discovery` | Return this unit's read-only discovery identity and adoption/primary state. |
+| `POST` | `/api/manager/discovery/scan` | Discover and classify TeleTools on the local network without adopting them. |
 | `POST` | `/api/manager/units` | Add one or more units by host/IP. |
 | `DELETE` | `/api/manager/units/{unit_id}` | Remove a managed unit. |
 | `POST` | `/api/manager/units/{unit_id}/start` | Start NDI on a managed unit using its last/default request. |
@@ -184,6 +190,12 @@ Update example:
 | `POST` | `/api/manager/adoption/heartbeat` | Manager adoption lease heartbeat. |
 | `POST` | `/api/manager/adoption/release` | Release manager adoption lease. |
 | `POST` | `/api/manager/snapshot` | Return status, release, hostname, config, and adoption state in one Fleet Manager request. |
+
+Network discovery uses the `_teletool._tcp` mDNS service and a bounded local
+IPv4 scan for compatibility with older units. Results indicate whether each
+unit is available, already listed, adopted by another primary, or is itself a
+primary managing other units. Adoption happens only after a user selects a
+result and posts it to `/api/manager/units`.
 
 Add units:
 

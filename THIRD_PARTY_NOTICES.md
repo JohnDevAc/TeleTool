@@ -34,7 +34,7 @@ project and is not affiliated with or endorsed by Vizrt NDI AB.
 ## Separately installed dependencies
 
 TeleTool uses FastAPI, Uvicorn, Pydantic, Requests, urllib3, PyGObject,
-GStreamer, Tvheadend, FFmpeg-related GStreamer components, ALSA, and other
+GStreamer, Tvheadend, Avahi, FFmpeg-related GStreamer components, ALSA, and other
 packages supplied separately by Python or Raspberry Pi OS/Debian. Those
 packages retain their own copyright and licence terms; their installed package
 documentation contains the corresponding notices.

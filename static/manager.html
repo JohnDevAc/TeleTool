@@ -30,19 +30,36 @@
   <div class="grid managerGrid">
     <div class="card managerControls">
       <div class="managerPanelHead">
-        <h2>Units</h2>
-      </div>
-      <form id="addUnitForm" class="row">
-        <div class="field">
-          <label for="unitHost">IP addresses or hostnames</label>
-          <input id="unitHost" placeholder="192.168.1.50, teletool-2.local" autocomplete="off" spellcheck="false" required />
+        <div>
+          <h2>Discover TeleTools</h2>
+          <div class="small">Scan the local network, then select available units to adopt.</div>
         </div>
-        <div class="actions managerControlActions">
-          <button id="addUnit" class="primary" type="submit">Add Unit</button>
-          <button id="refreshUnits" class="miniBtn" type="button">Refresh</button>
+        <div class="actions managerScanActions">
+          <button id="scanUnits" class="primary" type="button">Scan Network</button>
+          <button id="toggleManualAdd" class="miniBtn" type="button" aria-expanded="false" aria-controls="manualAddPanel">Add Manually</button>
           <span id="toast" class="toast"></span>
         </div>
-      </form>
+      </div>
+
+      <div id="discoveryPanel" class="managerDiscovery hidden" aria-live="polite">
+        <div class="managerDiscoveryHead">
+          <div id="discoverySummary" class="small"></div>
+          <button id="adoptSelected" class="primary" type="button" disabled>Adopt Selected</button>
+        </div>
+        <div id="discoveryResults" class="managerDiscoveryResults"></div>
+      </div>
+
+      <div id="manualAddPanel" class="managerManualAdd hidden">
+        <form id="addUnitForm" class="row managerManualForm">
+          <div class="field">
+            <label for="unitHost">IP addresses or hostnames</label>
+            <input id="unitHost" placeholder="192.168.1.50, teletool-2.local" autocomplete="off" spellcheck="false" required />
+          </div>
+          <div class="actions managerControlActions">
+            <button id="addUnit" class="primary" type="submit">Add Unit</button>
+          </div>
+        </form>
+      </div>
     </div>
 
     <div id="adoptedNotice" class="card managerAdopted hidden">
@@ -69,6 +86,9 @@ let pollTimer = null;
 let refreshBusy = false;
 let managerAdopted = false;
 let latestUnits = [];
+let discoveredUnits = [];
+let discoveryHasRun = false;
+let discoveryBusy = false;
 const MANAGER_POLL_MS = 3000;
 
 function escapeHtml(value){
@@ -88,6 +108,62 @@ function textOrDash(value){
 
 function badgeClass(kind){
   return kind ? "badge " + kind : "badge";
+}
+
+function discoveryStateKind(unit){
+  if (unit.selectable) return "good";
+  if (unit.state === "listed" || unit.state === "self") return "";
+  return "warn";
+}
+
+function updateAdoptSelectedButton(){
+  const button = document.getElementById("adoptSelected");
+  if (!button) return;
+  const selected = document.querySelectorAll("[data-discovery-select]:checked").length;
+  button.disabled = managerAdopted || discoveryBusy || selected === 0;
+  button.textContent = selected > 0 ? `Adopt Selected (${selected})` : "Adopt Selected";
+}
+
+function renderDiscoveredUnits(){
+  const panel = document.getElementById("discoveryPanel");
+  const summary = document.getElementById("discoverySummary");
+  const results = document.getElementById("discoveryResults");
+  panel.classList.toggle("hidden", !discoveryHasRun);
+  if (!discoveryHasRun) return;
+
+  const available = discoveredUnits.filter(unit => unit.selectable).length;
+  summary.textContent = discoveredUnits.length
+    ? `Found ${discoveredUnits.length} TeleTool${discoveredUnits.length === 1 ? "" : "s"}; ${available} available for adoption.`
+    : "No TeleTools were found on this local network.";
+  if (!discoveredUnits.length){
+    results.innerHTML = `<div class="managerDiscoveryEmpty small">Try scanning again, or use “Add manually” for another subnet or VLAN.</div>`;
+    updateAdoptSelectedButton();
+    return;
+  }
+
+  results.innerHTML = discoveredUnits.map(unit => {
+    const disabled = unit.selectable && !managerAdopted ? "" : " disabled";
+    const version = unit.version ? `${unit.version}${unit.release_branch ? ` ${unit.release_branch}` : ""}` : "Version unavailable";
+    const primaryUrl = unit.manager_url || (unit.state === "primary" && unit.base_url ? `${String(unit.base_url).replace(/\/$/, "")}/manager` : "");
+    const managerLink = primaryUrl
+      ? `<a class="inlineLink" href="${escapeHtml(primaryUrl)}" target="_blank" rel="noopener">Open primary</a>`
+      : "";
+    return `
+      <label class="managerDiscoveryUnit ${unit.selectable ? "isSelectable" : ""}">
+        <input type="checkbox" data-discovery-select value="${escapeHtml(unit.address || unit.host || "")}"${disabled} />
+        <span class="managerDiscoveryIdentity">
+          <span class="managerDiscoveryName">${escapeHtml(unit.hostname || unit.host || "TeleTool")}</span>
+          <span class="small mono">${escapeHtml(unit.address || unit.host || "-")}</span>
+          <span class="small">${escapeHtml(version)} · ${escapeHtml(unit.source || "Discovery")}</span>
+        </span>
+        <span class="managerDiscoveryState">
+          <span class="${badgeClass(discoveryStateKind(unit))}">${escapeHtml(unit.state_label || "Unavailable")}</span>
+          ${managerLink}
+        </span>
+      </label>
+    `;
+  }).join("");
+  updateAdoptSelectedButton();
 }
 
 function setManagerHealth(ok){
@@ -111,21 +187,11 @@ function statusLine(unit){
 
 function unitPillStatus(unit){
   if (!unit || !unit.online) {
-    return { kind:"bad", text:"Offline", title:statusLine(unit || {}) || "Unit is unreachable" };
+    return { kind:"bad", text:"N/A", title:statusLine(unit || {}) || "Unit is unreachable" };
   }
   const rfKind = rfSignalKind(unit.rf);
   const rfLabel = rfSignalLabel(unit.rf);
-  const running = !!unit.stream_running;
-  if (running && rfKind === "bad") {
-    return { kind:"bad", text:`Running | RF ${rfLabel}`, title:rfSignalTitle(unit.rf) };
-  }
-  if (running && rfKind === "warn") {
-    return { kind:"warn", text:`Running | RF ${rfLabel}`, title:rfSignalTitle(unit.rf) };
-  }
-  if (!running) {
-    return { kind:"warn", text:`Stopped | RF ${rfLabel}`, title:statusLine(unit) || rfSignalTitle(unit.rf) };
-  }
-  return { kind:"good", text:`Running | RF ${rfLabel}`, title:rfSignalTitle(unit.rf) };
+  return { kind:rfKind, text:rfLabel, title:rfSignalTitle(unit.rf) };
 }
 
 function renderFleetPills(units){
@@ -202,7 +268,7 @@ function renderUnit(unit){
       </div>
 
       <div class="unitBadges">
-        ${isSelf ? `<span class="badge">Primary</span>` : ""}
+        ${isSelf ? `<span class="badge">PRIMARY (local)</span>` : ""}
         <span class="${badgeClass(systemKind)}">${escapeHtml(systemText)}</span>
         <span class="${badgeClass(streamKind)}">${escapeHtml(streamText)}</span>
         <span class="badge rfValue" title="${escapeHtml(rfTitle)}"><span class="rfDot ${escapeHtml(rfKind)}" aria-hidden="true"></span><span>RF ${escapeHtml(rfLabel)}</span></span>
@@ -256,12 +322,20 @@ function setManagerAdoption(adoption){
   const link = document.getElementById("adoptedManagerLink");
   const expiry = document.getElementById("adoptedExpiry");
   const addBtn = document.getElementById("addUnit");
-  const refreshBtn = document.getElementById("refreshUnits");
+  const scanBtn = document.getElementById("scanUnits");
+  const manualToggle = document.getElementById("toggleManualAdd");
   const hostInput = document.getElementById("unitHost");
+  const manualPanel = document.getElementById("manualAddPanel");
 
   if (addBtn) addBtn.disabled = managerAdopted;
-  if (refreshBtn) refreshBtn.disabled = managerAdopted;
+  if (scanBtn) scanBtn.disabled = managerAdopted || discoveryBusy;
+  if (manualToggle) manualToggle.disabled = managerAdopted;
   if (hostInput) hostInput.disabled = managerAdopted;
+  if (manualPanel && managerAdopted) manualPanel.classList.add("hidden");
+  if (manualToggle && managerAdopted) {
+    manualToggle.setAttribute("aria-expanded", "false");
+    manualToggle.textContent = "Add Manually";
+  }
 
   notice.classList.toggle("hidden", !managerAdopted);
   if (managerAdopted){
@@ -282,6 +356,7 @@ function setManagerAdoption(adoption){
     dot.classList.remove("ok", "bad");
     text.textContent = "ADOPTED";
   }
+  renderDiscoveredUnits();
   renderUnits(latestUnits);
 }
 
@@ -326,21 +401,21 @@ async function refreshUnits(){
   }
 }
 
-document.getElementById("addUnitForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
+async function adoptUnitHosts(host, inputToClear=null){
   await refreshAdoption();
   if (managerAdopted){
     toast("Management is disabled while this TeleTool is adopted.", "warn", 3500);
-    return;
+    return false;
   }
-  const input = document.getElementById("unitHost");
-  const host = input.value.trim();
   if (!host){
     toast("Enter an IP address or hostname.", "warn");
-    return;
+    return false;
   }
-  const hostCount = host.split(",").map(item => item.trim()).filter(Boolean).length || 1;
-  document.getElementById("addUnit").disabled = true;
+  const hostCount = host.split(/[,\n]+/).map(item => item.trim()).filter(Boolean).length || 1;
+  const addButton = document.getElementById("addUnit");
+  const adoptButton = document.getElementById("adoptSelected");
+  addButton.disabled = true;
+  adoptButton.disabled = true;
   toast(hostCount > 1 ? `Validating ${hostCount} units...` : "Validating unit...");
   try{
     const data = await jpost("/api/manager/units", { host });
@@ -349,25 +424,84 @@ document.getElementById("addUnitForm").addEventListener("submit", async (event) 
     const failed = Number(data.failed_count ?? results.filter(item => !item.ok).length);
     const failures = results.filter(item => !item.ok);
     const firstFailure = failures.length ? `${failures[0].input || "Unit"}: ${failures[0].error || "could not be added"}` : "";
-    if (added > 0) input.value = "";
+    if (added > 0 && inputToClear) inputToClear.value = "";
     if (added > 0 && failed > 0) {
       toast(`${added} added, ${failed} failed.${firstFailure ? " " + firstFailure : ""}`, "warn", 6500);
     } else if (added > 0) {
-      toast(added === 1 ? "Unit added." : `${added} units added.`, "good");
+      toast(added === 1 ? "Unit adopted." : `${added} units adopted.`, "good");
     } else {
       toast(firstFailure ? `No units added. ${firstFailure}` : "No units added.", "bad", 5500);
     }
     await refreshUnits();
+    return added > 0;
   }catch(e){
-    toast("Add failed: " + String(e.message || e), "bad", 4500);
+    toast("Adoption failed: " + String(e.message || e), "bad", 4500);
+    return false;
   }finally{
-    document.getElementById("addUnit").disabled = false;
+    addButton.disabled = managerAdopted;
+    updateAdoptSelectedButton();
+  }
+}
+
+async function scanNetwork(){
+  if (discoveryBusy || managerAdopted) return;
+  discoveryBusy = true;
+  const button = document.getElementById("scanUnits");
+  button.disabled = true;
+  button.textContent = "Scanning...";
+  try{
+    const data = await jpost("/api/manager/discovery/scan", {});
+    discoveredUnits = Array.isArray(data.units) ? data.units : [];
+    discoveryHasRun = true;
+    renderDiscoveredUnits();
+    toast("");
+  }catch(e){
+    discoveryHasRun = true;
+    discoveredUnits = [];
+    renderDiscoveredUnits();
+    toast("Network scan failed: " + String(e.message || e), "bad", 5000);
+  }finally{
+    discoveryBusy = false;
+    button.disabled = managerAdopted;
+    button.textContent = "Scan Network";
+    updateAdoptSelectedButton();
+  }
+}
+
+document.getElementById("addUnitForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = document.getElementById("unitHost");
+  const added = await adoptUnitHosts(input.value.trim(), input);
+  if (added) {
+    document.getElementById("manualAddPanel").classList.add("hidden");
+    const button = document.getElementById("toggleManualAdd");
+    button.setAttribute("aria-expanded", "false");
+    button.textContent = "Add Manually";
   }
 });
 
-document.getElementById("refreshUnits").addEventListener("click", async () => {
-  await refreshAdoption();
-  if (!managerAdopted) await refreshUnits();
+document.getElementById("scanUnits").addEventListener("click", scanNetwork);
+
+document.getElementById("toggleManualAdd").addEventListener("click", () => {
+  const panel = document.getElementById("manualAddPanel");
+  const button = document.getElementById("toggleManualAdd");
+  const opening = panel.classList.contains("hidden");
+  panel.classList.toggle("hidden", !opening);
+  button.setAttribute("aria-expanded", opening ? "true" : "false");
+  button.textContent = opening ? "Close Manual" : "Add Manually";
+});
+
+document.getElementById("discoveryResults").addEventListener("change", (event) => {
+  if (event.target.matches("[data-discovery-select]")) updateAdoptSelectedButton();
+});
+
+document.getElementById("adoptSelected").addEventListener("click", async () => {
+  const selected = Array.from(document.querySelectorAll("[data-discovery-select]:checked"))
+    .map(input => input.value)
+    .filter(Boolean);
+  if (!selected.length) return;
+  const adopted = await adoptUnitHosts(selected.join(","));
+  if (adopted) await scanNetwork();
 });
 
 document.getElementById("fleetPillStrip").addEventListener("click", (event) => {

@@ -929,11 +929,23 @@ def _preferred_dvbt_scanfile(regions: List[Dict[str, Any]], configured: str = ""
 
     def is_auto_default(value: Any) -> bool:
         normalized = norm(value)
-        return normalized == "auto-default" or normalized.endswith("-auto-default") or "auto-default" in normalized
+        return "auto-defaul" in normalized
 
     if configured and configured in valid:
-        if configured == TELETOOL_UK_AUTO_SCANFILE or not is_auto_default(configured):
-            return configured
+        return configured
+
+    # Tvheadend scanfile keys vary by release and can be truncated by its API
+    # (for example, dvb-t_auto-Defaul). Prefer the stable human-readable Generic
+    # label and use the key only as a fallback signal.
+    for region in regions:
+        key = str(region.get("key") or "").strip()
+        val = str(region.get("val") or "").strip()
+        val_norm = norm(val)
+        key_norm = norm(key)
+        if ("generic" in val_norm and is_auto_default(val)) or (
+            "dvb-t-auto" in key_norm and is_auto_default(key)
+        ):
+            return key
 
     if TELETOOL_UK_AUTO_SCANFILE in valid:
         return TELETOOL_UK_AUTO_SCANFILE
@@ -1078,6 +1090,14 @@ def _scan_mux_summary(muxes: List[Dict[str, Any]]) -> Dict[str, int]:
     }
 
 
+def _scan_setup_percent(summary: Dict[str, int], start: float = 20, end: float = 80) -> float:
+    total = max(0, summary.get("muxes", 0))
+    complete = max(0, min(total, summary.get("complete", 0)))
+    if total == 0:
+        return start
+    return round(start + ((end - start) * complete / total), 1)
+
+
 def _wait_for_scan(network_uuid: str, timeout_s: int = 600, stall_timeout_s: int = 120) -> Tuple[List[Dict[str, Any]], bool, Optional[str]]:
     deadline = time.time() + timeout_s
     stable = 0
@@ -1090,6 +1110,10 @@ def _wait_for_scan(network_uuid: str, timeout_s: int = 600, stall_timeout_s: int
         muxes = tvh.list_muxes_for_network(network_uuid)
         last_muxes = muxes
         summary = _scan_mux_summary(muxes)
+        scan_step = "Scanning muxes and discovering services…"
+        if summary["muxes"]:
+            scan_step += f" {summary['complete']}/{summary['muxes']} complete"
+        _tv_setup_set(percent=_scan_setup_percent(summary), step=scan_step)
         progress_key = _scan_progress_key(muxes)
         if progress_key != last_progress_key:
             _tv_setup_log(
@@ -1222,23 +1246,23 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
         channels = tvh.list_channels(force_refresh=True)
         _tv_setup_log(f"Found {len(channels)} existing channel(s).")
 
-        _tv_setup_set(percent=14, step="Deleting channels…")
+        _tv_setup_set(percent=7, step="Deleting channels…")
         tvh.delete_channels([c["uuid"] for c in channels if c.get("uuid")])
         time.sleep(1)
         channels_after = tvh.list_channels(force_refresh=True)
         _tv_setup_log(f"Channels remaining after delete: {len(channels_after)}")
 
-        _tv_setup_set(percent=28, step="Loading existing services…")
+        _tv_setup_set(percent=10, step="Loading existing services…")
         services = tvh.list_services(hidemode="none")
         _tv_setup_log(f"Found {len(services)} existing service(s).")
 
-        _tv_setup_set(percent=40, step="Deleting services…")
+        _tv_setup_set(percent=13, step="Deleting services…")
         tvh.delete_services([s["uuid"] for s in services if s.get("uuid")])
         time.sleep(1)
         services_after = tvh.list_services(hidemode="none")
         _tv_setup_log(f"Services remaining after delete: {len(services_after)}")
 
-        _tv_setup_set(percent=50, step="Resolving DVB-T network…")
+        _tv_setup_set(percent=16, step="Resolving DVB-T network…")
         network = _resolve_dvbt_network()
         network_uuid = str(network.get("uuid") or "")
         network_name = str(network.get("name") or network_uuid)
@@ -1247,7 +1271,7 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
         _tv_setup_log(f"Using DVB-T network: {network_name} ({network_uuid})")
 
         if scanfile_key:
-            _tv_setup_set(percent=55, step="Applying selected predefined muxes…")
+            _tv_setup_set(percent=18, step="Applying selected predefined muxes…")
             mux_result = tvh.replace_muxes_from_scanfile(network_uuid, scanfile_key)
             _tv_setup_log(
                 f"Applied predefined muxes: deleted {mux_result.get('deleted', 0)} existing mux(es), "
@@ -1259,11 +1283,11 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
         else:
             _tv_setup_log("No predefined mux region selected; scanning the existing mux list.")
 
-        _tv_setup_set(percent=58, step="Starting DVB-T scan…")
+        _tv_setup_set(percent=19, step="Starting DVB-T scan…")
         tvh.scan_network(network_uuid)
         _tv_setup_log("Requested DVB-T network scan.")
 
-        _tv_setup_set(percent=68, step="Scanning muxes and discovering services…")
+        _tv_setup_set(percent=20, step="Scanning muxes and discovering services…")
         scan_timeout_s = _config_int("tvh_scan_timeout_s", 600, min_value=60, max_value=3600)
         scan_stall_s = _config_int("tvh_scan_stall_timeout_s", 120, min_value=30, max_value=900)
         muxes, scan_complete, scan_note = _wait_for_scan(network_uuid, timeout_s=scan_timeout_s, stall_timeout_s=scan_stall_s)
@@ -1667,6 +1691,12 @@ MANAGER_READ_TIMEOUT_S = 1.8
 MANAGER_CONTROL_READ_TIMEOUT_S = 12.0
 MANAGER_ADOPTION_TTL_S = 20.0
 MANAGER_HEARTBEAT_INTERVAL_S = 8.0
+MANAGER_DISCOVERY_SERVICE = "_teletool._tcp"
+MANAGER_DISCOVERY_PORT = 8000
+MANAGER_DISCOVERY_CONNECT_TIMEOUT_S = 0.25
+MANAGER_DISCOVERY_READ_TIMEOUT_S = 0.8
+MANAGER_DISCOVERY_MAX_HOSTS = 512
+MANAGER_DISCOVERY_WORKERS = 32
 MANAGER_ADOPTION_LOCK = threading.Lock()
 MANAGER_HEARTBEAT_LOCK = threading.Lock()
 MANAGER_HEARTBEAT_LAST: Dict[str, float] = {}
@@ -1889,6 +1919,248 @@ def _manager_local_interface_ips() -> set[str]:
     except Exception:
         pass
     return ips
+
+
+def _manager_local_ipv4_networks() -> List[ipaddress.IPv4Network]:
+    networks: List[ipaddress.IPv4Network] = []
+    try:
+        completed = subprocess.run(
+            ["ip", "-j", "-4", "address", "show", "up"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        rows = json.loads(completed.stdout or "[]") if completed.returncode == 0 else []
+    except Exception:
+        rows = []
+    for row in rows if isinstance(rows, list) else []:
+        if str(row.get("ifname") or "") == "lo":
+            continue
+        for info in row.get("addr_info") or []:
+            if info.get("family") != "inet":
+                continue
+            address = str(info.get("local") or "").strip()
+            try:
+                prefixlen = int(info.get("prefixlen"))
+                network = ipaddress.ip_network(f"{address}/{prefixlen}", strict=False)
+            except (TypeError, ValueError):
+                continue
+            if network not in networks:
+                networks.append(network)
+    if networks:
+        return networks
+
+    # Minimal fallback for systems without the ip command. Limit the fallback to
+    # the local /24 so discovery cannot accidentally probe a very large network.
+    for address in _manager_local_interface_ips():
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if isinstance(ip, ipaddress.IPv4Address) and not ip.is_loopback:
+            network = ipaddress.ip_network(f"{ip}/24", strict=False)
+            if network not in networks:
+                networks.append(network)
+    return networks
+
+
+def _manager_discovery_networks() -> List[ipaddress.IPv4Network]:
+    bounded: List[ipaddress.IPv4Network] = []
+    local_ips = {
+        ipaddress.ip_address(value)
+        for value in _manager_local_interface_ips()
+        if re.match(r"^[0-9.]+$", value)
+    }
+    for network in _manager_local_ipv4_networks():
+        if network.num_addresses <= MANAGER_DISCOVERY_MAX_HOSTS + 2:
+            bounded.append(network)
+            continue
+        local_ip = next((ip for ip in local_ips if ip in network), None)
+        if isinstance(local_ip, ipaddress.IPv4Address):
+            bounded.append(ipaddress.ip_network(f"{local_ip}/24", strict=False))
+    return list(dict.fromkeys(bounded))
+
+
+def _manager_mdns_discovery_candidates() -> List[Dict[str, Any]]:
+    try:
+        completed = subprocess.run(
+            ["avahi-browse", "--resolve", "--terminate", "--parsable", MANAGER_DISCOVERY_SERVICE],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+    except Exception:
+        return []
+    candidates: List[Dict[str, Any]] = []
+    for line in (completed.stdout or "").splitlines():
+        if not line.startswith("="):
+            continue
+        parts = line.split(";", 9)
+        if len(parts) < 9:
+            continue
+        hostname = parts[6].replace("\\032", " ").strip()
+        address = parts[7].strip()
+        try:
+            ip = ipaddress.ip_address(address)
+            port = int(parts[8])
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(ip, ipaddress.IPv4Address) or ip.is_loopback or port < 1 or port > 65535:
+            continue
+        candidates.append({
+            "host": address,
+            "hostname_hint": hostname,
+            "address": f"{address}:{port}",
+            "base_url": f"http://{address}:{port}",
+            "source": "mDNS",
+        })
+    return candidates
+
+
+def _manager_subnet_discovery_candidates() -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    remaining = MANAGER_DISCOVERY_MAX_HOSTS
+    for network in _manager_discovery_networks():
+        for ip in network.hosts():
+            if remaining <= 0:
+                return candidates
+            address = str(ip)
+            candidates.append({
+                "host": address,
+                "address": f"{address}:{MANAGER_DISCOVERY_PORT}",
+                "base_url": f"http://{address}:{MANAGER_DISCOVERY_PORT}",
+                "source": "Local scan",
+            })
+            remaining -= 1
+    return candidates
+
+
+def _manager_discovery_candidates() -> List[Dict[str, Any]]:
+    merged: Dict[str, Dict[str, Any]] = {}
+    for candidate in _manager_mdns_discovery_candidates() + _manager_subnet_discovery_candidates():
+        key = str(candidate.get("base_url") or "").rstrip("/").lower()
+        if not key:
+            continue
+        if key in merged:
+            sources = {part.strip() for part in str(merged[key].get("source") or "").split(",") if part.strip()}
+            sources.add(str(candidate.get("source") or "Discovery"))
+            merged[key]["source"] = ", ".join(sorted(sources))
+            if candidate.get("hostname_hint"):
+                merged[key]["hostname_hint"] = candidate["hostname_hint"]
+        else:
+            merged[key] = dict(candidate)
+    return list(merged.values())
+
+
+def _manager_discovery_get(base_url: str, path: str) -> requests.Response:
+    return requests.get(
+        base_url.rstrip("/") + path,
+        headers={"Accept": "application/json", "User-Agent": "TeleTool-Discovery/1"},
+        timeout=(MANAGER_DISCOVERY_CONNECT_TIMEOUT_S, MANAGER_DISCOVERY_READ_TIMEOUT_S),
+    )
+
+
+def _manager_probe_discovery_candidate(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    base_url = str(candidate.get("base_url") or "").rstrip("/")
+    try:
+        response = _manager_discovery_get(base_url, "/api/manager/discovery")
+        if response.status_code == 200:
+            identity = response.json()
+            if isinstance(identity, dict) and identity.get("service") == "teletool":
+                return {**candidate, "identity": identity}
+            return None
+        if response.status_code != 404:
+            return None
+    except (requests.RequestException, ValueError):
+        return None
+
+    # Compatibility probe for TeleTool versions released before the dedicated
+    # discovery endpoint. Only hosts which expose the existing TeleTool status
+    # shape are accepted.
+    try:
+        status_response = _manager_discovery_get(base_url, "/api/status?lite=1")
+        status_response.raise_for_status()
+        status = status_response.json()
+        if not isinstance(status, dict) or not any(key in status for key in ("running", "pipeline_state", "supervisor")):
+            return None
+
+        def optional_json(path: str) -> Dict[str, Any]:
+            try:
+                optional_response = _manager_discovery_get(base_url, path)
+                if optional_response.status_code != 200:
+                    return {}
+                value = optional_response.json()
+                return value if isinstance(value, dict) else {}
+            except (requests.RequestException, ValueError):
+                return {}
+
+        adoption = optional_json("/api/manager/adoption")
+        managed = optional_json("/api/manager/units").get("units") or []
+        hostname = optional_json("/api/system/hostname").get("hostname")
+        release = optional_json("/api/release")
+        return {
+            **candidate,
+            "identity": {
+                "service": "teletool",
+                "api_version": 0,
+                "hostname": hostname or candidate.get("hostname_hint") or candidate.get("host"),
+                "release": release,
+                "adoption": adoption,
+                "manager": {"primary": bool(managed), "managed_count": len(managed)},
+            },
+        }
+    except (requests.RequestException, ValueError):
+        return None
+
+
+def _manager_classify_discovery_candidate(
+    candidate: Dict[str, Any],
+    *,
+    is_self: bool,
+    already_listed: bool,
+    manager_id: str,
+) -> Dict[str, Any]:
+    identity = candidate.get("identity") if isinstance(candidate.get("identity"), dict) else {}
+    adoption = identity.get("adoption") if isinstance(identity.get("adoption"), dict) else {}
+    remote_manager = identity.get("manager") if isinstance(identity.get("manager"), dict) else {}
+    release = identity.get("release") if isinstance(identity.get("release"), dict) else {}
+    adopted = bool(adoption.get("adopted"))
+    adoption_manager_id = str(adoption.get("manager_id") or "")
+    managed_count = max(0, _coerce_int(remote_manager.get("managed_count")) or 0)
+
+    if is_self:
+        state, label, selectable = "self", "This unit", False
+    elif already_listed:
+        state, label, selectable = "listed", "Already in this fleet", False
+    elif adopted and adoption_manager_id != manager_id:
+        manager_name = adoption.get("manager_name") or adoption.get("manager_url") or "another primary"
+        state, label, selectable = "adopted_other", f"Adopted by {manager_name}", False
+    elif managed_count > 0:
+        suffix = "unit" if managed_count == 1 else "units"
+        state, label, selectable = "primary", f"Primary managing {managed_count} {suffix}", False
+    elif adopted and adoption_manager_id == manager_id:
+        state, label, selectable = "recoverable", "Adopted by this primary; restore to fleet", True
+    else:
+        state, label, selectable = "available", "Available", True
+
+    return {
+        "id": uuid.uuid5(uuid.NAMESPACE_URL, str(candidate.get("base_url") or "")).hex,
+        "host": candidate.get("host"),
+        "hostname": identity.get("hostname") or candidate.get("hostname_hint") or candidate.get("host"),
+        "address": candidate.get("address"),
+        "base_url": candidate.get("base_url"),
+        "source": candidate.get("source") or "Discovery",
+        "version": release.get("version"),
+        "release_branch": release.get("branch"),
+        "state": state,
+        "state_label": label,
+        "selectable": selectable,
+        "managed_count": managed_count,
+        "manager_name": adoption.get("manager_name"),
+        "manager_url": adoption.get("manager_url"),
+    }
 
 
 def _manager_target_is_self(target: Dict[str, Any], request: Request) -> bool:
@@ -2479,6 +2751,84 @@ class ManagerAdoptionReleaseReq(BaseModel):
 @app.get("/api/manager/units")
 def api_manager_units():
     return {"units": _manager_units_from_config()}
+
+
+@app.get("/api/manager/discovery")
+def api_manager_discovery_identity():
+    managed_count = len(_manager_units_from_config())
+    return {
+        "service": "teletool",
+        "api_version": 1,
+        "hostname": _get_persistent_hostname(),
+        "release": _release_info(),
+        "adoption": _manager_adoption_snapshot(),
+        "manager": {
+            "primary": managed_count > 0,
+            "managed_count": managed_count,
+        },
+    }
+
+
+def _manager_discovery_candidate_is_listed(candidate: Dict[str, Any], units: List[Dict[str, Any]]) -> bool:
+    candidate_url = str(candidate.get("base_url") or "").rstrip("/").lower()
+    if any(str(unit.get("base_url") or "").rstrip("/").lower() == candidate_url for unit in units):
+        return True
+    candidate_port = _coerce_int(urlparse(candidate_url).port) or MANAGER_DISCOVERY_PORT
+    candidate_ips = _manager_resolved_ips(candidate.get("host"))
+    for unit in units:
+        unit_port = _coerce_int(unit.get("port")) or MANAGER_DISCOVERY_PORT
+        if unit_port != candidate_port:
+            continue
+        if candidate_ips.intersection(_manager_resolved_ips(unit.get("host"))):
+            return True
+    return False
+
+
+@app.post("/api/manager/discovery/scan")
+def api_manager_discovery_scan(request: Request):
+    candidates = _manager_discovery_candidates()
+    discovered: List[Dict[str, Any]] = []
+    if candidates:
+        workers = min(MANAGER_DISCOVERY_WORKERS, len(candidates))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="teletool-discovery") as executor:
+            futures = [executor.submit(_manager_probe_discovery_candidate, candidate) for candidate in candidates]
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                except Exception:
+                    result = None
+                if result:
+                    discovered.append(result)
+
+    current_base_url = str(request.base_url).rstrip("/")
+    manager_id = _manager_identity(current_base_url + "/manager")["manager_id"]
+    units = _manager_units_from_config()
+    results: List[Dict[str, Any]] = []
+    for candidate in discovered:
+        try:
+            target = _normalise_manager_target(str(candidate.get("base_url") or ""))
+            is_self = _manager_target_is_self(target, request)
+        except ValueError:
+            continue
+        results.append(_manager_classify_discovery_candidate(
+            candidate,
+            is_self=is_self,
+            already_listed=_manager_discovery_candidate_is_listed(candidate, units),
+            manager_id=manager_id,
+        ))
+    state_order = {"available": 0, "recoverable": 1, "listed": 2, "adopted_other": 3, "primary": 4, "self": 5}
+    results.sort(key=lambda item: (
+        state_order.get(str(item.get("state") or ""), 99),
+        str(item.get("hostname") or item.get("address") or "").lower(),
+    ))
+    return {
+        "units": results,
+        "found_count": len(results),
+        "selectable_count": sum(1 for item in results if item.get("selectable")),
+        "candidate_count": len(candidates),
+        "networks": [str(network) for network in _manager_discovery_networks()],
+        "checked_at": int(time.time()),
+    }
 
 
 @app.get("/api/manager/adoption")

@@ -37,7 +37,8 @@ fi
 
 ldconfig
 systemctl daemon-reload 2>/dev/null || true
-systemctl enable --now avahi-daemon.service 2>/dev/null || true
+systemctl enable avahi-daemon.service 2>/dev/null || true
+systemctl restart avahi-daemon.service 2>/dev/null || true
 systemctl enable --now NetworkManager.service 2>/dev/null || true
 
 if [ -x /usr/lib/teletool/bin/configure-tvheadend ]; then

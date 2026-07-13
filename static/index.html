@@ -200,14 +200,21 @@ function preferredTvSetupRegion(options, selected){
   };
   const isAutoDefault = value => {
     const n = normalized(value);
-    return n === "auto-default" || n.endsWith("-auto-default") || n.includes("auto-default");
+    return n.includes("auto-defaul");
+  };
+  const isGenericAutoDefault = option => {
+    const value = normalized(option && option.value);
+    const label = normalized(option && option.textContent);
+    return (label.includes("generic") && label.includes("auto-defaul")) ||
+      (value.includes("dvb-t-auto") && value.includes("auto-defaul"));
   };
   const selectedText = normalized(selected);
   const selectedOption = options.find(o => o.value === selected || normalized(o.value) === selectedText || normalized(o.textContent) === selectedText);
-  if (selectedOption && selectedOption.value && !isAutoDefault(selectedOption.value) && !isAutoDefault(selectedOption.textContent)) return selectedOption.value;
+  if (selectedOption && selectedOption.value) return selectedOption.value;
+  const genericAutoDefault = options.find(isGenericAutoDefault);
+  if (genericAutoDefault) return genericAutoDefault.value;
   const teletoolUkAuto = options.find(o => isTeleToolUkAuto(o.value) || isTeleToolUkAuto(o.textContent));
   if (teletoolUkAuto) return teletoolUkAuto.value;
-  if (selectedOption && selectedOption.value) return selectedOption.value;
   const autoDefault = options.find(o => isAutoDefault(o.value) || isAutoDefault(o.textContent));
   return autoDefault ? autoDefault.value : "";
 }
@@ -267,7 +274,11 @@ async function loadTvSetupRegions(){
     for (const r of regions) {
       const opt = document.createElement("option");
       opt.value = r.key;
-      opt.textContent = r.val || r.key;
+      const regionLabel = r.val || r.key;
+      const normalizedLabel = String(regionLabel).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      opt.textContent = normalizedLabel.includes("generic") && normalizedLabel.includes("auto-defaul")
+        ? "Generic Auto Default"
+        : regionLabel;
       sel.appendChild(opt);
     }
     const options = Array.from(sel.options);

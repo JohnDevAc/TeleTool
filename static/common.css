@@ -578,6 +578,9 @@
   background: linear-gradient(90deg, rgba(122,162,255,.95), rgba(25,195,125,.90));
   transition: width .25s ease;
 }
+#tvSetupProgressBar{
+  transition: width 1.5s linear;
+}
 #tvSetupLog{
   margin-top:10px;
   max-height:220px;
@@ -725,6 +728,13 @@ input[type="range"]::-moz-range-thumb{
 .managerControls{
   padding-bottom:16px;
 }
+.managerWrap button,
+.managerWrap a.miniBtn{
+  min-height:34px;
+  padding:8px 10px;
+  border-radius:10px;
+  font-size:12px;
+}
 .managerPanelHead{
   display:flex;
   align-items:center;
@@ -738,6 +748,77 @@ input[type="range"]::-moz-range-thumb{
 .managerControlActions{
   align-self:flex-end;
 }
+.managerScanActions{
+  justify-content:flex-end;
+  margin-top:0;
+}
+.managerDiscovery{
+  margin-top:14px;
+  padding-top:14px;
+  border-top:1px solid var(--border);
+}
+.managerDiscoveryHead{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:10px;
+}
+.managerDiscoveryResults{
+  display:grid;
+  gap:8px;
+}
+.managerDiscoveryUnit{
+  display:grid;
+  grid-template-columns:auto minmax(0, 1fr) auto;
+  align-items:center;
+  gap:12px;
+  padding:11px 12px;
+  border:1px solid var(--border);
+  border-radius:12px;
+  background:rgba(255,255,255,.025);
+}
+.managerDiscoveryUnit.isSelectable{
+  cursor:pointer;
+  border-color:rgba(25,195,125,.25);
+  background:rgba(25,195,125,.05);
+}
+.managerDiscoveryUnit input{
+  width:18px;
+  height:18px;
+}
+.managerDiscoveryIdentity{
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+  min-width:0;
+}
+.managerDiscoveryName{
+  font-weight:750;
+  overflow-wrap:anywhere;
+}
+.managerDiscoveryState{
+  display:flex;
+  align-items:flex-end;
+  flex-direction:column;
+  gap:5px;
+  text-align:right;
+}
+.managerDiscoveryEmpty{
+  padding:12px;
+  border:1px dashed var(--border);
+  border-radius:12px;
+}
+.managerManualAdd{
+  margin-top:14px;
+  padding:12px;
+  border:1px solid var(--border);
+  border-radius:12px;
+  background:rgba(0,0,0,.16);
+}
+.managerManualForm{
+  margin-top:0;
+}
 .fleetPillStrip{
   display:flex;
   align-items:center;
@@ -749,10 +830,10 @@ input[type="range"]::-moz-range-thumb{
 .fleetUnitPill{
   display:inline-flex;
   align-items:center;
-  gap:8px;
-  max-width:320px;
-  min-height:38px;
-  padding:8px 12px;
+  gap:6px;
+  max-width:260px;
+  min-height:30px !important;
+  padding:5px 9px !important;
   border-radius:999px;
   border:1px solid var(--border);
   background:rgba(255,255,255,.05);
@@ -772,7 +853,8 @@ input[type="range"]::-moz-range-thumb{
   background:rgba(255,92,92,.10);
 }
 .fleetUnitName{
-  font-weight:750;
+  font-size:12px;
+  font-weight:700;
   min-width:0;
   overflow:hidden;
   text-overflow:ellipsis;
@@ -780,8 +862,13 @@ input[type="range"]::-moz-range-thumb{
 }
 .fleetUnitStatus{
   color:var(--muted);
-  font-size:12px;
+  font-size:11px;
   white-space:nowrap;
+}
+.fleetUnitPill .rfDot{
+  width:8px;
+  height:8px;
+  box-shadow:none;
 }
 .unitGrid{
   display:grid;
@@ -902,6 +989,22 @@ input[type="range"]::-moz-range-thumb{
   }
   .managerControlActions{
     align-self:stretch;
+  }
+  .managerScanActions{
+    width:100%;
+    justify-content:flex-start;
+  }
+  .managerDiscoveryHead{
+    align-items:stretch;
+    flex-direction:column;
+  }
+  .managerDiscoveryUnit{
+    grid-template-columns:auto minmax(0, 1fr);
+  }
+  .managerDiscoveryState{
+    grid-column:2;
+    align-items:flex-start;
+    text-align:left;
   }
   .managerPanelHead{
     align-items:flex-start;

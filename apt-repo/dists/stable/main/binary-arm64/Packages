@@ -1,13 +1,13 @@
 Package: teletool
-Version: 1.7.5
+Version: 1.7.8
 Architecture: arm64
 Maintainer: TeleTool Project <teletool@localhost>
-Depends: adduser, alsa-utils, avahi-daemon, binutils, dtv-scan-tables, file, gir1.2-gst-plugins-bad-1.0, gir1.2-gst-plugins-base-1.0, gir1.2-gstreamer-1.0, gstreamer1.0-alsa, gstreamer1.0-libav, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-tools, libc-bin, network-manager, python3, python3-fastapi (>= 0.100), python3-gi, python3-gi-cairo, python3-pydantic (>= 2), python3-requests, python3-urllib3 (>= 2), python3-uvicorn (>= 0.30), sudo, tvheadend
-Filename: pool/main/t/teletool/teletool_1.7.5_arm64.deb
-Size: 886074
-MD5sum: 462cf363231b0518245cd879887b8a64
-SHA1: 1d4c2aee10c8cf07ceddde6ec0cf5a80bf74a748
-SHA256: 37a1cae86f2e862ac56f243283385aa808c7d2f103ff3ed0823af1ea1e6300fd
+Depends: adduser, alsa-utils, avahi-daemon, avahi-utils, binutils, dtv-scan-tables, file, gir1.2-gst-plugins-bad-1.0, gir1.2-gst-plugins-base-1.0, gir1.2-gstreamer-1.0, gstreamer1.0-alsa, gstreamer1.0-libav, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-tools, libc-bin, network-manager, python3, python3-fastapi (>= 0.100), python3-gi, python3-gi-cairo, python3-pydantic (>= 2), python3-requests, python3-urllib3 (>= 2), python3-uvicorn (>= 0.30), sudo, tvheadend
+Filename: pool/main/t/teletool/teletool_1.7.8_arm64.deb
+Size: 891918
+MD5sum: ff2f224e47e792dc4c6a683d6ee42ef7
+SHA1: aa169d6b926630cd5fe2b3788c97ab93b9a865da
+SHA256: 85106ab599d142e093afaf3834eba66f94e4789bdcfbf88db4ea24fcaf025e81
 Section: video
 Priority: optional
 Homepage: https://github.com/JohnDevAc/TeleTool

@@ -108,7 +108,6 @@
 
       <div class="actions">
         <button id="applyNetwork" class="primary">Apply network settings</button>
-        <button id="refreshNet" class="miniBtn" type="button">Refresh</button>
         <span id="toastNet" class="toast"></span>
       </div>
     </div>
@@ -372,8 +371,6 @@ document.getElementById("mode").addEventListener("change", () => {
   el.addEventListener("input", () => lockNetworkFormFor(20000));
   el.addEventListener("focus", () => lockNetworkFormFor(20000));
 });
-
-document.getElementById("refreshNet").addEventListener("click", refreshAll);
 
 document.getElementById("applyNetwork").addEventListener("click", async () => {
   toastId("toastNet", "Applying…");

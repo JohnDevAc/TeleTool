@@ -60,7 +60,6 @@
         <h2 style="margin:0;">Live monitoring</h2>
         <div class="rightTop">
           <span id="alertBadge" class="badge" style="display:none;"></span>
-          <button id="refresh" class="miniBtn">Refresh</button>
         </div>
       </div>
 
@@ -263,7 +262,6 @@ function wireUI(){
   updateVolumeReadout();
   document.getElementById("volume").addEventListener("input", updateVolumeReadout);
 
-  document.getElementById("refresh").addEventListener("click", refreshStatus);
   document.getElementById("refreshDevices").addEventListener("click", async () => {
     await loadDevices();
     await refreshStatus();

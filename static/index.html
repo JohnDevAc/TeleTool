@@ -62,7 +62,6 @@
 
         <div class="actions">
           <button id="runTvSetup" class="primary">Run TV Setup</button>
-          <button id="refreshTvSetupRegions" class="miniBtn" type="button">Refresh regions</button>
           <span id="tvSetupInlineState" class="badge" style="display:none;"></span>
         </div>
 
@@ -81,7 +80,6 @@
         <h2 style="margin:0;">Live monitoring</h2>
         <div class="rightTop">
           <span id="alertBadge" class="badge" style="display:none;"></span>
-          <button id="refresh" class="miniBtn" type="button">Refresh</button>
         </div>
       </div>
 
@@ -133,14 +131,12 @@ function updateNdiControls(){
 function updateTvSetupControls(){
   const regionSel = document.getElementById("tvSetupRegion");
   const runBtn = document.getElementById("runTvSetup");
-  const refreshBtn = document.getElementById("refreshTvSetupRegions");
 
   const disabledByNdi = !!ndiStreamRunning;
   const disabledBySetup = !!tvSetupRunning;
   const disabledByLoading = !!tvSetupRegionsLoading;
 
   if (regionSel) regionSel.disabled = disabledByNdi || disabledBySetup || disabledByLoading;
-  if (refreshBtn) refreshBtn.disabled = disabledByNdi || disabledBySetup || disabledByLoading;
   if (runBtn) runBtn.disabled = disabledByNdi || disabledBySetup || disabledByLoading || !(regionSel && regionSel.value);
 }
 
@@ -376,16 +372,6 @@ document.getElementById("runTvSetup").addEventListener("click", async () => {
   }
 });
 
-document.getElementById("refreshTvSetupRegions").addEventListener("click", async () => {
-  if (ndiStreamRunning) {
-    toast("Stop the NDI stream before refreshing TV setup regions.", "warn", 4000);
-    await refreshStatus();
-    return;
-  }
-  await loadTvSetupRegions();
-  toast("TV regions refreshed.", "good", 2500);
-});
-
 async function loadChannels(forceRefresh=false) {
   const url = forceRefresh ? "/api/channels?force_refresh=1" : "/api/channels";
   const data = await jget(url);
@@ -546,9 +532,6 @@ document.getElementById("stop").addEventListener("click", async () => {
   }
   await refreshStatus();
 });
-
-const refreshBtn = document.getElementById("refresh");
-if (refreshBtn) refreshBtn.addEventListener("click", refreshStatus);
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {

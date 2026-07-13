@@ -35,6 +35,7 @@
         <div class="field">
           <label for="device">Audio output</label>
           <select id="device"></select>
+          <div id="deviceHelp" class="small"></div>
         </div>
 
         <div class="field">
@@ -174,6 +175,20 @@ function selectedDeviceLabel(id){
   return found ? found.label : (id || "-");
 }
 
+function updateDeviceHelp(){
+  const id = document.getElementById("device")?.value || "";
+  const help = document.getElementById("deviceHelp");
+  if (!help) return;
+  const found = devices.find(d => d.id === id);
+  if (!found){
+    help.textContent = "";
+    return;
+  }
+  help.textContent = found.experimental
+    ? "Experimental reverse-engineered network output. Requires Inferno and PTP clock services on this unit."
+    : (found.details || "");
+}
+
 async function loadDevices(){
   const sel = document.getElementById("device");
   const previous = sel.value;
@@ -184,7 +199,7 @@ async function loadDevices(){
     if (!devices.length){
       const opt = document.createElement("option");
       opt.value = "";
-      opt.textContent = "No HW analogue or Dante AVIO USB output detected";
+      opt.textContent = "No local, Dante AVIO USB, or Inferno output detected";
       sel.appendChild(opt);
       if (Number.isFinite(Number(data.volume))) setVolumeSliderFromScalar(data.volume);
       return;
@@ -199,10 +214,11 @@ async function loadDevices(){
     if (wanted && Array.from(sel.options).some(o => o.value === wanted)) sel.value = wanted;
     else if (data.selected && Array.from(sel.options).some(o => o.value === data.selected)) sel.value = data.selected;
     if (Number.isFinite(Number(data.volume))) setVolumeSliderFromScalar(data.volume);
+    updateDeviceHelp();
   }catch(e){
     const opt = document.createElement("option");
     opt.value = "";
-    opt.textContent = "Could not detect HW analogue or Dante AVIO USB outputs";
+    opt.textContent = "Could not detect local, Dante AVIO USB, or Inferno outputs";
     sel.appendChild(opt);
     toast("Audio device detection failed: " + String(e.message || e), "bad", 5000);
   }
@@ -261,6 +277,7 @@ async function refreshStatus(){
 function wireUI(){
   updateVolumeReadout();
   document.getElementById("volume").addEventListener("input", updateVolumeReadout);
+  document.getElementById("device").addEventListener("change", updateDeviceHelp);
 
   document.getElementById("refreshDevices").addEventListener("click", async () => {
     await loadDevices();

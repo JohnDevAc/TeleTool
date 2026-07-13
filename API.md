@@ -65,7 +65,7 @@ non-NDI files.
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/audio/devices` | List suitable local output devices. |
+| `GET` | `/api/audio/devices` | List suitable local outputs and an installed Inferno ALSA network output (experimental). |
 | `GET` | `/api/audio/defaults` | Current default audio device and volume. |
 | `GET` | `/api/audio/status?logs=1` | Local audio output status. |
 | `POST` | `/api/audio/start` | Start line output from the active NDI pipeline. |

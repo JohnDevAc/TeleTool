@@ -205,12 +205,12 @@ class GstNDIBridge(GstPipelineBase):
             return "pulsesink"
         return "fakesink"
 
-    @classmethod
-    def audio_output_devices(cls) -> List[Dict[str, Any]]:
-        """Detect the supported local outputs for line-level audio."""
-        sink_factory = cls._select_lineout_sink_factory()
+    def audio_output_devices(self) -> List[Dict[str, Any]]:
+        """Detect supported local outputs and the optional Inferno ALSA PCM."""
+        sink_factory = self._select_lineout_sink_factory()
         devices: List[Dict[str, Any]] = []
         seen = set()
+        inferno_device = str(self._cfg.get("inferno_alsa_device", "teletool_inferno") or "").strip()
 
         def add(device_id: str, label: str, *, device: Optional[str], sink: str, kind: str, details: str = "") -> None:
             if device_id in seen:
@@ -224,6 +224,9 @@ class GstNDIBridge(GstPipelineBase):
                     "device": device,
                     "kind": kind,
                     "details": details,
+                    "experimental": kind == "inferno",
+                    "network_output": kind == "inferno",
+                    "sample_format": "S32LE" if kind == "inferno" else None,
                 }
             )
 
@@ -232,6 +235,8 @@ class GstNDIBridge(GstPipelineBase):
 
         def classify(text: str) -> Optional[str]:
             haystack = text.lower()
+            if "inferno" in haystack:
+                return "inferno"
             if any(x in haystack for x in ("hdmi", "vc4hdmi", "vc4-hdmi", "displayport")):
                 return None
             if any(x in haystack for x in ("dante", "avio", "audinate")):
@@ -243,6 +248,8 @@ class GstNDIBridge(GstPipelineBase):
             return None
 
         def label_for(kind: str, card_name: str, dev_name: str) -> str:
+            if kind == "inferno":
+                return "Dante-compatible network output (Inferno, experimental)"
             if kind == "analog":
                 return "HW analogue 3.5mm jack"
             if kind == "avio":
@@ -253,7 +260,7 @@ class GstNDIBridge(GstPipelineBase):
         if sink_factory == "alsasink":
             aplay = shutil.which("aplay")
             if aplay:
-                res = cls._safe_run([aplay, "-l"], timeout_s=2.0)
+                res = self._safe_run([aplay, "-l"], timeout_s=2.0)
                 if res.get("ok"):
                     for line in str(res.get("stdout") or "").splitlines():
                         m = re.match(r"card\s+(\d+):\s+([^\[]+)\[([^\]]+)\],\s+device\s+(\d+):\s+([^\[]+)\[([^\]]+)\]", line.strip())
@@ -269,10 +276,9 @@ class GstNDIBridge(GstPipelineBase):
                         details = f"{clean(card_name)} - {clean(dev_name)} (ALSA card {card_idx}, device {dev_idx})"
                         add(f"alsa:{device}", label, device=device, sink="alsasink", kind=kind, details=details)
 
-                if not devices:
-                    res = cls._safe_run([aplay, "-L"], timeout_s=2.0)
-                else:
-                    res = {"ok": False}
+                # Named virtual PCMs such as Inferno are not included in
+                # `aplay -l`, so always inspect `aplay -L` as well.
+                res = self._safe_run([aplay, "-L"], timeout_s=2.0)
                 if res.get("ok"):
                     current: Optional[str] = None
                     desc: List[str] = []
@@ -283,13 +289,19 @@ class GstNDIBridge(GstPipelineBase):
                         name = current.strip()
                         if not name or name.startswith("null") or name == "default":
                             return
-                        if name.startswith(("sysdefault:", "plughw:", "front:")):
-                            detail = " ".join(x for x in desc if x).strip()
-                            kind = classify(f"{name} {detail}")
-                            if not kind:
-                                return
-                            label = label_for(kind, detail, name)
-                            add(f"alsa:{name}", label, device=name, sink="alsasink", kind=kind, details=detail or name)
+                        detail = " ".join(x for x in desc if x).strip()
+                        kind = classify(f"{name} {detail}")
+                        is_configured_inferno = bool(inferno_device and name == inferno_device)
+                        if is_configured_inferno:
+                            kind = "inferno"
+                        if not kind:
+                            return
+                        if kind != "inferno" and not name.startswith(("sysdefault:", "plughw:", "front:")):
+                            return
+                        label = label_for(kind, detail, name)
+                        if kind == "inferno" and not detail:
+                            detail = f"Experimental Inferno ALSA PCM ({name})"
+                        add(f"alsa:{name}", label, device=name, sink="alsasink", kind=kind, details=detail or name)
 
                     for raw in str(res.get("stdout") or "").splitlines():
                         if raw and not raw[0].isspace():
@@ -301,15 +313,14 @@ class GstNDIBridge(GstPipelineBase):
                     flush()
         devices.sort(
             key=lambda d: (
-                {"avio": 0, "usb": 0, "analog": 1}.get(str(d.get("kind") or ""), 9),
+                {"avio": 0, "usb": 0, "analog": 1, "inferno": 2}.get(str(d.get("kind") or ""), 9),
                 str(d.get("label") or d.get("id") or "").lower(),
             )
         )
         return devices
 
-    @classmethod
-    def _resolve_audio_output_device(cls, device_id: Optional[str]) -> Dict[str, Any]:
-        devices = cls.audio_output_devices()
+    def _resolve_audio_output_device(self, device_id: Optional[str]) -> Dict[str, Any]:
+        devices = self.audio_output_devices()
         wanted = str(device_id or "").strip()
         if not wanted:
             wanted = devices[0]["id"] if devices else ""
@@ -422,6 +433,7 @@ class GstNDIBridge(GstPipelineBase):
 
         selected = self._resolve_audio_output_device(device_id or self._cfg.get("lineout_default_device"))
         sink_factory = str(selected.get("sink") or "")
+        selected_kind = str(selected.get("kind") or "")
         if sink_factory == "fakesink":
             raise RuntimeError(selected.get("details") or "No usable audio output sink found")
 
@@ -448,17 +460,37 @@ class GstNDIBridge(GstPipelineBase):
                 raise RuntimeError(f"Selected device requires {sink_factory}, but pipeline was built with {actual_factory}")
 
             valve.set_property("drop", True)
+            device_changed = False
             if selected.get("device") and self._has_property(sink, "device"):
-                sink.set_property("device", selected["device"])
+                selected_device = str(selected["device"])
+                current_device = str(sink.get_property("device") or "")
+                if current_device != selected_device:
+                    # ALSA opens its PCM during state changes. Recycle only the
+                    # sink so a virtual PCM selected after the NDI pipeline was
+                    # built is actually opened, without restarting NDI.
+                    sink.set_state(Gst.State.NULL)
+                    sink.set_property("device", selected_device)
+                    device_changed = True
             if self._has_property(sink, "sync"):
                 sink.set_property("sync", sink_sync)
             if self._has_property(sink, "async"):
                 sink.set_property("async", False)
+            if selected_kind == "inferno":
+                if self._has_property(sink, "provide-clock"):
+                    sink.set_property("provide-clock", False)
+                if self._has_property(sink, "slave-method"):
+                    sink.set_property("slave-method", 0)  # resample to the NDI/pipeline clock
+                if self._has_property(sink, "buffer-time"):
+                    sink.set_property("buffer-time", max(21333, int(self._cfg.get("inferno_alsa_buffer_time_us", 85333))))
+                if self._has_property(sink, "latency-time"):
+                    sink.set_property("latency-time", max(1333, int(self._cfg.get("inferno_alsa_latency_time_us", 5333))))
+            if device_changed and not sink.sync_state_with_parent():
+                raise RuntimeError(f"Could not open selected ALSA output: {selected_device}")
             volume_el.set_property("volume", volume_i)
             valve.set_property("drop", False)
 
         try:
-            self._call_in_gst_context_sync(_apply, timeout_s=2.0)
+            self._call_in_gst_context_sync(_apply, timeout_s=8.0 if selected_kind == "inferno" else 2.0)
         except Exception as e:
             with self._lock:
                 self._lineout_last_error = str(e)
@@ -654,11 +686,13 @@ class GstNDIBridge(GstPipelineBase):
             lineout_pipeline_volume = 0.8
         lineout_pipeline_volume = max(0.0, min(1.0, lineout_pipeline_volume))
         lineout_default_device = ""
+        lineout_default_kind = ""
         if lineout_sink_factory == "alsasink":
             try:
                 default_lineout = self._resolve_audio_output_device(cfg.get("lineout_default_device"))
                 if default_lineout.get("sink") == "alsasink" and default_lineout.get("device"):
                     lineout_default_device = str(default_lineout["device"])
+                    lineout_default_kind = str(default_lineout.get("kind") or "")
                 else:
                     lineout_sink_factory = "fakesink"
             except Exception:
@@ -690,9 +724,17 @@ class GstNDIBridge(GstPipelineBase):
 
         def _audio_processing_chain(src_prefix: str) -> str:
             if lineout_sink_factory == "alsasink":
+                inferno_sink_props = ""
+                if lineout_default_kind == "inferno":
+                    inferno_buffer_time_us = max(21333, int(cfg.get("inferno_alsa_buffer_time_us", 85333)))
+                    inferno_latency_time_us = max(1333, int(cfg.get("inferno_alsa_latency_time_us", 5333)))
+                    inferno_sink_props = (
+                        f'provide-clock=false slave-method=resample '
+                        f'buffer-time={inferno_buffer_time_us} latency-time={inferno_latency_time_us} '
+                    )
                 lineout_sink = (
                     f'alsasink name=lineoutsink device={_gst_quote(lineout_default_device)} '
-                    f'async=false sync={"true" if lineout_sink_sync else "false"} '
+                    f'{inferno_sink_props}async=false sync={"true" if lineout_sink_sync else "false"} '
                 )
             elif lineout_sink_factory == "autoaudiosink":
                 lineout_sink = (
@@ -707,6 +749,12 @@ class GstNDIBridge(GstPipelineBase):
             else:
                 lineout_sink = 'fakesink name=lineoutsink async=false sync=false '
 
+            lineout_caps = (
+                f'audio/x-raw,format=S32LE,rate={rate_hz},channels={channels},layout=interleaved '
+                if lineout_default_kind == "inferno"
+                else f'audio/x-raw,rate={rate_hz},channels={channels},layout=interleaved '
+            )
+
             return (
                 # audio decode/convert → audiorate (perfect timestamps) → tee
                 # audiorate helps prevent timestamp jitter/discontinuities from becoming audible artifacts
@@ -720,7 +768,7 @@ class GstNDIBridge(GstPipelineBase):
                 f'atee. ! valve name=lineoutvalve drop=true '
                 f'! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time={lineout_queue_time_ns} '
                 f'! audioconvert ! audioresample '
-                f'! audio/x-raw,rate={rate_hz},channels={channels},layout=interleaved '
+                f'! {lineout_caps}'
                 f'! volume name=lineoutvolume volume={lineout_pipeline_volume:.3f} '
                 f'! {lineout_sink}'
             )

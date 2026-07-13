@@ -726,6 +726,8 @@ input[type="range"]::-moz-range-thumb{
   grid-template-columns:1fr;
 }
 .managerControls{
+  width:min(100%, 760px);
+  justify-self:center;
   padding-bottom:16px;
 }
 .managerWrap button,
@@ -740,7 +742,7 @@ input[type="range"]::-moz-range-thumb{
   align-items:center;
   justify-content:space-between;
   gap:12px;
-  margin-bottom:10px;
+  margin-bottom:0;
 }
 .managerPanelHead h2{
   margin-bottom:0;
@@ -749,6 +751,7 @@ input[type="range"]::-moz-range-thumb{
   align-self:flex-end;
 }
 .managerScanActions{
+  align-self:center;
   justify-content:flex-end;
   margin-top:0;
 }

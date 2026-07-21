@@ -8,8 +8,18 @@ On a Raspberry Pi 5 running 64-bit Raspberry Pi OS Lite:
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh
 ```
 
-The installer adds the signed TeleTool package repository, installs TeleTool
-and its dependencies, and displays the Web UI address when complete.
+The installer asks which branch to install. Press Enter for Main, or choose Dev
+when testing development builds.
+
+For unattended installs:
+
+```sh
+wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- main
+wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- dev
+```
+
+The installer adds the selected signed TeleTool package repository, installs
+TeleTool and its dependencies, and displays the Web UI address when complete.
 
 If prompted, download the Linux ARM64 NDI® SDK runtime from
 [ndi.video](https://ndi.video/), then upload `libndi.so.6` using the guided

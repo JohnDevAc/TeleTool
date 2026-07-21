@@ -36,6 +36,7 @@ Start NDI:
 {
   "channel_uuid": "17bd44180657823bdb1cdc7e27b71610",
   "ndi_name": "TeleTool",
+  "ndi_groups": "Public",
   "profile": "pass",
   "deinterlace": false,
   "buffer_extra_ms": 0,
@@ -120,6 +121,8 @@ Common keys include:
   "tvh_stream_profile": "pass",
   "tvh_dvbt_scanfile": "",
   "ndi_default_name": "TeleTool",
+  "ndi_groups": "Public",
+  "ndi_discovery_server": "192.168.1.20",
   "ndi_delay_ms": 500,
   "ndi_deinterlace": false,
   "ndi_stall_timeout_s": 15.0,
@@ -130,6 +133,8 @@ Common keys include:
 An empty `tvh_dvbt_scanfile` selects Tvheadend's Generic Auto Default entry.
 After TV setup completes, TeleTool stores the exact scanfile key returned by the
 installed Tvheadend version.
+`ndi_groups` and `ndi_discovery_server` accept comma-separated values; discovery
+server entries must be IP addresses, with optional `:port`.
 
 ## System
 

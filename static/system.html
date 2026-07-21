@@ -113,6 +113,22 @@
     </div>
 
     <div class="card">
+      <h2>NDI</h2>
+
+      <div class="row">
+        <div class="field">
+          <label for="ndiDiscoveryServer">Discovery Server IP</label>
+          <input id="ndiDiscoveryServer" placeholder="e.g. 192.168.1.20" inputmode="decimal" />
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="saveNdiSettings" class="primary">Save NDI settings</button>
+        <span id="toastNdi" class="toast"></span>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Hostname</h2>
 
       <div class="row">
@@ -346,8 +362,19 @@ async function refreshReleaseInfo(){
   }
 }
 
+async function refreshNdiSettings(){
+  const input = document.getElementById("ndiDiscoveryServer");
+  if (!input || document.activeElement === input) return;
+  try{
+    const cfg = await jget("/api/config/ui");
+    input.value = (cfg && cfg.ndi_discovery_server) ? String(cfg.ndi_discovery_server) : "";
+  } catch(e){
+    // Config refresh is non-critical; save will surface validation/API errors.
+  }
+}
+
 async function refreshAll(){
-  await Promise.all([refreshHostname(), refreshNetwork(), refreshReleaseInfo()]);
+  await Promise.all([refreshHostname(), refreshNetwork(), refreshReleaseInfo(), refreshNdiSettings()]);
 }
 
 document.getElementById("mode").addEventListener("change", () => {
@@ -404,6 +431,19 @@ document.getElementById("applyHostname").addEventListener("click", async () => {
     toastId("toastHost", "Hostname update failed: " + e, true);
   }
   setTimeout(refreshHostname, 800);
+});
+
+document.getElementById("saveNdiSettings").addEventListener("click", async () => {
+  const input = document.getElementById("ndiDiscoveryServer");
+  const discovery = input ? input.value.trim() : "";
+  toastId("toastNdi", "Saving...");
+  try{
+    const r = await jpost("/api/config/ui", { ndi_discovery_server: discovery });
+    if (input && r && r.config) input.value = r.config.ndi_discovery_server || "";
+    toastId("toastNdi", "NDI settings saved.");
+  } catch(e){
+    toastId("toastNdi", "NDI settings failed: " + e, true, 5000);
+  }
 });
 
 document.getElementById("restartProgram").addEventListener("click", async () => {

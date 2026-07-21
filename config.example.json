@@ -4,6 +4,8 @@
   "manager_units": [],
   "tvh_stream_profile": "pass",
   "ndi_default_name": "TeleTool",
+  "ndi_groups": "",
+  "ndi_discovery_server": "",
   "ndi_delay_ms": 500,
   "ndi_deinterlace": false,
   "ndi_buffer_extra_ms": 0,

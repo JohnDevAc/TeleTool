@@ -11,8 +11,10 @@ Group=teletool
 SupplementaryGroups=audio video
 WorkingDirectory=/usr/lib/teletool
 Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/var/lib/teletool
 Environment=TELETOOL_PACKAGE_MANAGED=1
 Environment=TELETOOL_CONFIG_PATH=/var/lib/teletool/config.json
+Environment=TELETOOL_NDI_CONFIG_PATH=/var/lib/teletool/.ndi/ndi-config.v1.json
 Environment=TELETOOL_RELEASE_MARKER_PATH=/usr/lib/teletool/.teletool_release.json
 Environment=TELETOOL_VERSION_PATH=/usr/lib/teletool/VERSION
 Environment=TELETOOL_NDI_LIB=/var/lib/teletool/libndi.so.6

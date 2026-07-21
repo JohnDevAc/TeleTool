@@ -41,6 +41,11 @@
           <label for="ndiname">NDI® source name</label>
           <input id="ndiname" placeholder="e.g. TeleTool 1" value="" />
         </div>
+
+        <div class="field">
+          <label for="ndigroups">NDI group names</label>
+          <input id="ndigroups" placeholder="e.g. Public, Studio" value="" />
+        </div>
       </div>
 
       <div class="actions">
@@ -118,7 +123,7 @@ let tvSetupRegionsLoading = false;
 
 function updateNdiControls(){
   const busyWithSetup = !!tvSetupRunning;
-  for (const id of ["channel","ndiname"]){
+  for (const id of ["channel","ndiname","ndigroups"]){
     const el = document.getElementById(id);
     if (el) el.disabled = !!ndiStreamRunning || busyWithSetup;
   }
@@ -159,6 +164,8 @@ function populateFormFromStatus(st){
   if (ch && st.channel_uuid) ch.value = st.channel_uuid;
   const n = document.getElementById("ndiname");
   if (n && st.ndi_name) n.value = st.ndi_name;
+  const g = document.getElementById("ndigroups");
+  if (g) g.value = st.ndi_groups || "";
 }
 
 function setAlertBadge(kind, text){
@@ -242,6 +249,10 @@ async function loadUiConfig(){
   const ndiInput = document.getElementById("ndiname");
   if (ndiInput && !ndiInput.value.trim()) {
     ndiInput.value = uiConfig.ndi_default_name || "TeleTool";
+  }
+  const groupInput = document.getElementById("ndigroups");
+  if (groupInput && !groupInput.value.trim()) {
+    groupInput.value = uiConfig.ndi_groups || "";
   }
 }
 
@@ -476,6 +487,7 @@ async function refreshRfStatus(){
 document.getElementById("start").addEventListener("click", async () => {
   const uuid = document.getElementById("channel").value;
   const ndi = document.getElementById("ndiname").value.trim();
+  const groups = document.getElementById("ndigroups").value.trim();
   if (!ndi){
     toast("Please enter an NDI name.", "bad");
     return;
@@ -496,6 +508,7 @@ document.getElementById("start").addEventListener("click", async () => {
     await jpost("/api/start", {
       channel_uuid: uuid,
       ndi_name: ndi,
+      ndi_groups: groups,
       profile: uiConfig.tvh_stream_profile || "pass",
       ndi_multicast_enabled: !!uiConfig.ndi_multicast_enabled,
       ndi_multicast_addr: uiConfig.ndi_multicast_addr || "",
@@ -506,6 +519,7 @@ document.getElementById("start").addEventListener("click", async () => {
     });
     toast("NDI started.");
     uiConfig.ndi_default_name = ndi;
+    uiConfig.ndi_groups = groups;
   } catch (e) {
     toast("Start failed: " + e, "bad");
   } finally {

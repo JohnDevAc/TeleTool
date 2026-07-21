@@ -18,6 +18,7 @@ if ! getent passwd teletool >/dev/null 2>&1; then
 fi
 
 install -d -o teletool -g teletool -m 0750 /var/lib/teletool
+install -d -o teletool -g teletool -m 0750 /var/lib/teletool/.ndi
 if [ ! -f /var/lib/teletool/config.json ]; then
   install -o teletool -g teletool -m 0640 \
     /usr/lib/teletool/config.example.json /var/lib/teletool/config.json

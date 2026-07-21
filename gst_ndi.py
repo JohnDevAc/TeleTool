@@ -2,6 +2,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, asdict
 from typing import Any, Deque, Dict, List, Optional
+import ipaddress
 import json
 import os
 import re
@@ -57,6 +58,8 @@ class RunState:
 
     # configured NDI delay (applied as buffering in the pipeline)
     ndi_delay_ms: Optional[int]
+    ndi_groups: Optional[str]
+    ndi_discovery_server: Optional[str]
 
     # qos/drops
     dropped: int
@@ -117,6 +120,8 @@ class GstNDIBridge(GstPipelineBase):
 
         # Configured NDI delay (ms) for the currently running pipeline
         self._ndi_delay_ms: Optional[int] = None
+        self._ndi_groups: Optional[str] = None
+        self._ndi_discovery_server: Optional[str] = None
 
         # NDI multicast (per-stream overrides; only meaningful while running)
         self._ndi_multicast_enabled: bool = False
@@ -345,6 +350,8 @@ class GstNDIBridge(GstPipelineBase):
                 video_caps=self._video_caps,
                 audio_caps=self._audio_caps,
                 ndi_delay_ms=self._ndi_delay_ms,
+                ndi_groups=self._ndi_groups if base["running"] else None,
+                ndi_discovery_server=self._ndi_discovery_server if base["running"] else None,
                 dropped=self._dropped,
                 qos_events=self._qos_events,
                 ndi_rendered=self._ndi_rendered,
@@ -377,6 +384,8 @@ class GstNDIBridge(GstPipelineBase):
                 "ndi_name": self._ndi_name if running else None,
                 "input_url": self._input_url if running else None,
                 "started_at": self._started_at if running else None,
+                "ndi_groups": self._ndi_groups if running else None,
+                "ndi_discovery_server": self._ndi_discovery_server if running else None,
                 "ndi_multicast_enabled": bool(self._ndi_multicast_enabled) if running else False,
                 "ndi_multicast_addr": self._ndi_multicast_addr if running else None,
                 "ndi_multicast_ttl": self._ndi_multicast_ttl if running else None,
@@ -542,6 +551,143 @@ class GstNDIBridge(GstPipelineBase):
             channel_uuid=channel_uuid,
         )
 
+    @staticmethod
+    def _normalise_ndi_groups(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        groups: List[str] = []
+        seen = set()
+        for raw in re.split(r"[,;\n]+", text):
+            group = " ".join(str(raw or "").strip().split())
+            if not group:
+                continue
+            if any(ord(ch) < 32 for ch in group):
+                raise ValueError("NDI group names cannot contain control characters")
+            if len(group) > 64:
+                raise ValueError("Each NDI group name must be 64 characters or fewer")
+            key = group.lower()
+            if key not in seen:
+                groups.append(group)
+                seen.add(key)
+            if len(groups) > 16:
+                raise ValueError("Use no more than 16 NDI groups")
+        result = ",".join(groups)
+        if len(result) > 240:
+            raise ValueError("NDI group list is too long")
+        return result
+
+    @staticmethod
+    def _normalise_ndi_discovery_servers(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        servers: List[str] = []
+        seen = set()
+        for raw in re.split(r"[,\s]+", text):
+            token = str(raw or "").strip()
+            if not token:
+                continue
+            host = token
+            port: Optional[int] = None
+            if token.count(":") == 1:
+                host_part, port_part = token.rsplit(":", 1)
+                if port_part:
+                    try:
+                        port = int(port_part)
+                    except ValueError:
+                        raise ValueError("NDI Discovery Server ports must be numeric")
+                    if port < 1 or port > 65535:
+                        raise ValueError("NDI Discovery Server ports must be between 1 and 65535")
+                    host = host_part
+            host = host.strip().strip("[]")
+            try:
+                ip = ipaddress.ip_address(host)
+            except ValueError:
+                raise ValueError("Enter NDI Discovery Server IP addresses only")
+            normalised = str(ip)
+            if port is not None:
+                normalised = f"{normalised}:{port}"
+            key = normalised.lower()
+            if key not in seen:
+                servers.append(normalised)
+                seen.add(key)
+            if len(servers) > 8:
+                raise ValueError("Use no more than 8 NDI Discovery Server addresses")
+        return ",".join(servers)
+
+    @staticmethod
+    def _ndi_runtime_config_path() -> Path:
+        configured = str(os.environ.get("TELETOOL_NDI_CONFIG_PATH") or "").strip()
+        if configured:
+            return Path(configured).expanduser()
+        home = str(os.environ.get("HOME") or "").strip()
+        if home:
+            return Path(home).expanduser() / ".ndi" / "ndi-config.v1.json"
+        return Path.home() / ".ndi" / "ndi-config.v1.json"
+
+    def _write_ndi_runtime_config(self, ndi_groups: str, discovery_servers: str) -> None:
+        path = self._ndi_runtime_config_path()
+        if not ndi_groups and not discovery_servers and not path.exists():
+            return
+
+        root: Dict[str, Any] = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    root = loaded
+                else:
+                    self._push_warn(f"Ignoring invalid NDI config root at {path}")
+            except Exception as e:
+                self._push_warn(f"Replacing unreadable NDI config at {path}: {e}")
+
+        ndi = root.get("ndi")
+        if not isinstance(ndi, dict):
+            ndi = {}
+            root["ndi"] = ndi
+
+        networks = ndi.get("networks")
+        if not isinstance(networks, dict):
+            networks = {}
+        if discovery_servers:
+            networks["discovery"] = discovery_servers
+        else:
+            networks.pop("discovery", None)
+        if networks:
+            ndi["networks"] = networks
+        else:
+            ndi.pop("networks", None)
+
+        groups = ndi.get("groups")
+        if not isinstance(groups, dict):
+            groups = {}
+        if ndi_groups:
+            groups["send"] = ndi_groups
+            groups["recv"] = ndi_groups
+        else:
+            groups.pop("send", None)
+            groups.pop("recv", None)
+        if groups:
+            ndi["groups"] = groups
+        else:
+            ndi.pop("groups", None)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            tmp_path.write_text(json.dumps(root, indent=2) + "\n", encoding="utf-8")
+            os.replace(tmp_path, path)
+        finally:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+        group_label = ndi_groups or "default"
+        discovery_label = discovery_servers or "off"
+        self._push_log(f"NDI runtime config: groups={group_label}; discovery={discovery_label}")
+
     def start_with_delay(
         self,
         input_url: str,
@@ -552,6 +698,7 @@ class GstNDIBridge(GstPipelineBase):
         buffer_extra_ms: Optional[int] = None,
         ndi_qos: Optional[bool] = None,
         enable_bitrate_probe: Optional[bool] = None,
+        ndi_groups: Optional[str] = None,
         ndi_multicast_enabled: Optional[bool] = None,
         ndi_multicast_addr: Optional[str] = None,
         ndi_multicast_ttl: Optional[int] = None,
@@ -604,6 +751,10 @@ class GstNDIBridge(GstPipelineBase):
 
         enable_probe_i = bool(cfg.get("enable_bitrate_probe", False)) if enable_bitrate_probe is None else bool(enable_bitrate_probe)
 
+        ndi_groups_i = self._normalise_ndi_groups(cfg.get("ndi_groups", "") if ndi_groups is None else ndi_groups)
+        discovery_servers_i = self._normalise_ndi_discovery_servers(cfg.get("ndi_discovery_server", ""))
+        self._write_ndi_runtime_config(ndi_groups_i, discovery_servers_i)
+
         # NDI multicast per-stream overrides (best-effort; depends on ndisink implementation)
         multicast_enabled_default = bool(cfg.get("ndi_multicast_enabled", False))
         multicast_enabled_i = multicast_enabled_default if ndi_multicast_enabled is None else bool(ndi_multicast_enabled)
@@ -630,6 +781,8 @@ class GstNDIBridge(GstPipelineBase):
             self._input_url = str(input_url)
             self._started_at = time.time()
             self._ndi_delay_ms = int(delay_ms_i)
+            self._ndi_groups = ndi_groups_i or None
+            self._ndi_discovery_server = discovery_servers_i or None
             self._ndi_multicast_enabled = bool(multicast_enabled_i)
             self._ndi_multicast_addr = multicast_addr_i.strip() if multicast_enabled_i else None
             self._ndi_multicast_ttl = int(multicast_ttl_i) if multicast_enabled_i else None
@@ -934,6 +1087,8 @@ class GstNDIBridge(GstPipelineBase):
             self._input_url = None
             self._started_at = None
             self._ndi_delay_ms = None
+            self._ndi_groups = None
+            self._ndi_discovery_server = None
             self._ndi_multicast_enabled = False
             self._ndi_multicast_addr = None
             self._ndi_multicast_ttl = None

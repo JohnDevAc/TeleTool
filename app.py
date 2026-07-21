@@ -1,4 +1,5 @@
 import html
+import ipaddress
 import json
 import os
 import re
@@ -235,6 +236,7 @@ def _ndi_req_to_dict(req: "StartReq") -> Dict[str, Any]:
     return {
         "channel_uuid": req.channel_uuid,
         "ndi_name": req.ndi_name,
+        "ndi_groups": _normalise_ndi_groups(req.ndi_groups),
         "profile": req.profile,
         "deinterlace": bool(req.deinterlace),
         "buffer_extra_ms": int(req.buffer_extra_ms),
@@ -744,6 +746,7 @@ def _start_ndi_pipeline_from_dict(req_d: Dict[str, Any], *, reason: str, force_r
         deinterlace=req_d["deinterlace"],
         buffer_extra_ms=req_d["buffer_extra_ms"],
         ndi_qos=req_d["ndi_qos"],
+        ndi_groups=req_d["ndi_groups"],
         ndi_multicast_enabled=req_d["ndi_multicast_enabled"],
         ndi_multicast_addr=req_d["ndi_multicast_addr"],
         ndi_multicast_ttl=req_d["ndi_multicast_ttl"],
@@ -1662,6 +1665,8 @@ UI_CONFIG_KEYS = {
     "tvh_dvbt_scanfile",
     "tvh_stream_profile",
     "ndi_default_name",
+    "ndi_groups",
+    "ndi_discovery_server",
     "ndi_delay_ms",
     "ndi_deinterlace",
     "ndi_buffer_extra_ms",
@@ -1682,11 +1687,78 @@ UI_CONFIG_KEYS = {
 }
 
 
+def _normalise_ndi_groups(value: Optional[str]) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    groups: List[str] = []
+    seen = set()
+    for raw in re.split(r"[,;\n]+", text):
+        group = " ".join(str(raw or "").strip().split())
+        if not group:
+            continue
+        if any(ord(ch) < 32 for ch in group):
+            raise HTTPException(400, "NDI group names cannot contain control characters")
+        if len(group) > 64:
+            raise HTTPException(400, "Each NDI group name must be 64 characters or fewer")
+        key = group.lower()
+        if key not in seen:
+            groups.append(group)
+            seen.add(key)
+        if len(groups) > 16:
+            raise HTTPException(400, "Use no more than 16 NDI groups")
+    result = ",".join(groups)
+    if len(result) > 240:
+        raise HTTPException(400, "NDI group list is too long")
+    return result
+
+
+def _normalise_ndi_discovery_servers(value: Optional[str]) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    servers: List[str] = []
+    seen = set()
+    for raw in re.split(r"[,\s]+", text):
+        token = str(raw or "").strip()
+        if not token:
+            continue
+        host = token
+        port: Optional[int] = None
+        if token.count(":") == 1:
+            host_part, port_part = token.rsplit(":", 1)
+            if port_part:
+                try:
+                    port = int(port_part)
+                except ValueError:
+                    raise HTTPException(400, "NDI Discovery Server ports must be numeric")
+                if port < 1 or port > 65535:
+                    raise HTTPException(400, "NDI Discovery Server ports must be between 1 and 65535")
+                host = host_part
+        host = host.strip().strip("[]")
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            raise HTTPException(400, "Enter NDI Discovery Server IP addresses only")
+        normalised = str(ip)
+        if port is not None:
+            normalised = f"{normalised}:{port}"
+        key = normalised.lower()
+        if key not in seen:
+            servers.append(normalised)
+            seen.add(key)
+        if len(servers) > 8:
+            raise HTTPException(400, "Use no more than 8 NDI Discovery Server addresses")
+    return ",".join(servers)
+
+
 class UIConfigUpdateReq(BaseModel):
     tvh_base_url: Optional[str] = None
     tvh_dvbt_scanfile: Optional[str] = None
     tvh_stream_profile: Optional[str] = None
     ndi_default_name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    ndi_groups: Optional[str] = Field(default=None, max_length=240)
+    ndi_discovery_server: Optional[str] = Field(default=None, max_length=240)
     ndi_delay_ms: Optional[int] = Field(default=None, ge=0, le=5000)
     ndi_deinterlace: Optional[bool] = None
     ndi_buffer_extra_ms: Optional[int] = Field(default=None, ge=0, le=5000)
@@ -1717,12 +1789,21 @@ def api_config_ui_update(req: UIConfigUpdateReq):
     patch = req.model_dump(exclude_none=True)
     if not patch:
         return {"ok": True, "config": api_config_ui()}
+    if "ndi_groups" in patch:
+        patch["ndi_groups"] = _normalise_ndi_groups(patch.get("ndi_groups"))
+    if "ndi_discovery_server" in patch:
+        patch["ndi_discovery_server"] = _normalise_ndi_discovery_servers(patch.get("ndi_discovery_server"))
     updated = _update_config(patch)
     return {"ok": True, "config": {k: updated.get(k) for k in sorted(UI_CONFIG_KEYS)}}
 
 class StartReq(BaseModel):
     channel_uuid: str
     ndi_name: str = Field(min_length=1, max_length=80)
+    ndi_groups: str = Field(
+        default_factory=lambda: str(cfg.get("ndi_groups", "")),
+        max_length=240,
+        description="Comma-separated NDI group names advertised by this sender.",
+    )
     profile: str = Field(default="pass", min_length=1, max_length=40)
 
     deinterlace: bool = Field(
@@ -1796,8 +1877,19 @@ def api_start(req: StartReq):
             NDI_SUPERVISOR_STATE["last_error"] = str(e)
         raise HTTPException(500, f"Failed to start pipeline: {e}")
     _active_profile = req.profile
-    _update_config({"ndi_default_name": req.ndi_name, "tvh_stream_profile": req.profile, "ndi_last_start_request": req_d})
-    return {"ok": True, "stream_url": stream_url, "ndi_name": req.ndi_name, "auto_reconnect": _ndi_supervisor_config()["enabled"]}
+    _update_config({
+        "ndi_default_name": req.ndi_name,
+        "ndi_groups": req_d["ndi_groups"],
+        "tvh_stream_profile": req.profile,
+        "ndi_last_start_request": req_d,
+    })
+    return {
+        "ok": True,
+        "stream_url": stream_url,
+        "ndi_name": req.ndi_name,
+        "ndi_groups": req_d["ndi_groups"],
+        "auto_reconnect": _ndi_supervisor_config()["enabled"],
+    }
 @app.post("/api/stop")
 def api_stop():
     # Disable the desired stream first so the supervisor does not auto-restart a deliberate stop.

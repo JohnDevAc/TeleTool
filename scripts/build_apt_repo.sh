@@ -14,7 +14,7 @@ if ! [[ "$INSTALLER_VERSION" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
   exit 1
 fi
 
-for command_name in apt-ftparchive dpkg-scanpackages gzip install tail xz; do
+for command_name in apt-ftparchive dpkg-deb dpkg-scanpackages gzip install tail xz; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "Missing repository build command: $command_name" >&2
     exit 1
@@ -26,16 +26,25 @@ if [ -e "$REPO_DIR" ] && [ -n "$(find "$REPO_DIR" -mindepth 1 -maxdepth 1 -print
   exit 1
 fi
 
-mapfile -t debs < <(find "$DEB_DIR" -maxdepth 1 -type f -name 'teletool_*_arm64.deb' -print | sort)
+mapfile -t debs < <(find "$DEB_DIR" -maxdepth 1 -type f -name '*_arm64.deb' -print | sort)
 if [ "${#debs[@]}" -eq 0 ]; then
   echo "No TeleTool ARM64 .deb files found in $DEB_DIR" >&2
   exit 1
 fi
 
-pool_dir="$REPO_DIR/pool/main/t/teletool"
 packages_dir="$REPO_DIR/dists/$SUITE/$COMPONENT/binary-$ARCH"
-install -d "$pool_dir" "$packages_dir"
+install -d "$packages_dir"
 for deb in "${debs[@]}"; do
+  package_name="$(dpkg-deb -f "$deb" Package)"
+  case "$package_name" in
+    teletool|teletool-inferno) ;;
+    *)
+      echo "Unexpected package in repository build: $package_name ($deb)" >&2
+      exit 1
+      ;;
+  esac
+  pool_dir="$REPO_DIR/pool/main/t/$package_name"
+  install -d "$pool_dir"
   install -m 0644 "$deb" "$pool_dir/$(basename "$deb")"
 done
 

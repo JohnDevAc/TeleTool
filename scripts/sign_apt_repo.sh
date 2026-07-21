@@ -45,45 +45,68 @@ grep -qx "Suite: $SUITE" "$release_file"
 grep -qx "Codename: $SUITE" "$release_file"
 grep -qx "Architectures: arm64" "$release_file"
 
-package_count="$(grep -c '^Package: teletool$' "$packages_file")"
-if [ "$package_count" -ne 1 ]; then
-  echo "Expected exactly one TeleTool package, found $package_count" >&2
-  exit 1
-fi
+package_field() {
+  package="$1"
+  field="$2"
+  awk -v package="$package" -v field="$field" '
+    BEGIN { RS = ""; FS = "\n" }
+    $0 ~ "(^|\n)Package: " package "(\n|$)" {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ "^" field ": ") {
+          sub("^" field ": ", "", $i)
+          print $i
+          exit
+        }
+      }
+    }
+  ' "$packages_file"
+}
 
-package_version="$(awk '$1 == "Version:" {print $2; exit}' "$packages_file")"
-package_filename="$(awk '$1 == "Filename:" {print $2; exit}' "$packages_file")"
-package_sha256="$(awk '$1 == "SHA256:" {print $2; exit}' "$packages_file")"
-if [ "$package_version" != "$EXPECTED_VERSION" ]; then
-  echo "Unexpected package version: $package_version (expected $EXPECTED_VERSION)" >&2
-  exit 1
-fi
-case "$package_filename" in
-  pool/*) ;;
-  *) echo "Unsafe package filename: $package_filename" >&2; exit 1 ;;
-esac
-case "$package_filename" in
-  *..*|/*) echo "Unsafe package filename: $package_filename" >&2; exit 1 ;;
-esac
+verify_package() {
+  expected_package="$1"
+  package_count="$(grep -c "^Package: $expected_package$" "$packages_file")"
+  if [ "$package_count" -ne 1 ]; then
+    echo "Expected exactly one $expected_package package, found $package_count" >&2
+    exit 1
+  fi
 
-package_path="$REPO_DIR/$package_filename"
-test -f "$package_path"
-if [ "$(dpkg-deb -f "$package_path" Package)" != "teletool" ]; then
-  echo "Repository package is not TeleTool" >&2
-  exit 1
-fi
-if [ "$(dpkg-deb -f "$package_path" Version)" != "$EXPECTED_VERSION" ]; then
-  echo "Debian package version does not match the repository index" >&2
-  exit 1
-fi
-if [ "$(dpkg-deb -f "$package_path" Architecture)" != "arm64" ]; then
-  echo "Debian package is not ARM64" >&2
-  exit 1
-fi
-if [ "$(sha256sum "$package_path" | awk '{print $1}')" != "$package_sha256" ]; then
-  echo "Debian package SHA-256 does not match the repository index" >&2
-  exit 1
-fi
+  package_version="$(package_field "$expected_package" Version)"
+  package_filename="$(package_field "$expected_package" Filename)"
+  package_sha256="$(package_field "$expected_package" SHA256)"
+  if [ "$package_version" != "$EXPECTED_VERSION" ]; then
+    echo "Unexpected $expected_package version: $package_version (expected $EXPECTED_VERSION)" >&2
+    exit 1
+  fi
+  case "$package_filename" in
+    pool/*) ;;
+    *) echo "Unsafe $expected_package filename: $package_filename" >&2; exit 1 ;;
+  esac
+  case "$package_filename" in
+    *..*|/*) echo "Unsafe $expected_package filename: $package_filename" >&2; exit 1 ;;
+  esac
+
+  package_path="$REPO_DIR/$package_filename"
+  test -f "$package_path"
+  if [ "$(dpkg-deb -f "$package_path" Package)" != "$expected_package" ]; then
+    echo "Repository package is not $expected_package" >&2
+    exit 1
+  fi
+  if [ "$(dpkg-deb -f "$package_path" Version)" != "$EXPECTED_VERSION" ]; then
+    echo "$expected_package Debian package version does not match the repository index" >&2
+    exit 1
+  fi
+  if [ "$(dpkg-deb -f "$package_path" Architecture)" != "arm64" ]; then
+    echo "$expected_package Debian package is not ARM64" >&2
+    exit 1
+  fi
+  if [ "$(sha256sum "$package_path" | awk '{print $1}')" != "$package_sha256" ]; then
+    echo "$expected_package Debian package SHA-256 does not match the repository index" >&2
+    exit 1
+  fi
+}
+
+verify_package teletool
+verify_package teletool-inferno
 
 GNUPGHOME="$(mktemp -d)"
 export GNUPGHOME

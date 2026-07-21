@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable teletool-inferno-clock.service 2>/dev/null || true
+systemctl restart teletool-inferno-clock.service 2>/dev/null || true
+
+exit 0

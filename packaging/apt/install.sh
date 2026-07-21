@@ -167,7 +167,7 @@ tt_ui_progress 20 "Installing TeleTool" "Please be patient, TeleTool is installi
 export TELETOOL_DEFER_COMPLETION=1
 if ! run_apt_with_progress 20 30 50 45 "Installing TeleTool" \
   "Please be patient, TeleTool is installing..." \
-  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 install -y teletool; then
+  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 install --install-recommends -y teletool; then
   printf 'retry=delayed-tvheadend-recovery after initial package configuration failure\n' >>"$LOG_FILE"
   tt_ui_progress 94 "Finalising TeleTool" "Please be patient, TeleTool is completing the installation..."
   if ! recover_tvheadend_configuration || \

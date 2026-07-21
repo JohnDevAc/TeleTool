@@ -2,9 +2,8 @@
 
 TeleTool is packaged for 64-bit Raspberry Pi OS based on Debian Trixie. The
 binary package contains the application and a prebuilt ARM64 NDI®
-`libgstndi.so`, so
-an end user's Pi does not need Rust, Cargo, compilers, or GStreamer development
-headers.
+`libgstndi.so`, so an end user's Pi does not need Rust, Cargo, compilers, or
+GStreamer development headers.
 
 TeleTool is proprietary software made available free of charge for
 non-commercial use. Commercial use requires a separate written licence. The
@@ -12,9 +11,11 @@ package carries the complete TeleTool terms, Debian copyright metadata, the
 MPL-2.0 plugin source, and notices for every Rust dependency compiled into the
 plugin.
 
-Experimental Inferno-AoIP support is runtime interoperability with a
-separately installed ALSA PCM. The TeleTool package does not ship Inferno-AoIP
-source, binaries, services, or configuration.
+Experimental Inferno-AoIP support is distributed as the separate
+`teletool-inferno` companion package. The main `teletool` package recommends
+the exact matching companion version, while `teletool-inferno` carries the
+pinned upstream Inferno ALSA PCM, the pinned Inferno Statime fork, service
+configuration, source archives, and licence material.
 
 ## Package layout
 
@@ -36,12 +37,15 @@ Install the build dependencies, then run:
 ```sh
 scripts/build_gst_ndi_plugin.sh dist/libgstndi.so
 TELETOOL_GST_NDI_PLUGIN="$PWD/dist/libgstndi.so" scripts/build_deb.sh dist
+scripts/build_inferno_deb.sh dist
 ```
 
 The plugin build also creates `dist/gst-plugin-ndi-0.13.5.crate` and
 `dist/gst-plugin-ndi-licenses/`. The package build intentionally fails if these
-compliance artifacts are missing. The result is
-`dist/teletool_<version>_arm64.deb`.
+compliance artifacts are missing. The Inferno companion build clones the pinned
+upstream refs in `INFERNO_REF` and `STATIME_REF`. The results are
+`dist/teletool_<version>_arm64.deb` and
+`dist/teletool-inferno_<version>_arm64.deb`.
 
 Application and installer versions are tracked separately in `VERSION` and
 `INSTALLER_VERSION`. The installer version is displayed by the terminal UI and

@@ -1,0 +1,72 @@
+#!/bin/sh
+set -eu
+
+runtime_dir="/run/teletool-inferno"
+config_path="$runtime_dir/statime.toml"
+clock_path="$runtime_dir/usrvclock.sock"
+interface="${TELETOOL_INFERNO_INTERFACE:-}"
+loglevel="${TELETOOL_INFERNO_LOGLEVEL:-warn}"
+hardware_clock="${TELETOOL_INFERNO_HARDWARE_CLOCK:-auto}"
+
+find_default_interface() {
+  ip -o route show default 2>/dev/null | awk '{
+    for (i = 1; i <= NF; i++) {
+      if ($i == "dev" && (i + 1) <= NF) {
+        print $(i + 1)
+        exit
+      }
+    }
+  }'
+}
+
+find_first_active_interface() {
+  ip -o link show up 2>/dev/null | awk -F': ' '$2 != "lo" {
+    split($2, parts, "@")
+    print parts[1]
+    exit
+  }'
+}
+
+if [ -z "$interface" ]; then
+  interface="$(find_default_interface || true)"
+fi
+if [ -z "$interface" ]; then
+  interface="$(find_first_active_interface || true)"
+fi
+if [ -z "$interface" ]; then
+  interface="eth0"
+fi
+
+case "$interface" in
+  *[!A-Za-z0-9_.:-]*|'')
+    echo "Invalid TeleTool Inferno interface: $interface" >&2
+    exit 1
+    ;;
+esac
+
+case "$hardware_clock" in
+  auto|required|none|[0-9]*) ;;
+  *)
+    echo "Invalid TeleTool Inferno hardware clock setting: $hardware_clock" >&2
+    exit 1
+    ;;
+esac
+
+install -d -m 0755 "$runtime_dir"
+cat > "$config_path" <<EOF
+loglevel = "$loglevel"
+sdo-id = 0
+domain = 0
+priority1 = 251
+virtual-system-clock = true
+virtual-system-clock-base = "monotonic_raw"
+usrvclock-export = true
+usrvclock-path = "$clock_path"
+
+[[port]]
+interface = "$interface"
+network-mode = "ipv4"
+hardware-clock = "$hardware_clock"
+protocol-version = "PTPv1"
+EOF
+chmod 0644 "$config_path"

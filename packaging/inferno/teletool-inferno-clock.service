@@ -1,0 +1,18 @@
+[Unit]
+Description=TeleTool Inferno PTP clock service
+Documentation=https://github.com/teodly/inferno
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/teletool-inferno
+RuntimeDirectory=teletool-inferno
+RuntimeDirectoryMode=0755
+ExecStartPre=/usr/lib/teletool-inferno/bin/write-statime-config
+ExecStart=/usr/lib/teletool-inferno/bin/statime-inferno --config /run/teletool-inferno/statime.toml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

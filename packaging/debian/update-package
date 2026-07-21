@@ -73,6 +73,7 @@ apt-get -qq -o Acquire::Retries=3 -o DPkg::Lock::Timeout=300 update
 write_status true false 45 "Resolving the $channel_label package version" null null false
 
 before="$(dpkg-query -W -f='${Version}' teletool 2>/dev/null || true)"
+before_inferno="$(dpkg-query -W -f='${Version}' teletool-inferno 2>/dev/null || true)"
 target_version="$(apt-cache madison teletool | awk 'NR == 1 {print $3}')"
 case "$target_version" in
   ''|*[!0-9A-Za-z.+:~_-]*)
@@ -80,15 +81,24 @@ case "$target_version" in
     exit 1
     ;;
 esac
+target_inferno_version="$(apt-cache madison teletool-inferno | awk 'NR == 1 {print $3}')"
 
 write_status true false 65 "Installing TeleTool $target_version from $channel_label" null null false
+set -- "teletool=$target_version"
+if [ "$target_inferno_version" = "$target_version" ]; then
+  set -- "$@" "teletool-inferno=$target_version"
+else
+  printf 'No matching teletool-inferno package was found for %s in the %s repository.\n' \
+    "$target_version" "$channel_label"
+fi
 DEBIAN_FRONTEND=noninteractive apt-get -qq \
   -o Acquire::Retries=3 -o DPkg::Lock::Timeout=300 -o Dpkg::Use-Pty=0 \
-  install --only-upgrade --allow-downgrades -y "teletool=$target_version"
+  install --allow-downgrades -y "$@"
 after="$(dpkg-query -W -f='${Version}' teletool 2>/dev/null || true)"
+after_inferno="$(dpkg-query -W -f='${Version}' teletool-inferno 2>/dev/null || true)"
 
 trap - EXIT
-if [ -n "$before" ] && [ "$before" = "$after" ]; then
+if [ -n "$before" ] && [ "$before" = "$after" ] && [ "$before_inferno" = "$after_inferno" ]; then
   write_status false true 100 "TeleTool $channel_label is already up to date." null "$(date +%s)" false
 else
   write_status false true 100 "Switched to TeleTool $channel_label $after." null "$(date +%s)" true

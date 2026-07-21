@@ -33,10 +33,14 @@ project and is not affiliated with or endorsed by Vizrt NDI AB.
 
 ## Optional Inferno-AoIP interoperability
 
-TeleTool can detect and use a separately installed Inferno-AoIP ALSA PCM as an
-experimental network audio output. The TeleTool Debian package does not include
-Inferno-AoIP source code, binaries, ALSA modules, Statime builds, service files,
-or configuration.
+TeleTool can detect and use the optional `teletool-inferno` companion package
+as an experimental network audio output. The main `teletool` Debian package
+does not include Inferno-AoIP source code, binaries, ALSA modules, Statime
+builds, service files, or configuration. The separate `teletool-inferno`
+package is published in the same signed TeleTool APT repository and includes a
+pinned upstream Inferno ALSA PCM, a pinned Inferno Statime fork build, service
+configuration, and corresponding source/licence material under
+`/usr/share/doc/teletool-inferno/`.
 
 - Licence: GNU General Public License v3 or later (`GPL-3.0-or-later`) or GNU
   Affero General Public License v3 or later (`AGPL-3.0-or-later`), at the

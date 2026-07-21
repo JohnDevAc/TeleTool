@@ -20,9 +20,14 @@ def require(path: str, *needles: str) -> None:
 require(
     "packaging/debian/update-package",
     "apt-get -qq",
-    "install --only-upgrade --allow-downgrades",
+    "teletool-inferno=$target_version",
+    "install --allow-downgrades",
     "apt-repo-dev",
     "update-status.json",
+)
+require(
+    "packaging/apt/install.sh",
+    "install --install-recommends -y teletool",
 )
 require(
     "packaging/debian/teletool-update@.service",
@@ -40,10 +45,19 @@ require(
     "TELETOOL_RELEASE_BRANCH",
 )
 require(
+    "scripts/build_inferno_deb.sh",
+    "Package: teletool-inferno",
+    "alsa_pcm_inferno",
+    "statime-linux",
+    "INFERNO_REF",
+    "STATIME_REF",
+)
+require(
     ".github/workflows/build-apt-package.yml",
     "teletool-arm64-dev-package",
     "TELETOOL_APT_SUITE: dev",
     "TELETOOL_RELEASE_BRANCH: dev",
+    "scripts/build_inferno_deb.sh",
     "teletool-dev-apt",
     "teletool-stable-apt",
     "scripts/sign_apt_repo.sh",
@@ -54,6 +68,7 @@ require(
     "TELETOOL_APT_GPG_PRIVATE_KEY",
     "TELETOOL_APT_GPG_FINGERPRINT",
     "dpkg-deb -f",
+    "verify_package teletool-inferno",
     "gpgv --keyring",
     "sha256sum",
 )

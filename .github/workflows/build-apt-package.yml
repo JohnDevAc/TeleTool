@@ -47,6 +47,7 @@ jobs:
             gstreamer1.0-tools \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
+            libasound2-dev \
             pkg-config \
             rustc \
             xz-utils
@@ -64,6 +65,9 @@ jobs:
         env:
           TELETOOL_GST_NDI_PLUGIN: ${{ github.workspace }}/dist/libgstndi.so
         run: scripts/build_deb.sh dist
+
+      - name: Build the Inferno companion Debian package
+        run: scripts/build_inferno_deb.sh dist
 
       - name: Build the APT repository
         run: scripts/build_apt_repo.sh dist build/apt-repo
@@ -84,6 +88,12 @@ jobs:
           TELETOOL_PACKAGE_VERSION: ${{ steps.dev_version.outputs.version }}
           TELETOOL_RELEASE_BRANCH: dev
         run: scripts/build_deb.sh dist-dev
+
+      - name: Build the Dev Inferno companion Debian package
+        if: github.ref == 'refs/heads/dev'
+        env:
+          TELETOOL_PACKAGE_VERSION: ${{ steps.dev_version.outputs.version }}
+        run: scripts/build_inferno_deb.sh dist-dev
 
       - name: Build the Dev APT repository
         if: github.ref == 'refs/heads/dev'

@@ -29,9 +29,12 @@ require(
     "MAIN_REPOSITORY_URL",
     "DEV_REPOSITORY_URL",
     'INSTALL_CHANNEL="${1:-${TELETOOL_APT_CHANNEL:-}}"',
+    'INSTALL_INFERNO="${2:-${TELETOOL_INSTALL_INFERNO:-auto}}"',
     "read -r selected_channel < /dev/tty",
+    "Install optional Inferno network audio support?",
+    "apt-cache madison teletool-inferno",
     "Suites: $APT_SUITE",
-    "install --install-recommends -y teletool",
+    'install "$apt_recommends_flag" -y "$@"',
 )
 require(
     "packaging/debian/teletool-update@.service",
@@ -114,6 +117,7 @@ require(
     "## Install with WGET",
     "wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh",
     "wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- dev",
+    "wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- dev yes",
 )
 
 print("Package-managed Web updater is wired end to end.")

@@ -10,7 +10,7 @@ TT_UI_BLUE=""
 TT_UI_GREEN=""
 TT_UI_YELLOW=""
 TT_UI_RED=""
-TT_UI_INSTALLER_VERSION="${TELETOOL_INSTALLER_VERSION:-1.0}"
+TT_UI_INSTALLER_VERSION="${TELETOOL_INSTALLER_VERSION:-1.1}"
 TT_UI_LAST_PERCENT=0
 
 tt_ui_init() {
@@ -194,10 +194,54 @@ if ! command -v tt_ui_init >/dev/null 2>&1; then
   tt_ui_status() { printf '  [%s] %s\n' "$1" "$2"; }
 fi
 
-REPOSITORY_URL="${TELETOOL_REPOSITORY_URL:-https://johndevac.github.io/TeleTool/apt-repo}"
+MAIN_REPOSITORY_URL="https://johndevac.github.io/TeleTool/apt-repo"
+DEV_REPOSITORY_URL="https://raw.githubusercontent.com/JohnDevAc/TeleTool/dev/apt-repo-dev"
+INSTALL_CHANNEL="${1:-${TELETOOL_APT_CHANNEL:-}}"
+REPOSITORY_URL="${TELETOOL_REPOSITORY_URL:-}"
+APT_SUITE="${TELETOOL_APT_SUITE:-}"
+CHANNEL_LABEL=""
 KEYRING="/usr/share/keyrings/teletool-archive-keyring.gpg"
 SOURCE_FILE="/etc/apt/sources.list.d/teletool.sources"
 LOG_FILE="/var/log/teletool-installer.log"
+
+normalise_channel() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+select_package_source() {
+  selected_channel="$INSTALL_CHANNEL"
+  if [ -n "$REPOSITORY_URL" ] || [ -n "$APT_SUITE" ]; then
+    REPOSITORY_URL="${REPOSITORY_URL:-$MAIN_REPOSITORY_URL}"
+    APT_SUITE="${APT_SUITE:-stable}"
+    CHANNEL_LABEL="${INSTALL_CHANNEL:-custom}"
+    return
+  fi
+
+  if [ -z "$selected_channel" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf '\nTeleTool install branch:\n' > /dev/tty
+    printf '  1) Main (default)\n' > /dev/tty
+    printf '  2) Dev\n' > /dev/tty
+    printf 'Choose branch [1]: ' > /dev/tty
+    IFS= read -r selected_channel < /dev/tty || selected_channel=""
+  fi
+
+  case "$(normalise_channel "$selected_channel")" in
+    ''|1|m|main|stable)
+      REPOSITORY_URL="$MAIN_REPOSITORY_URL"
+      APT_SUITE="stable"
+      CHANNEL_LABEL="Main"
+      ;;
+    2|d|dev|development)
+      REPOSITORY_URL="$DEV_REPOSITORY_URL"
+      APT_SUITE="dev"
+      CHANNEL_LABEL="Dev"
+      ;;
+    *)
+      tt_ui_failure "Unknown TeleTool branch: $selected_channel"
+      exit 1
+      ;;
+  esac
+}
 
 run_apt_with_progress() {
   download_start="$1"
@@ -307,11 +351,13 @@ if [ "$(dpkg --print-architecture)" != "arm64" ]; then
   exit 1
 fi
 
+select_package_source
+
 install -d -m 0755 /var/log
 : > "$LOG_FILE"
 chmod 0644 "$LOG_FILE"
 
-tt_ui_progress 8 "Preparing the TeleTool package source" "Package output is being recorded in $LOG_FILE"
+tt_ui_progress 8 "Preparing the TeleTool $CHANNEL_LABEL package source" "Package output is being recorded in $LOG_FILE"
 install -d -m 0755 /usr/share/keyrings
 tmp_key="$(mktemp)"
 if ! curl -fsSL "$REPOSITORY_URL/teletool-archive-keyring.gpg" -o "$tmp_key" >>"$LOG_FILE" 2>&1; then
@@ -325,7 +371,7 @@ rm -f "$tmp_key"
 cat > "$SOURCE_FILE" <<EOF
 Types: deb
 URIs: $REPOSITORY_URL
-Suites: stable
+Suites: $APT_SUITE
 Components: main
 Architectures: arm64
 Signed-By: $KEYRING
@@ -344,7 +390,7 @@ tt_ui_progress 20 "Installing TeleTool" "Please be patient, TeleTool is installi
 export TELETOOL_DEFER_COMPLETION=1
 if ! run_apt_with_progress 20 30 50 45 "Installing TeleTool" \
   "Please be patient, TeleTool is installing..." \
-  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 install -y teletool; then
+  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 install --install-recommends -y teletool; then
   printf 'retry=delayed-tvheadend-recovery after initial package configuration failure\n' >>"$LOG_FILE"
   tt_ui_progress 94 "Finalising TeleTool" "Please be patient, TeleTool is completing the installation..."
   if ! recover_tvheadend_configuration || \

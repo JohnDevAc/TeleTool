@@ -25,6 +25,15 @@ require(
     "update-status.json",
 )
 require(
+    "packaging/apt/install.sh",
+    "MAIN_REPOSITORY_URL",
+    "DEV_REPOSITORY_URL",
+    'INSTALL_CHANNEL="${1:-${TELETOOL_APT_CHANNEL:-}}"',
+    "read -r selected_channel < /dev/tty",
+    "Suites: $APT_SUITE",
+    "install --install-recommends -y teletool",
+)
+require(
     "packaging/debian/teletool-update@.service",
     "ExecStart=/usr/lib/teletool/bin/update-package %i",
 )
@@ -104,6 +113,7 @@ require(
     "README.md",
     "## Install with WGET",
     "wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh",
+    "wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- dev",
 )
 
 print("Package-managed Web updater is wired end to end.")

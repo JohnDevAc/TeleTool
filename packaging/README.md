@@ -103,5 +103,13 @@ The published fresh-install command is:
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh
 ```
 
+The installer asks which branch to install and defaults to Main. For unattended
+installs, pass the branch as the first script argument:
+
+```sh
+wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- main
+wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- dev
+```
+
 Never commit the private APT signing key. Existing clients must continue to use
 the same key for future repository updates.

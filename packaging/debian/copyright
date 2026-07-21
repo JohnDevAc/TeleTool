@@ -5,6 +5,11 @@ Source: https://github.com/JohnDevAc/TeleTool
 Disclaimer: TeleTool includes a separately licensed MPL-2.0 GStreamer plugin.
  The proprietary NDI® runtime is not included in this package.
 
+Comment: Optional Inferno-AoIP support detects and uses an ALSA PCM installed
+ separately on the host system. This package does not contain Inferno-AoIP
+ source code or binaries. Inferno-AoIP is upstream dual licensed under
+ GPL-3.0-or-later or AGPL-3.0-or-later.
+
 Files: *
 Copyright: 2026 John Lightfoot
 License: TeleTool-Proprietary

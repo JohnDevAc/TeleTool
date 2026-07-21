@@ -31,6 +31,23 @@ the NDI SDK licence applicable to that download.
 NDI® is a registered trademark of Vizrt NDI AB. TeleTool is an independent
 project and is not affiliated with or endorsed by Vizrt NDI AB.
 
+## Optional Inferno-AoIP interoperability
+
+TeleTool can detect and use a separately installed Inferno-AoIP ALSA PCM as an
+experimental network audio output. The TeleTool Debian package does not include
+Inferno-AoIP source code, binaries, ALSA modules, Statime builds, service files,
+or configuration.
+
+- Licence: GNU General Public License v3 or later (`GPL-3.0-or-later`) or GNU
+  Affero General Public License v3 or later (`AGPL-3.0-or-later`), at the
+  user's option under upstream terms
+- Upstream project: <https://github.com/teodly/inferno>
+- Primary upstream repository: <https://gitlab.com/lumifaza/inferno>
+
+Inferno-AoIP is an unofficial Dante-compatible implementation and is not
+affiliated with or endorsed by Audinate. TeleTool's proprietary licence does
+not replace, narrow, or grant rights to Inferno-AoIP.
+
 ## Separately installed dependencies
 
 TeleTool uses FastAPI, Uvicorn, Pydantic, Requests, urllib3, PyGObject,

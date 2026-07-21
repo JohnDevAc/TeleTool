@@ -20,7 +20,9 @@ This licence applies only to original TeleTool material. Third-party components
 are provided under their respective licences, as described in
 THIRD_PARTY_NOTICES.md and in the copyright information shipped with the
 TeleTool package. Nothing in this licence restricts rights granted by those
-third-party licences.
+third-party licences. Optional interoperability with separately installed
+software, including Inferno-AoIP, does not incorporate that software into
+TeleTool or replace its upstream licence terms.
 
 TELETOOL IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
 INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A

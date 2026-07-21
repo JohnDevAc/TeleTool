@@ -12,6 +12,10 @@ package carries the complete TeleTool terms, Debian copyright metadata, the
 MPL-2.0 plugin source, and notices for every Rust dependency compiled into the
 plugin.
 
+Experimental Inferno-AoIP support is runtime interoperability with a
+separately installed ALSA PCM. The TeleTool package does not ship Inferno-AoIP
+source, binaries, services, or configuration.
+
 ## Package layout
 
 - Application: `/usr/lib/teletool`

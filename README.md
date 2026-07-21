@@ -18,15 +18,23 @@ TeleTool setup page.
 ## What it does
 
 TeleTool sends Tvheadend television services to NDI and can route the active
-stream to a local USB line-level audio device. It provides a browser interface
-for channel selection, TV setup, audio, system settings, updates, and managing
-multiple TeleTool units.
+stream to a local USB line-level audio device or to a separately installed
+Inferno-AoIP ALSA network output. It provides a browser interface for channel
+selection, TV setup, audio, system settings, updates, and managing multiple
+TeleTool units.
 
 Open the interface at the address shown by the installer, normally:
 
 ```text
 http://<teletool-host>:8000/
 ```
+
+## Inferno-AoIP
+
+Experimental Inferno-AoIP support only detects and uses an Inferno ALSA PCM
+that has already been installed on the unit. TeleTool does not distribute
+Inferno-AoIP; that project remains under its upstream GPLv3-or-later /
+AGPLv3-or-later terms.
 
 ## Documentation
 

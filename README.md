@@ -9,13 +9,16 @@ wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh
 ```
 
 The installer asks which branch to install. Press Enter for Main, or choose Dev
-when testing development builds.
+when testing development builds. It also asks whether to install the optional
+Inferno network audio package when that package is available from the selected
+repository.
 
 For unattended installs:
 
 ```sh
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- main
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- dev
+wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- dev yes
 ```
 
 The installer adds the selected signed TeleTool package repository, installs

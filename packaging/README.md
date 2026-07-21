@@ -111,12 +111,16 @@ The published fresh-install command is:
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh
 ```
 
-The installer asks which branch to install and defaults to Main. For unattended
-installs, pass the branch as the first script argument:
+The installer asks which branch to install and defaults to Main. It also asks
+whether to install the optional Inferno network audio package when that package
+is available from the selected repository. For unattended installs, pass the
+branch as the first script argument and the Inferno choice as the optional
+second argument:
 
 ```sh
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- main
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- dev
+wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- dev yes
 ```
 
 Never commit the private APT signing key. Existing clients must continue to use

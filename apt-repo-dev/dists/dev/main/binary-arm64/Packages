@@ -1,14 +1,14 @@
 Package: teletool
-Version: 1.8.11+dev.60
+Version: 1.8.12+dev.61
 Architecture: arm64
 Maintainer: TeleTool Project <teletool@localhost>
 Depends: adduser, alsa-utils, avahi-daemon, avahi-utils, binutils, dtv-scan-tables, file, gir1.2-gst-plugins-bad-1.0, gir1.2-gst-plugins-base-1.0, gir1.2-gstreamer-1.0, gstreamer1.0-alsa, gstreamer1.0-libav, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-tools, libc-bin, network-manager, python3, python3-fastapi (>= 0.100), python3-gi, python3-gi-cairo, python3-pydantic (>= 2), python3-requests, python3-urllib3 (>= 2), python3-uvicorn (>= 0.30), sudo, tvheadend
-Recommends: teletool-inferno (= 1.8.11+dev.60)
-Filename: pool/main/t/teletool/teletool_1.8.11+dev.60_arm64.deb
-Size: 895900
-MD5sum: 835aecb2001bcb1ca53414658350a966
-SHA1: 859c22c40057eb3cdad8d874b5b38e66c684564f
-SHA256: b79d23a46da602625b116cfcfd3063c5a5f2e49763d9821f4a6e24a431fb784d
+Recommends: teletool-inferno (= 1.8.12+dev.61)
+Filename: pool/main/t/teletool/teletool_1.8.12+dev.61_arm64.deb
+Size: 897200
+MD5sum: 221a443ede7cbb8f0c30850f7a35bac0
+SHA1: 829c30217252b494e60fd4782314945b59bec2e8
+SHA256: cab40f4fc745828e6d781907ff5e76ad2ba2033a79d4d3ef256f1a671a2d1740
 Section: video
 Priority: optional
 Homepage: https://github.com/JohnDevAc/TeleTool
@@ -17,25 +17,25 @@ Description: Tvheadend to NDI® and local-audio bridge for Raspberry Pi
  Tvheadend services to NDI and local line-level audio outputs. This package
  includes the ARM64 GStreamer NDI plugin; the proprietary NDI SDK runtime is
  supplied separately through the guided Web UI upload page.
-X-Teletool-Installer-Version: 1.2
+X-Teletool-Installer-Version: 1.3
 
 Package: teletool-inferno
-Version: 1.8.11+dev.60
+Version: 1.8.12+dev.61
 Architecture: arm64
 Maintainer: TeleTool Project <teletool@localhost>
 Depends: alsa-utils, iproute2, libc6, systemd
-Recommends: teletool (= 1.8.11+dev.60)
-Filename: pool/main/t/teletool-inferno/teletool-inferno_1.8.11+dev.60_arm64.deb
-Size: 12766546
-MD5sum: 171bf3949481f16399e64ac147a9967c
-SHA1: 22706fe35727757998422ba774955e719a600c16
-SHA256: ebffa818faa31a9dba029a60e01900fd58c1f33dd92263299515c1386fe7e1f4
+Recommends: teletool (= 1.8.12+dev.61)
+Filename: pool/main/t/teletool-inferno/teletool-inferno_1.8.12+dev.61_arm64.deb
+Size: 12765674
+MD5sum: 62120b8f6cc6d1c7dee0d1b03e9bdb24
+SHA1: 4c99a5209638e403e866247812672ceec39e19f9
+SHA256: 744b23618e28a62d7745f55d54ded81fc3a01d6f8c52cb0db19145ea24473e55
 Section: sound
 Priority: optional
 Homepage: https://github.com/teodly/inferno
 Description: Inferno-AoIP companion package for TeleTool
  Provides a pinned upstream Inferno-AoIP ALSA PCM and the Inferno Statime
- clock service used by TeleTool's experimental Dante-compatible network
+ clock service used by TeleTool's Dante-compatible network
  audio output. Inferno-AoIP is unofficial and is not affiliated with or
  endorsed by Audinate.
 X-Teletool-Inferno-Ref: v0.5.4

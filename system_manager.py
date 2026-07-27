@@ -103,6 +103,10 @@ def _schedule_program_restart(delay_s: float = 0.5, exit_code: int = 3) -> None:
     threading.Thread(target=_do_exit, daemon=True).start()
 
 
+def schedule_program_restart(delay_s: float = 0.5, exit_code: int = 3) -> None:
+    _schedule_program_restart(delay_s, exit_code)
+
+
 def _normalise_update_branch(branch: Optional[str]) -> str:
     value = str(branch or DEFAULT_RELEASE_BRANCH).strip().lower()
     if value not in GITHUB_UPDATE_BRANCHES:

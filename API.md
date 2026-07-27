@@ -135,6 +135,11 @@ After TV setup completes, TeleTool stores the exact scanfile key returned by the
 installed Tvheadend version.
 `ndi_groups` and `ndi_discovery_server` accept comma-separated values; discovery
 server entries must be IP addresses, with optional `:port`.
+NDI group and Discovery Server changes are SDK startup settings. If a config
+change returns `restart_required: true`, TeleTool will restart before those
+settings become active. A `/api/start` request that changes the group may return
+`restart_required: true`; the requested stream is saved and started
+automatically after the restart.
 
 ## System
 

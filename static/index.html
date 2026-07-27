@@ -504,8 +504,9 @@ document.getElementById("start").addEventListener("click", async () => {
   }
   toast("Starting…");
   document.getElementById("start").disabled = true;
+  let restartRequested = false;
   try {
-    await jpost("/api/start", {
+    const result = await jpost("/api/start", {
       channel_uuid: uuid,
       ndi_name: ndi,
       ndi_groups: groups,
@@ -517,15 +518,23 @@ document.getElementById("start").addEventListener("click", async () => {
       buffer_extra_ms: Number(uiConfig.ndi_buffer_extra_ms || 0),
       ndi_qos: !!uiConfig.ndi_qos,
     });
-    toast("NDI started.");
     uiConfig.ndi_default_name = ndi;
     uiConfig.ndi_groups = groups;
+    if (result && result.restart_required) {
+      restartRequested = true;
+      toast("Applying NDI settings. Program restarting...", "warn", 6000);
+      setTimeout(() => refreshStatus().catch(() => {}), 9000);
+    } else {
+      toast("NDI started.");
+    }
   } catch (e) {
     toast("Start failed: " + e, "bad");
   } finally {
     updateNdiControls();
   }
-  await refreshStatus();
+  if (!restartRequested) {
+    try { await refreshStatus(); } catch(e) {}
+  }
 });
 
 document.getElementById("stop").addEventListener("click", async () => {

@@ -1,5 +1,4 @@
 import html
-import ipaddress
 import json
 import os
 import re
@@ -21,8 +20,17 @@ from pydantic import BaseModel, Field
 import requests
 import fleet_manager
 import system_manager
+from ndi_runtime_config import (
+    configure_ndi_environment,
+    ndi_runtime_settings,
+    normalise_ndi_discovery_servers,
+    normalise_ndi_groups,
+    write_ndi_runtime_config,
+)
 from tvh import TELETOOL_UK_AUTO_SCANFILE, TvheadendClient
-from gst_ndi import GstNDIBridge
+
+configure_ndi_environment()
+
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("TELETOOL_CONFIG_PATH", str(BASE_DIR / "config.json"))).expanduser()
 CONFIG_LOCK = threading.Lock()
@@ -189,6 +197,7 @@ _active_profile: str = "pass"
 
 # Default (fixed) NDI delay applied when starting the pipeline
 NDI_DELAY_DEFAULT_MS: int = 250
+NDI_RUNTIME_CONFIG_AT_START: Dict[str, str] = {"ndi_groups": "", "ndi_discovery_server": ""}
 
 
 # ---------------- NDI supervision / auto-reconnect ----------------
@@ -252,6 +261,66 @@ def _lineout_req_to_dict(req: "LineOutStartReq") -> Dict[str, Any]:
         "device_id": req.device_id,
         "volume": float(req.volume),
     }
+
+
+def _runtime_settings_for_request(req_d: Dict[str, Any]) -> Dict[str, str]:
+    try:
+        return ndi_runtime_settings(cfg, ndi_groups=req_d.get("ndi_groups"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+def _ndi_runtime_restart_required(req_d: Dict[str, Any]) -> bool:
+    desired = _runtime_settings_for_request(req_d)
+    return desired != NDI_RUNTIME_CONFIG_AT_START
+
+
+def _schedule_pending_ndi_start_after_restart(req_d: Dict[str, Any]) -> None:
+    patch = {
+        "ndi_default_name": req_d["ndi_name"],
+        "ndi_groups": req_d["ndi_groups"],
+        "tvh_stream_profile": req_d["profile"],
+        "ndi_last_start_request": deepcopy(req_d),
+        "ndi_pending_start_request": deepcopy(req_d),
+    }
+    updated = _update_config(patch)
+    try:
+        write_ndi_runtime_config(updated, ndi_groups=req_d.get("ndi_groups"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    system_manager.schedule_program_restart(0.75)
+
+
+def _start_pending_ndi_after_restart() -> None:
+    pending = cfg.get("ndi_pending_start_request")
+    if not isinstance(pending, dict):
+        return
+    req_d = deepcopy(pending)
+    try:
+        with NDI_SUPERVISOR_LOCK:
+            NDI_SUPERVISOR_STATE.update({
+                "desired": True,
+                "request": deepcopy(req_d),
+                "was_running": False,
+                "restart_count": 0,
+                "last_restart_reason": "NDI settings restart",
+                "last_error": None,
+                "last_rendered": None,
+                "last_rendered_change_at": time.time(),
+                "healthy_since": None,
+                "pipeline_status": "starting",
+            })
+        _start_ndi_pipeline_from_dict(req_d, reason="NDI settings restart")
+        _update_config({"ndi_pending_start_request": None, "ndi_last_start_request": req_d})
+    except Exception as e:
+        with NDI_SUPERVISOR_LOCK:
+            NDI_SUPERVISOR_STATE["desired"] = False
+            NDI_SUPERVISOR_STATE["last_error"] = str(e)
+            NDI_SUPERVISOR_STATE["pipeline_status"] = "failed"
+        try:
+            _update_config({"ndi_pending_start_request": None})
+        except Exception:
+            pass
 
 
 def _channel_summary_for_uuid(channel_uuid: Optional[str]) -> Dict[str, Any]:
@@ -1359,9 +1428,16 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI):
     global cfg, tvh, ndi_bridge, _active_profile, NDI_DELAY_DEFAULT_MS
-    global NDI_SUPERVISOR_THREAD
+    global NDI_SUPERVISOR_THREAD, NDI_RUNTIME_CONFIG_AT_START
 
     cfg = _load_config()
+    try:
+        NDI_RUNTIME_CONFIG_AT_START = write_ndi_runtime_config(cfg)
+    except ValueError:
+        NDI_RUNTIME_CONFIG_AT_START = {"ndi_groups": "", "ndi_discovery_server": ""}
+
+    from gst_ndi import GstNDIBridge
+
     tvh = _build_tvh_client(cfg)
     ndi_bridge = GstNDIBridge(config=cfg)
     _active_profile = str(cfg.get("tvh_stream_profile", "pass"))
@@ -1375,6 +1451,13 @@ async def _app_lifespan(_app: FastAPI):
     )
     NDI_SUPERVISOR_THREAD.start()
     fleet_manager.startup()
+
+    if isinstance(cfg.get("ndi_pending_start_request"), dict):
+        threading.Thread(
+            target=_start_pending_ndi_after_restart,
+            name="ndi-pending-start",
+            daemon=True,
+        ).start()
 
     try:
         yield
@@ -1688,68 +1771,17 @@ UI_CONFIG_KEYS = {
 
 
 def _normalise_ndi_groups(value: Optional[str]) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    groups: List[str] = []
-    seen = set()
-    for raw in re.split(r"[,;\n]+", text):
-        group = " ".join(str(raw or "").strip().split())
-        if not group:
-            continue
-        if any(ord(ch) < 32 for ch in group):
-            raise HTTPException(400, "NDI group names cannot contain control characters")
-        if len(group) > 64:
-            raise HTTPException(400, "Each NDI group name must be 64 characters or fewer")
-        key = group.lower()
-        if key not in seen:
-            groups.append(group)
-            seen.add(key)
-        if len(groups) > 16:
-            raise HTTPException(400, "Use no more than 16 NDI groups")
-    result = ",".join(groups)
-    if len(result) > 240:
-        raise HTTPException(400, "NDI group list is too long")
-    return result
+    try:
+        return normalise_ndi_groups(value)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 def _normalise_ndi_discovery_servers(value: Optional[str]) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    servers: List[str] = []
-    seen = set()
-    for raw in re.split(r"[,\s]+", text):
-        token = str(raw or "").strip()
-        if not token:
-            continue
-        host = token
-        port: Optional[int] = None
-        if token.count(":") == 1:
-            host_part, port_part = token.rsplit(":", 1)
-            if port_part:
-                try:
-                    port = int(port_part)
-                except ValueError:
-                    raise HTTPException(400, "NDI Discovery Server ports must be numeric")
-                if port < 1 or port > 65535:
-                    raise HTTPException(400, "NDI Discovery Server ports must be between 1 and 65535")
-                host = host_part
-        host = host.strip().strip("[]")
-        try:
-            ip = ipaddress.ip_address(host)
-        except ValueError:
-            raise HTTPException(400, "Enter NDI Discovery Server IP addresses only")
-        normalised = str(ip)
-        if port is not None:
-            normalised = f"{normalised}:{port}"
-        key = normalised.lower()
-        if key not in seen:
-            servers.append(normalised)
-            seen.add(key)
-        if len(servers) > 8:
-            raise HTTPException(400, "Use no more than 8 NDI Discovery Server addresses")
-    return ",".join(servers)
+    try:
+        return normalise_ndi_discovery_servers(value)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 class UIConfigUpdateReq(BaseModel):
@@ -1788,13 +1820,24 @@ def api_config_ui():
 def api_config_ui_update(req: UIConfigUpdateReq):
     patch = req.model_dump(exclude_none=True)
     if not patch:
-        return {"ok": True, "config": api_config_ui()}
+        return {"ok": True, "restart_required": False, "config": api_config_ui()}
     if "ndi_groups" in patch:
         patch["ndi_groups"] = _normalise_ndi_groups(patch.get("ndi_groups"))
     if "ndi_discovery_server" in patch:
         patch["ndi_discovery_server"] = _normalise_ndi_discovery_servers(patch.get("ndi_discovery_server"))
     updated = _update_config(patch)
-    return {"ok": True, "config": {k: updated.get(k) for k in sorted(UI_CONFIG_KEYS)}}
+    restart_required = False
+    if "ndi_groups" in patch or "ndi_discovery_server" in patch:
+        try:
+            settings = write_ndi_runtime_config(updated)
+            restart_required = settings != NDI_RUNTIME_CONFIG_AT_START
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    return {
+        "ok": True,
+        "restart_required": restart_required,
+        "config": {k: updated.get(k) for k in sorted(UI_CONFIG_KEYS)},
+    }
 
 class StartReq(BaseModel):
     channel_uuid: str
@@ -1850,6 +1893,29 @@ def api_start(req: StartReq):
         if req.ndi_multicast_enabled and not str(req.ndi_multicast_addr or "").strip():
             raise HTTPException(400, "Multicast is enabled but no multicast address was provided")
         req_d = _ndi_req_to_dict(req)
+        if _ndi_runtime_restart_required(req_d):
+            _schedule_pending_ndi_start_after_restart(req_d)
+            return {
+                "ok": True,
+                "restart_required": True,
+                "message": "NDI settings changed. Program restart requested; the stream will start automatically.",
+                "ndi_name": req.ndi_name,
+                "ndi_groups": req_d["ndi_groups"],
+                "auto_reconnect": _ndi_supervisor_config()["enabled"],
+            }
+
+        updated = _update_config({
+            "ndi_default_name": req.ndi_name,
+            "ndi_groups": req_d["ndi_groups"],
+            "tvh_stream_profile": req.profile,
+            "ndi_last_start_request": req_d,
+            "ndi_pending_start_request": None,
+        })
+        try:
+            write_ndi_runtime_config(updated, ndi_groups=req_d["ndi_groups"])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
         # Mark this as the desired live stream before starting. If GStreamer later
         # receives ERROR/EOS or stops rendering frames, the supervisor will rebuild
         # the pipeline and re-resolve the tvheadend stream URL from this request.
@@ -1877,14 +1943,9 @@ def api_start(req: StartReq):
             NDI_SUPERVISOR_STATE["last_error"] = str(e)
         raise HTTPException(500, f"Failed to start pipeline: {e}")
     _active_profile = req.profile
-    _update_config({
-        "ndi_default_name": req.ndi_name,
-        "ndi_groups": req_d["ndi_groups"],
-        "tvh_stream_profile": req.profile,
-        "ndi_last_start_request": req_d,
-    })
     return {
         "ok": True,
+        "restart_required": False,
         "stream_url": stream_url,
         "ndi_name": req.ndi_name,
         "ndi_groups": req_d["ndi_groups"],

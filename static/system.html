@@ -440,7 +440,17 @@ document.getElementById("saveNdiSettings").addEventListener("click", async () =>
   try{
     const r = await jpost("/api/config/ui", { ndi_discovery_server: discovery });
     if (input && r && r.config) input.value = r.config.ndi_discovery_server || "";
-    toastId("toastNdi", "NDI settings saved.");
+    if (r && r.restart_required) {
+      toastId("toastNdi", "NDI settings saved. Restarting program...", false, 6000);
+      try{
+        await jpost("/api/system/restart_program", {});
+      } catch(_e) {
+        // The restart request may close the connection before a response returns.
+      }
+      setTimeout(refreshAll, 9000);
+    } else {
+      toastId("toastNdi", "NDI settings saved.");
+    }
   } catch(e){
     toastId("toastNdi", "NDI settings failed: " + e, true, 5000);
   }

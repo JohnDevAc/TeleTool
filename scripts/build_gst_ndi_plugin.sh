@@ -8,7 +8,7 @@ OUTPUT_DIR="$(dirname "$OUTPUT_PATH")"
 NOTICE_DIR="${TELETOOL_GST_NDI_NOTICES_DIR:-$OUTPUT_DIR/gst-plugin-ndi-licenses}"
 SOURCE_OUTPUT="${TELETOOL_GST_NDI_SOURCE_ARCHIVE:-$OUTPUT_DIR/gst-plugin-ndi-$GST_NDI_VERSION.crate}"
 
-for command_name in cargo curl python3 sha256sum tar; do
+for command_name in cargo curl patch python3 sha256sum tar; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "Missing build command: $command_name" >&2
     exit 1
@@ -35,6 +35,16 @@ tar -xzf "$archive" -C "$build_dir"
   exit 1
 }
 
+patch_file="$PROJECT_DIR/packaging/gst-plugin-ndi/teletool-sender-advertiser.patch"
+if [ ! -f "$patch_file" ]; then
+  echo "Missing TeleTool GStreamer NDI patch: $patch_file" >&2
+  exit 1
+fi
+patch -d "$source_dir" -p1 < "$patch_file"
+
+install -d "$(dirname "$SOURCE_OUTPUT")"
+tar -C "$build_dir" -czf "$SOURCE_OUTPUT" "gst-plugin-ndi-$GST_NDI_VERSION"
+
 cargo build --locked --release --manifest-path "$source_dir/Cargo.toml"
 plugin="$source_dir/target/release/libgstndi.so"
 [ -f "$plugin" ] || {
@@ -44,7 +54,6 @@ plugin="$source_dir/target/release/libgstndi.so"
 
 install -d "$(dirname "$OUTPUT_PATH")" "$(dirname "$SOURCE_OUTPUT")"
 install -m 0644 "$plugin" "$OUTPUT_PATH"
-install -m 0644 "$archive" "$SOURCE_OUTPUT"
 
 metadata="$build_dir/cargo-metadata.json"
 cargo metadata --locked --format-version 1 --manifest-path "$source_dir/Cargo.toml" \

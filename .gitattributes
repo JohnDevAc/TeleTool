@@ -9,6 +9,7 @@
 *.js text eol=lf
 *.json text eol=lf
 *.md text eol=lf
+*.patch text eol=lf
 *.txt text eol=lf
 VERSION text eol=lf
 INSTALLER_VERSION text eol=lf

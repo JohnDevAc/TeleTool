@@ -41,9 +41,11 @@ scripts/build_inferno_deb.sh dist
 ```
 
 The plugin build also creates `dist/gst-plugin-ndi-0.13.5.crate` and
-`dist/gst-plugin-ndi-licenses/`. The package build intentionally fails if these
-compliance artifacts are missing. The Inferno companion build clones the pinned
-upstream refs in `INFERNO_REF` and `STATIME_REF`. The results are
+`dist/gst-plugin-ndi-licenses/`. TeleTool applies
+`packaging/gst-plugin-ndi/teletool-sender-advertiser.patch` before compiling and
+stores the patched source archive. The package build intentionally fails if
+these compliance artifacts are missing. The Inferno companion build clones the
+pinned upstream refs in `INFERNO_REF` and `STATIME_REF`. The results are
 `dist/teletool_<version>_arm64.deb` and
 `dist/teletool-inferno_<version>_arm64.deb`.
 

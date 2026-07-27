@@ -57,10 +57,12 @@ curl -X POST http://teletool.local:8000/api/start \
   -d '{"channel_uuid":"<uuid>","ndi_name":"TeleTool","profile":"pass"}'
 ```
 
-The runtime upload endpoint accepts the library itself as an
-`application/octet-stream` request body. It is intended for the `/ndi-setup`
-holding page and rejects non-ELF, non-64-bit, non-AArch64, oversized, or
-non-NDI files.
+The runtime status response includes `capabilities.sender_advertiser`, which is
+true only when the installed runtime exposes the NDI sender-advertiser API used
+by the Discovery app's advertising-sender view. The runtime upload endpoint
+accepts the library itself as an `application/octet-stream` request body. It is
+intended for the `/ndi-setup` holding page and rejects non-ELF, non-64-bit,
+non-AArch64, oversized, or non-NDI files.
 
 ## Local Audio Output
 

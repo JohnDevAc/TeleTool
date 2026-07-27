@@ -47,6 +47,32 @@ NDI_VERIFICATION_MARKER = Path(
 NDI_UPLOAD_MIN_BYTES = 64 * 1024
 NDI_UPLOAD_MAX_BYTES = 128 * 1024 * 1024
 NDI_UPLOAD_LOCK = threading.Lock()
+NDI_SENDER_ADVERTISER_SYMBOLS = (
+    "NDIlib_send_advertiser_create",
+    "NDIlib_send_advertiser_destroy",
+    "NDIlib_send_advertiser_add_sender",
+    "NDIlib_send_advertiser_del_sender",
+)
+
+
+def _ndi_runtime_capabilities(installed_path: Optional[Path]) -> Dict[str, Any]:
+    if not installed_path:
+        return {
+            "sender_advertiser": False,
+            "missing_sender_advertiser_symbols": list(NDI_SENDER_ADVERTISER_SYMBOLS),
+        }
+    try:
+        data = installed_path.read_bytes()
+    except OSError:
+        return {
+            "sender_advertiser": False,
+            "missing_sender_advertiser_symbols": list(NDI_SENDER_ADVERTISER_SYMBOLS),
+        }
+    missing = [symbol for symbol in NDI_SENDER_ADVERTISER_SYMBOLS if symbol.encode("ascii") not in data]
+    return {
+        "sender_advertiser": not missing,
+        "missing_sender_advertiser_symbols": missing,
+    }
 
 
 def _ndi_runtime_status() -> Dict[str, Any]:
@@ -59,11 +85,13 @@ def _ndi_runtime_status() -> Dict[str, Any]:
     installed = installed_path is not None
     verified = NDI_VERIFICATION_MARKER.is_file()
     staged = NDI_DROP_PATH.is_file()
+    capabilities = _ndi_runtime_capabilities(installed_path)
     return {
         "ready": installed and verified,
         "installed": installed,
         "verified": verified,
         "installed_path": str(installed_path) if installed_path else None,
+        "capabilities": capabilities,
         "staged": staged,
         "drop_path": str(NDI_DROP_PATH),
         "drop_directory": str(NDI_DROP_PATH.parent),

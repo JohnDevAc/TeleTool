@@ -1,0 +1,232 @@
+diff --git a/src/ndi.rs b/src/ndi.rs
+index d008a9f..4a02875 100644
+--- a/src/ndi.rs
++++ b/src/ndi.rs
+@@ -393 +393,4 @@ impl SendBuilder<'_> {
+-                Some(SendInstance(ptr::NonNull::new_unchecked(ptr)))
++                Some(SendInstance {
++                    ptr: ptr::NonNull::new_unchecked(ptr),
++                    advertiser: None,
++                })
+@@ -400 +403,4 @@ impl SendBuilder<'_> {
+-pub struct SendInstance(ptr::NonNull<::std::os::raw::c_void>);
++pub struct SendInstance {
++    ptr: ptr::NonNull<::std::os::raw::c_void>,
++    advertiser: Option<SendAdvertiser>,
++}
+@@ -415 +421 @@ impl SendInstance {
+-            NDIlib_send_send_video_v2(self.0.as_ptr(), frame.as_ptr());
++            NDIlib_send_send_video_v2(self.ptr.as_ptr(), frame.as_ptr());
+@@ -421 +427 @@ impl SendInstance {
+-            NDIlib_send_send_audio_v3(self.0.as_ptr(), frame.as_ptr());
++            NDIlib_send_send_audio_v3(self.ptr.as_ptr(), frame.as_ptr());
+@@ -426 +432,21 @@ impl SendInstance {
+-        unsafe { NDIlib_send_send_metadata(self.0.as_ptr(), metadata.as_ptr()) }
++        unsafe { NDIlib_send_send_metadata(self.ptr.as_ptr(), metadata.as_ptr()) }
++    }
++
++    pub fn advertise(&mut self, allow_monitoring: bool) -> SendAdvertiseResult {
++        if self.advertiser.is_some() {
++            return SendAdvertiseResult::AlreadyAdvertising;
++        }
++        if !NDIlib_send_advertiser_available() {
++            return SendAdvertiseResult::UnsupportedRuntime;
++        }
++
++        let Some(advertiser) = SendAdvertiser::new() else {
++            return SendAdvertiseResult::CreateFailed;
++        };
++
++        if advertiser.add_sender(self, allow_monitoring) {
++            self.advertiser = Some(advertiser);
++            SendAdvertiseResult::Advertising
++        } else {
++            SendAdvertiseResult::AddFailed
++        }
+@@ -432 +458,48 @@ impl Drop for SendInstance {
+-        unsafe { NDIlib_send_destroy(self.0.as_ptr() as *mut _) }
++        if let Some(advertiser) = self.advertiser.take() {
++            advertiser.del_sender(self);
++        }
++        unsafe { NDIlib_send_destroy(self.ptr.as_ptr() as *mut _) }
++    }
++}
++
++#[derive(Debug, Copy, Clone, PartialEq, Eq)]
++pub enum SendAdvertiseResult {
++    Advertising,
++    AlreadyAdvertising,
++    UnsupportedRuntime,
++    CreateFailed,
++    AddFailed,
++}
++
++#[derive(Debug)]
++struct SendAdvertiser(ptr::NonNull<::std::os::raw::c_void>);
++
++impl SendAdvertiser {
++    fn new() -> Option<Self> {
++        unsafe {
++            let settings = NDIlib_send_advertiser_create_t {
++                p_url_address: ptr::null(),
++            };
++            let ptr = NDIlib_send_advertiser_create(&settings);
++            ptr::NonNull::new(ptr).map(Self)
++        }
++    }
++
++    fn add_sender(&self, send: &SendInstance, allow_monitoring: bool) -> bool {
++        unsafe {
++            NDIlib_send_advertiser_add_sender(
++                self.0.as_ptr(),
++                send.ptr.as_ptr(),
++                allow_monitoring,
++            )
++        }
++    }
++
++    fn del_sender(&self, send: &SendInstance) -> bool {
++        unsafe { NDIlib_send_advertiser_del_sender(self.0.as_ptr(), send.ptr.as_ptr()) }
++    }
++}
++
++impl Drop for SendAdvertiser {
++    fn drop(&mut self) {
++        unsafe { NDIlib_send_advertiser_destroy(self.0.as_ptr() as *mut _) }
+diff --git a/src/ndisink/imp.rs b/src/ndisink/imp.rs
+index b3a7a7e..9158051 100644
+--- a/src/ndisink/imp.rs
++++ b/src/ndisink/imp.rs
+@@ -13 +13 @@ use once_cell::sync::Lazy;
+-use crate::ndi::SendInstance;
++use crate::ndi::{SendAdvertiseResult, SendInstance};
+@@ -196 +196 @@ impl BaseSinkImpl for NdiSink {
+-        let send = SendInstance::builder(&settings.ndi_name)
++        let mut send = SendInstance::builder(&settings.ndi_name)
+@@ -203,0 +204,15 @@ impl BaseSinkImpl for NdiSink {
++        match send.advertise(true) {
++            SendAdvertiseResult::Advertising => {
++                gst::info!(CAT, imp = self, "Registered NDI sender advertiser");
++            }
++            SendAdvertiseResult::UnsupportedRuntime => {
++                gst::debug!(CAT, imp = self, "NDI sender advertiser API is unavailable");
++            }
++            SendAdvertiseResult::CreateFailed => {
++                gst::warning!(CAT, imp = self, "Could not create NDI sender advertiser");
++            }
++            SendAdvertiseResult::AddFailed => {
++                gst::warning!(CAT, imp = self, "Could not add NDI sender to advertiser");
++            }
++            SendAdvertiseResult::AlreadyAdvertising => {}
++        }
+diff --git a/src/ndisys.rs b/src/ndisys.rs
+index 2f6bd4e..fcded86 100644
+--- a/src/ndisys.rs
++++ b/src/ndisys.rs
+@@ -77,0 +78,25 @@ struct FFI {
++    send_advertiser_create: Option<
++        Symbol<
++            fn(
++                p_create_settings: *const NDIlib_send_advertiser_create_t,
++            ) -> NDIlib_send_advertiser_instance_t,
++        >,
++    >,
++    send_advertiser_destroy: Option<Symbol<fn(p_instance: NDIlib_send_advertiser_instance_t)>>,
++    send_advertiser_add_sender: Option<
++        Symbol<
++            fn(
++                p_instance: NDIlib_send_advertiser_instance_t,
++                p_sender: NDIlib_send_instance_t,
++                allow_monitoring: bool,
++            ) -> bool,
++        >,
++    >,
++    send_advertiser_del_sender: Option<
++        Symbol<
++            fn(
++                p_instance: NDIlib_send_advertiser_instance_t,
++                p_sender: NDIlib_send_instance_t,
++            ) -> bool,
++        >,
++    >,
+@@ -254,0 +280,8 @@ pub type NDIlib_send_instance_t = *mut ::std::os::raw::c_void;
++pub type NDIlib_send_advertiser_instance_t = *mut ::std::os::raw::c_void;
++
++#[repr(C)]
++#[derive(Debug, Copy, Clone)]
++pub struct NDIlib_send_advertiser_create_t {
++    pub p_url_address: *const ::std::os::raw::c_char,
++}
++
+@@ -415,0 +449,15 @@ pub fn load() -> Result<(), glib::BoolError> {
++        macro_rules! load_optional_symbol {
++            ($name:ident) => {{
++                #[cfg(unix)]
++                {
++                    library
++                        .get_singlethreaded(stringify!($name).as_bytes())
++                        .ok()
++                }
++                #[cfg(windows)]
++                {
++                    library.get(stringify!($name).as_bytes()).ok()
++                }
++            }};
++        }
++
+@@ -436,0 +485,4 @@ pub fn load() -> Result<(), glib::BoolError> {
++            send_advertiser_create: load_optional_symbol!(NDIlib_send_advertiser_create),
++            send_advertiser_destroy: load_optional_symbol!(NDIlib_send_advertiser_destroy),
++            send_advertiser_add_sender: load_optional_symbol!(NDIlib_send_advertiser_add_sender),
++            send_advertiser_del_sender: load_optional_symbol!(NDIlib_send_advertiser_del_sender),
+@@ -577,0 +630,50 @@ pub unsafe fn NDIlib_send_send_metadata(
++
++pub fn NDIlib_send_advertiser_available() -> bool {
++    if let Some(ffi) = FFI.get() {
++        ffi.send_advertiser_create.is_some()
++            && ffi.send_advertiser_destroy.is_some()
++            && ffi.send_advertiser_add_sender.is_some()
++            && ffi.send_advertiser_del_sender.is_some()
++    } else {
++        false
++    }
++}
++
++pub unsafe fn NDIlib_send_advertiser_create(
++    p_create_settings: *const NDIlib_send_advertiser_create_t,
++) -> NDIlib_send_advertiser_instance_t {
++    if let Some(ref f) = FFI.get_unchecked().send_advertiser_create {
++        f(p_create_settings)
++    } else {
++        ::std::ptr::null_mut()
++    }
++}
++
++pub unsafe fn NDIlib_send_advertiser_destroy(p_instance: NDIlib_send_advertiser_instance_t) {
++    if let Some(ref f) = FFI.get_unchecked().send_advertiser_destroy {
++        f(p_instance)
++    }
++}
++
++pub unsafe fn NDIlib_send_advertiser_add_sender(
++    p_instance: NDIlib_send_advertiser_instance_t,
++    p_sender: NDIlib_send_instance_t,
++    allow_monitoring: bool,
++) -> bool {
++    if let Some(ref f) = FFI.get_unchecked().send_advertiser_add_sender {
++        f(p_instance, p_sender, allow_monitoring)
++    } else {
++        false
++    }
++}
++
++pub unsafe fn NDIlib_send_advertiser_del_sender(
++    p_instance: NDIlib_send_advertiser_instance_t,
++    p_sender: NDIlib_send_instance_t,
++) -> bool {
++    if let Some(ref f) = FFI.get_unchecked().send_advertiser_del_sender {
++        f(p_instance, p_sender)
++    } else {
++        false
++    }
++}

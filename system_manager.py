@@ -49,6 +49,8 @@ GITHUB_UPDATE_BRANCHES = {
     "dev": "Dev",
 }
 DEFAULT_RELEASE_BRANCH = "main"
+UPDATE_START_GRACE_S = 45
+UPDATE_STATUS_RECENT_S = 600
 UPDATE_LOCK = threading.Lock()
 UPDATE_STATE: Dict[str, Any] = {
     "running": False,
@@ -63,10 +65,36 @@ UPDATE_STATE: Dict[str, Any] = {
 }
 
 
+def _coerce_epoch(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _set_update_status(**patch: Any) -> Dict[str, Any]:
     with UPDATE_LOCK:
         UPDATE_STATE.update(patch)
         return deepcopy(UPDATE_STATE)
+
+
+def _write_package_update_status(status: Dict[str, Any]) -> None:
+    if not PACKAGE_MANAGED:
+        return
+    tmp_path: Optional[Path] = None
+    try:
+        PACKAGE_UPDATE_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = PACKAGE_UPDATE_STATUS_PATH.with_name(
+            f".{PACKAGE_UPDATE_STATUS_PATH.name}.{os.getpid()}.{time.time_ns()}"
+        )
+        tmp_path.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp_path, PACKAGE_UPDATE_STATUS_PATH)
+    except Exception:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _read_package_update_status() -> Optional[Dict[str, Any]]:
@@ -78,10 +106,88 @@ def _read_package_update_status() -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(data, dict):
         return None
-    finished_at = int(data.get("finished_at") or 0)
-    if finished_at and time.time() - finished_at > 600:
+    finished_at = _coerce_epoch(data.get("finished_at"))
+    if finished_at and time.time() - finished_at > UPDATE_STATUS_RECENT_S:
         return None
     return data
+
+
+def _package_update_unit(branch: str) -> str:
+    return f"teletool-update@{branch}.service"
+
+
+def _package_update_unit_state(branch: str) -> Dict[str, str]:
+    unit = _package_update_unit(branch)
+    rc, out, err = _run_cmd(
+        [
+            "systemctl",
+            "show",
+            unit,
+            "--property=ActiveState",
+            "--property=SubState",
+            "--property=Result",
+            "--property=ExecMainStatus",
+            "--no-page",
+        ],
+        timeout_s=4,
+    )
+    state: Dict[str, str] = {"unit": unit}
+    if rc != 0:
+        state["error"] = err or out or "systemctl show failed"
+        return state
+    for line in out.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            state[key] = value
+    return state
+
+
+def _recover_stale_update_status(status: Dict[str, Any]) -> Dict[str, Any]:
+    if not PACKAGE_MANAGED or not status.get("running"):
+        return status
+    started_at = _coerce_epoch(status.get("started_at"))
+    if not started_at or time.time() - started_at < UPDATE_START_GRACE_S:
+        return status
+
+    branch = str(status.get("branch") or DEFAULT_RELEASE_BRANCH).strip().lower()
+    if branch not in GITHUB_UPDATE_BRANCHES:
+        branch = DEFAULT_RELEASE_BRANCH
+    unit_state = _package_update_unit_state(branch)
+    active_state = unit_state.get("ActiveState", "")
+    if active_state in {"active", "activating", "reloading"}:
+        return status
+
+    result = unit_state.get("Result") or "unknown"
+    exec_status = unit_state.get("ExecMainStatus") or "unknown"
+    sub_state = unit_state.get("SubState") or "unknown"
+    if active_state == "inactive" and result == "success":
+        error = (
+            "The package updater finished without reporting progress. "
+            "Check the update log and try again."
+        )
+    else:
+        error = (
+            "The package updater stopped before reporting progress "
+            f"({unit_state.get('unit', 'teletool-update.service')} is "
+            f"{active_state or 'unknown'}/{sub_state}, result={result}, status={exec_status})."
+        )
+    if unit_state.get("error"):
+        error = f"{error} {unit_state['error']}"
+
+    recovered = deepcopy(status)
+    recovered.update(
+        {
+            "running": False,
+            "done": True,
+            "percent": 100,
+            "step": "Update failed",
+            "error": error,
+            "finished_at": int(time.time()),
+        }
+    )
+    _set_update_status(**recovered)
+    _write_package_update_status(recovered)
+    return recovered
 
 
 def _update_status_snapshot() -> Dict[str, Any]:
@@ -89,11 +195,11 @@ def _update_status_snapshot() -> Dict[str, Any]:
         status = deepcopy(UPDATE_STATE)
     package_status = _read_package_update_status()
     if package_status:
-        memory_started = int(status.get("started_at") or 0)
-        package_started = int(package_status.get("started_at") or 0)
+        memory_started = _coerce_epoch(status.get("started_at"))
+        package_started = _coerce_epoch(package_status.get("started_at"))
         if package_started >= memory_started:
             status.update(package_status)
-    return status
+    return _recover_stale_update_status(status)
 
 
 def _schedule_program_restart(delay_s: float = 0.5, exit_code: int = 3) -> None:
@@ -687,7 +793,7 @@ def api_system_update_from_server(req: ProgramUpdateReq):
     )
     # Keep apt/dpkg outside teletool.service's cgroup. The package postinst
     # restarts TeleTool, which would otherwise kill its own update process.
-    unit = f"teletool-update@{branch}.service"
+    unit = _package_update_unit(branch)
     rc, out, err = _run_cmd(
         ["systemctl", "--no-block", "start", unit],
         sudo=True,

@@ -82,7 +82,10 @@ require(
 )
 require(
     "system_manager.py",
-    'unit = f"teletool-update@{branch}.service"',
+    '_package_update_unit(branch)',
+    "_recover_stale_update_status",
+    "systemctl",
+    "show",
     "_read_package_update_status",
     "Updates require a package installation created by the published WGET installer.",
 )

@@ -11,7 +11,7 @@ package carries the complete TeleTool terms, Debian copyright metadata, the
 MPL-2.0 plugin source, and notices for every Rust dependency compiled into the
 plugin.
 
-Experimental Inferno-AoIP support is distributed as the separate
+Inferno-AoIP support is distributed as the separate
 `teletool-inferno` companion package. The main `teletool` package recommends
 the exact matching companion version, while `teletool-inferno` carries the
 pinned upstream Inferno ALSA PCM, the pinned Inferno Statime fork, service
@@ -113,17 +113,22 @@ The published fresh-install command is:
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh
 ```
 
-The installer asks which branch to install and defaults to Main. It also asks
-whether to install the optional Inferno network audio package when that package
-is available from the selected repository. For unattended installs, pass the
-branch as the first script argument and the Inferno choice as the optional
-second argument:
+The installer asks which branch to install and defaults to Main. A second
+numbered choice installs or omits the optional Inferno network audio package
+when that package is available from the selected repository. For unattended
+installs, pass the branch as the first script argument and the Inferno choice
+as the optional second argument:
 
 ```sh
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- main
+wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- main yes
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- dev
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- dev yes
 ```
+
+The System page updater exposes the same optional package as `keep`, `install`,
+or `remove`; the selected branch and action are encoded in the allowlisted
+systemd update unit name.
 
 Never commit the private APT signing key. Existing clients must continue to use
 the same key for future repository updates.

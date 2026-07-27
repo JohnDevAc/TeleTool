@@ -48,10 +48,17 @@ GITHUB_UPDATE_BRANCHES = {
     "main": "Main",
     "dev": "Dev",
 }
+INFERNO_UPDATE_ACTIONS = {"keep", "install", "remove"}
 DEFAULT_RELEASE_BRANCH = "main"
 UPDATE_START_GRACE_S = 45
 UPDATE_STATUS_RECENT_S = 600
+INFERNO_PACKAGE_CACHE_TTL_S = 30
 UPDATE_LOCK = threading.Lock()
+INFERNO_PACKAGE_CACHE_LOCK = threading.Lock()
+INFERNO_PACKAGE_CACHE: Dict[str, Any] = {
+    "checked_at": 0.0,
+    "data": {"installed": False, "version": None},
+}
 UPDATE_STATE: Dict[str, Any] = {
     "running": False,
     "done": False,
@@ -62,6 +69,7 @@ UPDATE_STATE: Dict[str, Any] = {
     "finished_at": None,
     "stats": None,
     "branch": DEFAULT_RELEASE_BRANCH,
+    "inferno_action": "keep",
 }
 
 
@@ -112,12 +120,12 @@ def _read_package_update_status() -> Optional[Dict[str, Any]]:
     return data
 
 
-def _package_update_unit(branch: str) -> str:
-    return f"teletool-update@{branch}.service"
+def _package_update_unit(branch: str, inferno_action: str = "keep") -> str:
+    return f"teletool-update@{branch}-{inferno_action}.service"
 
 
-def _package_update_unit_state(branch: str) -> Dict[str, str]:
-    unit = _package_update_unit(branch)
+def _package_update_unit_state(branch: str, inferno_action: str = "keep") -> Dict[str, str]:
+    unit = _package_update_unit(branch, inferno_action)
     rc, out, err = _run_cmd(
         [
             "systemctl",
@@ -152,7 +160,10 @@ def _recover_stale_update_status(status: Dict[str, Any]) -> Dict[str, Any]:
     branch = str(status.get("branch") or DEFAULT_RELEASE_BRANCH).strip().lower()
     if branch not in GITHUB_UPDATE_BRANCHES:
         branch = DEFAULT_RELEASE_BRANCH
-    unit_state = _package_update_unit_state(branch)
+    inferno_action = str(status.get("inferno_action") or "keep").strip().lower()
+    if inferno_action not in INFERNO_UPDATE_ACTIONS:
+        inferno_action = "keep"
+    unit_state = _package_update_unit_state(branch, inferno_action)
     active_state = unit_state.get("ActiveState", "")
     if active_state in {"active", "activating", "reloading"}:
         return status
@@ -221,6 +232,14 @@ def _normalise_update_branch(branch: Optional[str]) -> str:
     return value
 
 
+def _normalise_inferno_action(action: Optional[str]) -> str:
+    value = str(action or "keep").strip().lower()
+    if value not in INFERNO_UPDATE_ACTIONS:
+        allowed = ", ".join(sorted(INFERNO_UPDATE_ACTIONS))
+        raise ValueError(f"Unknown Inferno update action. Choose one of: {allowed}")
+    return value
+
+
 def _read_release_marker_branch() -> Optional[str]:
     try:
         data = json.loads(RELEASE_MARKER_PATH.read_text(errors="ignore"))
@@ -248,6 +267,31 @@ def _app_version() -> str:
     return version or APP_VERSION_FALLBACK
 
 
+def _inferno_package_info() -> Dict[str, Any]:
+    now = time.monotonic()
+    with INFERNO_PACKAGE_CACHE_LOCK:
+        if now - float(INFERNO_PACKAGE_CACHE["checked_at"]) < INFERNO_PACKAGE_CACHE_TTL_S:
+            return deepcopy(INFERNO_PACKAGE_CACHE["data"])
+
+    rc, out, _ = _run_cmd(
+        ["dpkg-query", "-W", "-f=${Status}\t${Version}", "teletool-inferno"],
+        timeout_s=3,
+    )
+    if rc != 0:
+        data = {"installed": False, "version": None}
+    else:
+        status, _, version = out.strip().partition("\t")
+        installed = status.strip() == "install ok installed"
+        data = {
+            "installed": installed,
+            "version": version.strip() if installed and version.strip() else None,
+        }
+    with INFERNO_PACKAGE_CACHE_LOCK:
+        INFERNO_PACKAGE_CACHE["checked_at"] = now
+        INFERNO_PACKAGE_CACHE["data"] = data
+    return deepcopy(data)
+
+
 def release_info() -> Dict[str, Any]:
     branch = _current_release_branch()
     return {
@@ -256,6 +300,7 @@ def release_info() -> Dict[str, Any]:
         "development": branch == "dev",
         "version": _app_version(),
         "package_managed": PACKAGE_MANAGED,
+        "inferno": _inferno_package_info(),
     }
 
 
@@ -751,6 +796,7 @@ def api_system_restart_program():
 class ProgramUpdateReq(BaseModel):
     confirm: bool = False
     branch: str = DEFAULT_RELEASE_BRANCH
+    inferno_action: str = "keep"
 
 
 @router.get("/api/release")
@@ -774,6 +820,7 @@ def api_system_update_from_server(req: ProgramUpdateReq):
         )
     try:
         branch = _normalise_update_branch(req.branch)
+        inferno_action = _normalise_inferno_action(req.inferno_action)
     except ValueError as e:
         raise HTTPException(400, str(e))
     current = _update_status_snapshot()
@@ -790,10 +837,11 @@ def api_system_update_from_server(req: ProgramUpdateReq):
         finished_at=None,
         stats=None,
         branch=branch,
+        inferno_action=inferno_action,
     )
     # Keep apt/dpkg outside teletool.service's cgroup. The package postinst
     # restarts TeleTool, which would otherwise kill its own update process.
-    unit = _package_update_unit(branch)
+    unit = _package_update_unit(branch, inferno_action)
     rc, out, err = _run_cmd(
         ["systemctl", "--no-block", "start", unit],
         sudo=True,

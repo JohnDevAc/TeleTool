@@ -17,10 +17,13 @@
     </div>
 
     <div class="rightTop">
-      <a class="miniBtn" href="/manager">Fleet Manager</a>
-      <a class="miniBtn" href="/">NDI®</a>
-      <a class="miniBtn" href="/audio">Audio</a>
-      <div class="pill" title="System health">
+      <nav class="pageNav" aria-label="TeleTool pages">
+        <a class="miniBtn navBtn" href="/">NDI®</a>
+        <a class="miniBtn navBtn" href="/audio">Audio</a>
+        <a class="miniBtn navBtn" href="/manager">Fleet Manager</a>
+        <a class="miniBtn navBtn isActive" href="/system" aria-current="page">System</a>
+      </nav>
+      <div class="pill headerStatus" title="System health">
         <span id="dot" class="dot"></span>
         <span id="statusText">CONNECTING</span>
       </div>
@@ -39,7 +42,12 @@
         <button id="rebootPi" class="danger">Reboot HW</button>
         <span id="appVersionBadge" class="badge">Version -</span>
         <span id="toastPower" class="toast"></span>
-        <select id="updateBranch" class="updateBranchSelect pushRight" aria-label="Update branch">
+        <select id="updateInferno" class="updateBranchSelect pushRight" aria-label="Inferno audio output update action">
+          <option value="keep">Keep Inferno setting</option>
+          <option value="install">Install Inferno audio</option>
+          <option value="remove">Remove Inferno audio</option>
+        </select>
+        <select id="updateBranch" class="updateBranchSelect" aria-label="Update branch">
           <option value="main">Main</option>
           <option value="dev">Dev</option>
         </select>
@@ -206,6 +214,7 @@ function renderUpdateStatus(st){
   const bar = document.getElementById("updateProgressBar");
   const btn = document.getElementById("updateFromServer");
   const branchSelect = document.getElementById("updateBranch");
+  const infernoSelect = document.getElementById("updateInferno");
   const running = !!(st && st.running);
   const done = !!(st && st.done);
   const error = st && st.error ? String(st.error) : "";
@@ -218,6 +227,7 @@ function renderUpdateStatus(st){
   step.textContent = error ? ("Update failed: " + error) : ((st && st.step) || "Idle");
   if (btn) btn.disabled = running;
   if (branchSelect) branchSelect.disabled = running;
+  if (infernoSelect) infernoSelect.disabled = running;
 
   if (error && updateStartedHere) toastId("toastPower", "Update failed: " + error, true, 7000);
   else if (running) toastId(
@@ -233,14 +243,19 @@ function renderUpdateStatus(st){
     }
     if (updateCompletionTimer) clearTimeout(updateCompletionTimer);
     updateCompletionTimer = setTimeout(() => {
-      updateStartedHere = false;
-      renderUpdateStatus(null);
-    }, 5000);
+      window.location.replace("/");
+    }, 2500);
   }
 }
 
 function updateBranchLabel(branch){
   return String(branch || "main").toLowerCase() === "dev" ? "Dev" : "Main";
+}
+
+function infernoActionLabel(action){
+  if (action === "install") return "install or update Inferno audio";
+  if (action === "remove") return "remove Inferno audio";
+  return "keep the current Inferno setting";
 }
 
 function scheduleUpdatePoll(delayMs=1000){
@@ -347,6 +362,7 @@ async function refreshReleaseInfo(){
     if (packageManagedInstall){
       const btn = document.getElementById("updateFromServer");
       const branchSelect = document.getElementById("updateBranch");
+      const infernoSelect = document.getElementById("updateInferno");
       if (btn){
         btn.textContent = "Check for Update";
         btn.title = "Install or switch to the selected signed TeleTool channel";
@@ -355,6 +371,15 @@ async function refreshReleaseInfo(){
         branchSelect.value = String((info && info.branch) || "main").toLowerCase() === "dev" ? "dev" : "main";
         branchSelect.disabled = false;
         branchSelect.title = "Choose the signed Main or Dev package channel";
+      }
+      if (infernoSelect){
+        const infernoInstalled = !!(info && info.inferno && info.inferno.installed);
+        infernoSelect.value = "keep";
+        infernoSelect.options[0].textContent = infernoInstalled ?
+          "Keep Inferno installed" :
+          "Keep Inferno uninstalled";
+        infernoSelect.options[2].disabled = !infernoInstalled;
+        infernoSelect.title = "Keep, install, or remove the Inferno audio output package";
       }
     }
   } catch(e){
@@ -475,9 +500,10 @@ document.getElementById("restartProgram").addEventListener("click", async () => 
 
 document.getElementById("updateFromServer").addEventListener("click", async () => {
   const branch = document.getElementById("updateBranch").value || "main";
+  const infernoAction = document.getElementById("updateInferno").value || "keep";
   const branchLabel = updateBranchLabel(branch);
   const prompt = packageManagedInstall ?
-    `Install or switch to the signed TeleTool ${branchLabel} channel now? The service will restart if the package changes.` :
+    `Install or switch to the signed TeleTool ${branchLabel} channel and ${infernoActionLabel(infernoAction)} now? The service will restart if a package changes.` :
     `Update from the ${branchLabel} branch now? Do not do this while TeleTool is in production. The service will restart after the update.`;
   const ok = window.confirm(prompt);
   if (!ok) return;
@@ -486,9 +512,9 @@ document.getElementById("updateFromServer").addEventListener("click", async () =
   updateStartedHere = true;
   updateCompletionShown = false;
   if (updateCompletionTimer) clearTimeout(updateCompletionTimer);
-  renderUpdateStatus({ running: true, done: false, percent: 1, step: "Starting update", branch });
+  renderUpdateStatus({ running: true, done: false, percent: 1, step: "Starting update", branch, inferno_action: infernoAction });
   try{
-    await jpost("/api/system/update_from_server", { confirm: true, branch });
+    await jpost("/api/system/update_from_server", { confirm: true, branch, inferno_action: infernoAction });
     await refreshUpdateStatus();
     scheduleUpdatePoll(1000);
   } catch(e){

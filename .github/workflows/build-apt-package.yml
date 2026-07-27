@@ -61,6 +61,12 @@ jobs:
       - name: Validate package Web updater
         run: python3 scripts/check_package_updater.py
 
+      - name: Validate Inferno updater choices
+        run: python3 scripts/check_inferno_update_api.py
+
+      - name: Validate audio output lifecycle
+        run: python3 scripts/check_audio_output_lifecycle.py
+
       - name: Build the Debian package
         env:
           TELETOOL_GST_NDI_PLUGIN: ${{ github.workspace }}/dist/libgstndi.so

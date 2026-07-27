@@ -15,10 +15,13 @@
       <h1 class="srOnly">TV to NDI® Bridge</h1>
     </div>
     <div class="rightTop">
-      <a class="miniBtn" href="/manager">Fleet Manager</a>
-      <a class="miniBtn" href="/audio">Audio</a>
-      <a class="miniBtn" href="/system">System</a>
-      <div class="pill" title="NDI running state">
+      <nav class="pageNav" aria-label="TeleTool pages">
+        <a class="miniBtn navBtn isActive" href="/" aria-current="page">NDI®</a>
+        <a class="miniBtn navBtn" href="/audio">Audio</a>
+        <a class="miniBtn navBtn" href="/manager">Fleet Manager</a>
+        <a class="miniBtn navBtn" href="/system">System</a>
+      </nav>
+      <div class="pill headerStatus" title="NDI running state">
         <span id="dot" class="dot"></span>
         <span id="statusText">STOPPED</span>
       </div>

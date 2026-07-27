@@ -22,6 +22,7 @@
   "lineout_sink_sync": true,
   "lineout_queue_time_ms": 200,
   "inferno_alsa_device": "teletool_inferno",
+  "inferno_clock_path": "/run/teletool-inferno/usrvclock.sock",
   "inferno_alsa_buffer_time_us": 85333,
   "inferno_alsa_latency_time_us": 5333,
   "enable_bitrate_probe": false,

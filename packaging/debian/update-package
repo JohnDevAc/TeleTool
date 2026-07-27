@@ -6,22 +6,40 @@ STATUS_FILE="$STATUS_DIR/update-status.json"
 LOG_FILE="/var/log/teletool-web-update.log"
 SOURCE_FILE="/etc/apt/sources.list.d/teletool.sources"
 KEYRING="/usr/share/keyrings/teletool-archive-keyring.gpg"
-channel="${1:-}"
+update_target="${1:-}"
 started_at="$(date +%s)"
 
-case "$channel" in
-  main)
+case "$update_target" in
+  main|main-keep)
+    channel="main"
+    inferno_action="keep"
     channel_label="Main"
     repository_url="https://johndevac.github.io/TeleTool/apt-repo"
     suite="stable"
     ;;
-  dev)
+  main-install|main-remove)
+    channel="main"
+    inferno_action="${update_target#main-}"
+    channel_label="Main"
+    repository_url="https://johndevac.github.io/TeleTool/apt-repo"
+    suite="stable"
+    ;;
+  dev|dev-keep)
+    channel="dev"
+    inferno_action="keep"
+    channel_label="Dev"
+    repository_url="https://raw.githubusercontent.com/JohnDevAc/TeleTool/dev/apt-repo-dev"
+    suite="dev"
+    ;;
+  dev-install|dev-remove)
+    channel="dev"
+    inferno_action="${update_target#dev-}"
     channel_label="Dev"
     repository_url="https://raw.githubusercontent.com/JohnDevAc/TeleTool/dev/apt-repo-dev"
     suite="dev"
     ;;
   *)
-    printf 'Usage: %s main|dev\n' "$0" >&2
+    printf 'Usage: %s main|dev[-keep|-install|-remove]\n' "$0" >&2
     exit 2
     ;;
 esac
@@ -35,9 +53,10 @@ write_status() {
   finished_at="$6"
   restart_required="$7"
   tmp="$(mktemp "$STATUS_DIR/.update-status.XXXXXX")"
-  printf '{\n  "running": %s,\n  "done": %s,\n  "percent": %s,\n  "step": "%s",\n  "error": %s,\n  "started_at": %s,\n  "finished_at": %s,\n  "branch": "%s",\n  "package_managed": true,\n  "restart_required": %s,\n  "log": "%s"\n}\n' \
+  printf '{\n  "running": %s,\n  "done": %s,\n  "percent": %s,\n  "step": "%s",\n  "error": %s,\n  "started_at": %s,\n  "finished_at": %s,\n  "branch": "%s",\n  "inferno_action": "%s",\n  "package_managed": true,\n  "restart_required": %s,\n  "log": "%s"\n}\n' \
     "$running" "$done" "$percent" "$step" "$error_json" \
-    "$started_at" "$finished_at" "$channel" "$restart_required" "$LOG_FILE" >"$tmp"
+    "$started_at" "$finished_at" "$channel" "$inferno_action" \
+    "$restart_required" "$LOG_FILE" >"$tmp"
   install -o teletool -g teletool -m 0640 "$tmp" "$STATUS_FILE"
   rm -f "$tmp"
 }
@@ -83,25 +102,68 @@ case "$target_version" in
 esac
 target_inferno_version="$(apt-cache madison teletool-inferno | awk 'NR == 1 {print $3}')"
 
-write_status true false 65 "Installing TeleTool $target_version from $channel_label" null null false
+case "$inferno_action" in
+  install) inferno_step=" and Inferno audio output" ;;
+  remove) inferno_step=" without Inferno audio output" ;;
+  *) inferno_step="" ;;
+esac
+write_status true false 65 "Installing TeleTool $target_version$inferno_step from $channel_label" null null false
 set -- "teletool=$target_version"
-if [ "$target_inferno_version" = "$target_version" ]; then
-  set -- "$@" "teletool-inferno=$target_version"
-else
-  printf 'No matching teletool-inferno package was found for %s in the %s repository.\n' \
-    "$target_version" "$channel_label"
-fi
+case "$inferno_action" in
+  install)
+    if [ "$target_inferno_version" != "$target_version" ]; then
+      printf 'No matching teletool-inferno package was found for %s in the %s repository.\n' \
+        "$target_version" "$channel_label" >&2
+      exit 1
+    fi
+    set -- "$@" "teletool-inferno=$target_version"
+    ;;
+  keep)
+    if [ -n "$before_inferno" ]; then
+      if [ "$target_inferno_version" != "$target_version" ]; then
+        printf 'No matching teletool-inferno package was found for %s in the %s repository.\n' \
+          "$target_version" "$channel_label" >&2
+        exit 1
+      fi
+      set -- "$@" "teletool-inferno=$target_version"
+    fi
+    ;;
+  remove)
+    if [ -n "$before_inferno" ]; then
+      set -- "$@" "teletool-inferno-"
+    fi
+    ;;
+esac
 DEBIAN_FRONTEND=noninteractive apt-get -qq \
   -o Acquire::Retries=3 -o DPkg::Lock::Timeout=300 -o Dpkg::Use-Pty=0 \
-  install --allow-downgrades -y "$@"
+  install --allow-downgrades --no-install-recommends -y "$@"
 after="$(dpkg-query -W -f='${Version}' teletool 2>/dev/null || true)"
 after_inferno="$(dpkg-query -W -f='${Version}' teletool-inferno 2>/dev/null || true)"
+
+case "$inferno_action" in
+  install)
+    if [ "$after_inferno" != "$target_version" ]; then
+      printf 'Inferno audio output did not install at the required version %s.\n' "$target_version" >&2
+      exit 1
+    fi
+    ;;
+  remove)
+    if [ -n "$after_inferno" ]; then
+      printf 'Inferno audio output package is still installed after removal.\n' >&2
+      exit 1
+    fi
+    ;;
+esac
 
 trap - EXIT
 if [ -n "$before" ] && [ "$before" = "$after" ] && [ "$before_inferno" = "$after_inferno" ]; then
   write_status false true 100 "TeleTool $channel_label is already up to date." null "$(date +%s)" false
 else
   write_status false true 100 "Switched to TeleTool $channel_label $after." null "$(date +%s)" true
+fi
+
+if [ "$before" = "$after" ] && [ "$before_inferno" != "$after_inferno" ]; then
+  systemctl try-restart teletool.service 2>/dev/null || true
 fi
 
 exit 0

@@ -104,6 +104,7 @@ class GstNDIBridge(GstPipelineBase):
         self._cfg: Dict[str, Any] = dict(config or load_config(config_path))
 
         super().__init__(log_maxlen=int(self._cfg.get("log_maxlen", 400)))
+        self._lineout_pipeline = GstPipelineBase(log_maxlen=300)
 
         # Config-driven feature toggles / defaults (may be overridden per-start).
         self._bitrate_probe_enabled: bool = bool(self._cfg.get("enable_bitrate_probe", False))
@@ -180,13 +181,6 @@ class GstNDIBridge(GstPipelineBase):
             self._lineout_log_tail.append(line)
 
     @staticmethod
-    def _has_property(element: Any, name: str) -> bool:
-        try:
-            return element.find_property(name) is not None
-        except Exception:
-            return False
-
-    @staticmethod
     def _safe_run(argv: List[str], timeout_s: float = 2.0) -> Dict[str, Any]:
         try:
             proc = subprocess.run(
@@ -217,11 +211,23 @@ class GstNDIBridge(GstPipelineBase):
         devices: List[Dict[str, Any]] = []
         seen = set()
         inferno_device = str(self._cfg.get("inferno_alsa_device", "teletool_inferno") or "").strip()
+        inferno_clock_path = Path(
+            str(
+                self._cfg.get(
+                    "inferno_clock_path",
+                    "/run/teletool-inferno/usrvclock.sock",
+                )
+                or "/run/teletool-inferno/usrvclock.sock"
+            )
+        )
 
         def add(device_id: str, label: str, *, device: Optional[str], sink: str, kind: str, details: str = "") -> None:
             if device_id in seen:
                 return
             seen.add(device_id)
+            ready = kind != "inferno" or inferno_clock_path.exists()
+            if kind == "inferno" and not ready:
+                details = "Inferno clock service is not ready."
             devices.append(
                 {
                     "id": device_id,
@@ -230,8 +236,9 @@ class GstNDIBridge(GstPipelineBase):
                     "device": device,
                     "kind": kind,
                     "details": details,
-                    "experimental": kind == "inferno",
+                    "ready": ready,
                     "network_output": kind == "inferno",
+                    "requires_clock_service": kind == "inferno",
                     "sample_format": "S32LE" if kind == "inferno" else None,
                 }
             )
@@ -255,7 +262,7 @@ class GstNDIBridge(GstPipelineBase):
 
         def label_for(kind: str, card_name: str, dev_name: str) -> str:
             if kind == "inferno":
-                return "Dante-compatible network output (Inferno, experimental)"
+                return "Inferno network audio output"
             if kind == "analog":
                 return "HW analogue 3.5mm jack"
             if kind == "avio":
@@ -306,7 +313,7 @@ class GstNDIBridge(GstPipelineBase):
                             return
                         label = label_for(kind, detail, name)
                         if kind == "inferno" and not detail:
-                            detail = f"Experimental Inferno ALSA PCM ({name})"
+                            detail = f"Inferno ALSA network output ({name})"
                         add(f"alsa:{name}", label, device=name, sink="alsasink", kind=kind, details=detail or name)
 
                     for raw in str(res.get("stdout") or "").splitlines():
@@ -332,6 +339,8 @@ class GstNDIBridge(GstPipelineBase):
             wanted = devices[0]["id"] if devices else ""
         for dev in devices:
             if dev.get("id") == wanted:
+                if dev.get("ready") is False:
+                    raise ValueError(str(dev.get("details") or "Selected audio output is not ready"))
                 return dev
         raise ValueError("Selected audio output is not available")
     # ---------- Public API ----------
@@ -413,30 +422,98 @@ class GstNDIBridge(GstPipelineBase):
             return d
 
     def lineout_status(self, include_logs: bool = True) -> Dict:
-        base = self._base_status_fields(include_log=False)
+        ndi_base = self._base_status_fields(include_log=False)
+        audio_base = self._lineout_pipeline._base_status_fields(include_log=include_logs)
         with self._lock:
+            pipeline_error = audio_base.get("last_error")
+            if pipeline_error and self._lineout_enabled:
+                self._lineout_enabled = False
+                self._lineout_device_id = None
+                self._lineout_device_label = None
+                self._lineout_sink_factory = None
+                self._lineout_started_at = None
+                self._lineout_last_error = str(pipeline_error)
             enabled = bool(self._lineout_enabled)
-            running = bool(base["running"]) and enabled
+            running = bool(ndi_base["running"]) and bool(audio_base["running"]) and enabled
+            logs = list(self._lineout_log_tail) if include_logs else []
+            if include_logs:
+                logs.extend(audio_base.get("last_log") or [])
             st = LineOutRunState(
                 running=running,
                 device_id=self._lineout_device_id if enabled else None,
                 device_label=self._lineout_device_label if enabled else None,
                 sink=self._lineout_sink_factory if enabled else None,
-                channel_uuid=self._channel_uuid if base["running"] else None,
-                input_url=self._input_url if base["running"] else None,
+                channel_uuid=self._channel_uuid if ndi_base["running"] else None,
+                input_url=self._input_url if ndi_base["running"] else None,
                 started_at=self._lineout_started_at if enabled else None,
-                last_log=list(self._lineout_log_tail) if include_logs else [],
-                pipeline_state=base["pipeline_state"],
-                last_error=self._lineout_last_error,
+                last_log=logs[-120:],
+                pipeline_state=audio_base["pipeline_state"],
+                last_error=self._lineout_last_error or pipeline_error,
                 volume=float(self._lineout_volume) if enabled else None,
                 sink_sync=bool(self._lineout_sink_sync) if enabled else None,
             )
             d = asdict(st)
-            d["ndi_running"] = bool(base["running"])
+            d["ndi_running"] = bool(ndi_base["running"])
             return d
 
+    def _build_lineout_pipeline_desc(
+        self,
+        input_url: str,
+        selected: Dict[str, Any],
+        volume: float,
+        sink_sync: bool,
+    ) -> str:
+        sink_factory = str(selected.get("sink") or "")
+        selected_kind = str(selected.get("kind") or "")
+        rate_hz = int(self._cfg.get("audio_rate_hz", 48000))
+        channels = int(self._cfg.get("audio_channels", 2))
+        queue_time_ns = max(50, int(self._cfg.get("lineout_queue_time_ms", 200))) * 1_000_000
+
+        if sink_factory == "alsasink":
+            device = str(selected.get("device") or "").strip()
+            if not device:
+                raise RuntimeError("Selected ALSA output has no device name")
+            inferno_props = ""
+            if selected_kind == "inferno":
+                buffer_time_us = max(21333, int(self._cfg.get("inferno_alsa_buffer_time_us", 85333)))
+                latency_time_us = max(1333, int(self._cfg.get("inferno_alsa_latency_time_us", 5333)))
+                inferno_props = (
+                    f"provide-clock=false slave-method=resample "
+                    f"buffer-time={buffer_time_us} latency-time={latency_time_us} "
+                )
+            sink = (
+                f"alsasink name=lineoutsink device={_gst_quote(device)} {inferno_props}"
+                f'async=false sync={"true" if sink_sync else "false"}'
+            )
+        elif sink_factory in {"autoaudiosink", "pulsesink"}:
+            sink = (
+                f'{sink_factory} name=lineoutsink async=false '
+                f'sync={"true" if sink_sync else "false"}'
+            )
+        else:
+            raise RuntimeError(selected.get("details") or "No usable audio output sink found")
+
+        output_caps = (
+            f"audio/x-raw,format=S32LE,rate={rate_hz},channels={channels},layout=interleaved"
+            if selected_kind == "inferno"
+            else f"audio/x-raw,rate={rate_hz},channels={channels},layout=interleaved"
+        )
+        decoder = "uridecodebin3" if Gst.ElementFactory.find("uridecodebin3") is not None else "uridecodebin"
+        decoder_props = (
+            f"{decoder} uri={_gst_quote(input_url)} name=lineoutdecode caps=audio/x-raw"
+        )
+        if decoder == "uridecodebin":
+            decoder_props += " expose-all-streams=false"
+        return (
+            f"{decoder_props} "
+            f"lineoutdecode. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time={queue_time_ns} "
+            f"! audioconvert ! audioresample "
+            f"! capsfilter caps={_gst_quote(output_caps)} "
+            f"! volume volume={volume:.3f} ! {sink}"
+        )
+
     def lineout_start(self, device_id: Optional[str] = None, volume: Optional[float] = None):
-        """Enable/configure the local line-level audio branch inside the running pipeline."""
+        """Start an isolated audio-only pipeline for the active TV channel."""
         base = self._base_status_fields(include_log=False)
         if not base.get("running"):
             raise RuntimeError("NDI pipeline must be running before line output can be started")
@@ -444,8 +521,6 @@ class GstNDIBridge(GstPipelineBase):
         selected = self._resolve_audio_output_device(device_id or self._cfg.get("lineout_default_device"))
         sink_factory = str(selected.get("sink") or "")
         selected_kind = str(selected.get("kind") or "")
-        if sink_factory == "fakesink":
-            raise RuntimeError(selected.get("details") or "No usable audio output sink found")
 
         try:
             volume_i = float(self._cfg.get("lineout_volume", 0.8) if volume is None else volume)
@@ -453,55 +528,24 @@ class GstNDIBridge(GstPipelineBase):
             volume_i = 0.8
         volume_i = max(0.0, min(1.0, volume_i))
         sink_sync = bool(self._cfg.get("lineout_sink_sync", True))
-
-        def _apply():
-            with self._lock:
-                pipeline = self._pipeline
-            if pipeline is None:
-                raise RuntimeError("Pipeline not running")
-
-            sink = pipeline.get_by_name("lineoutsink")
-            valve = pipeline.get_by_name("lineoutvalve")
-            volume_el = pipeline.get_by_name("lineoutvolume")
-            if sink is None or valve is None or volume_el is None:
-                raise RuntimeError("Line output elements not found in pipeline")
-            actual_factory = sink.get_factory().get_name() if sink.get_factory() is not None else ""
-            if sink_factory != actual_factory:
-                raise RuntimeError(f"Selected device requires {sink_factory}, but pipeline was built with {actual_factory}")
-
-            valve.set_property("drop", True)
-            device_changed = False
-            if selected.get("device") and self._has_property(sink, "device"):
-                selected_device = str(selected["device"])
-                current_device = str(sink.get_property("device") or "")
-                if current_device != selected_device:
-                    # ALSA opens its PCM during state changes. Recycle only the
-                    # sink so a virtual PCM selected after the NDI pipeline was
-                    # built is actually opened, without restarting NDI.
-                    sink.set_state(Gst.State.NULL)
-                    sink.set_property("device", selected_device)
-                    device_changed = True
-            if self._has_property(sink, "sync"):
-                sink.set_property("sync", sink_sync)
-            if self._has_property(sink, "async"):
-                sink.set_property("async", False)
-            if selected_kind == "inferno":
-                if self._has_property(sink, "provide-clock"):
-                    sink.set_property("provide-clock", False)
-                if self._has_property(sink, "slave-method"):
-                    sink.set_property("slave-method", 0)  # resample to the NDI/pipeline clock
-                if self._has_property(sink, "buffer-time"):
-                    sink.set_property("buffer-time", max(21333, int(self._cfg.get("inferno_alsa_buffer_time_us", 85333))))
-                if self._has_property(sink, "latency-time"):
-                    sink.set_property("latency-time", max(1333, int(self._cfg.get("inferno_alsa_latency_time_us", 5333))))
-            if device_changed and not sink.sync_state_with_parent():
-                raise RuntimeError(f"Could not open selected ALSA output: {selected_device}")
-            volume_el.set_property("volume", volume_i)
-            valve.set_property("drop", False)
+        with self._lock:
+            input_url = str(self._input_url or "")
+        if not input_url:
+            raise RuntimeError("Active TV stream URL is not available")
 
         try:
-            self._call_in_gst_context_sync(_apply, timeout_s=8.0 if selected_kind == "inferno" else 2.0)
+            pipeline_desc = self._build_lineout_pipeline_desc(
+                input_url=input_url,
+                selected=selected,
+                volume=volume_i,
+                sink_sync=sink_sync,
+            )
+            self._lineout_pipeline._start_pipeline(pipeline_desc)
+            self._lineout_pipeline._wait_until_playing(
+                timeout_s=10.0 if selected_kind == "inferno" else 5.0
+            )
         except Exception as e:
+            self._lineout_pipeline.stop()
             with self._lock:
                 self._lineout_last_error = str(e)
             raise
@@ -518,18 +562,9 @@ class GstNDIBridge(GstPipelineBase):
         self._lineout_log_push(f"Line output enabled: {self._lineout_device_label} volume={volume_i:.2f}")
 
     def lineout_stop(self):
-        """Disable local line output by closing the branch valve."""
-        def _apply():
-            with self._lock:
-                pipeline = self._pipeline
-            if pipeline is None:
-                return
-            valve = pipeline.get_by_name("lineoutvalve")
-            if valve is not None:
-                valve.set_property("drop", True)
-
-        self._call_in_gst_context(_apply)
-
+        """Stop the isolated audio pipeline without touching NDI."""
+        self._lineout_pipeline.stop()
+        self._lineout_pipeline._clear_status()
         with self._lock:
             was = self._lineout_enabled
             self._lineout_enabled = False
@@ -537,6 +572,7 @@ class GstNDIBridge(GstPipelineBase):
             self._lineout_device_label = None
             self._lineout_sink_factory = None
             self._lineout_started_at = None
+            self._lineout_last_error = None
         if was:
             self._lineout_log_push("Line output disabled")
 
@@ -692,31 +728,9 @@ class GstNDIBridge(GstPipelineBase):
             int(delay_ms_i + queue_headroom_ms) * 1_000_000,
         )
 
-        # Shared audio format used for NDI and line-output branches
+        # NDI audio output format.
         rate_hz = int(cfg.get("audio_rate_hz", 48000))
         channels = int(cfg.get("audio_channels", 2))
-
-        # Line output branch defaults (inactive until /api/audio/start opens the valve).
-        lineout_queue_time_ns = int(cfg.get("lineout_queue_time_ms", 200)) * 1_000_000
-        lineout_sink_factory = self._select_lineout_sink_factory()
-        lineout_sink_sync = bool(cfg.get("lineout_sink_sync", True))
-        try:
-            lineout_pipeline_volume = float(cfg.get("lineout_volume", 0.8))
-        except Exception:
-            lineout_pipeline_volume = 0.8
-        lineout_pipeline_volume = max(0.0, min(1.0, lineout_pipeline_volume))
-        lineout_default_device = ""
-        lineout_default_kind = ""
-        if lineout_sink_factory == "alsasink":
-            try:
-                default_lineout = self._resolve_audio_output_device(cfg.get("lineout_default_device"))
-                if default_lineout.get("sink") == "alsasink" and default_lineout.get("device"):
-                    lineout_default_device = str(default_lineout["device"])
-                    lineout_default_kind = str(default_lineout.get("kind") or "")
-                else:
-                    lineout_sink_factory = "fakesink"
-            except Exception:
-                lineout_sink_factory = "fakesink"
 
         ndi_video_format = str(cfg.get("ndi_video_format", "UYVY"))
 
@@ -743,54 +757,14 @@ class GstNDIBridge(GstPipelineBase):
             )
 
         def _audio_processing_chain(src_prefix: str) -> str:
-            if lineout_sink_factory == "alsasink":
-                inferno_sink_props = ""
-                if lineout_default_kind == "inferno":
-                    inferno_buffer_time_us = max(21333, int(cfg.get("inferno_alsa_buffer_time_us", 85333)))
-                    inferno_latency_time_us = max(1333, int(cfg.get("inferno_alsa_latency_time_us", 5333)))
-                    inferno_sink_props = (
-                        f'provide-clock=false slave-method=resample '
-                        f'buffer-time={inferno_buffer_time_us} latency-time={inferno_latency_time_us} '
-                    )
-                lineout_sink = (
-                    f'alsasink name=lineoutsink device={_gst_quote(lineout_default_device)} '
-                    f'{inferno_sink_props}async=false sync={"true" if lineout_sink_sync else "false"} '
-                )
-            elif lineout_sink_factory == "autoaudiosink":
-                lineout_sink = (
-                    f'autoaudiosink name=lineoutsink '
-                    f'async=false sync={"true" if lineout_sink_sync else "false"} '
-                )
-            elif lineout_sink_factory == "pulsesink":
-                lineout_sink = (
-                    f'pulsesink name=lineoutsink '
-                    f'async=false sync={"true" if lineout_sink_sync else "false"} '
-                )
-            else:
-                lineout_sink = 'fakesink name=lineoutsink async=false sync=false '
-
-            lineout_caps = (
-                f'audio/x-raw,format=S32LE,rate={rate_hz},channels={channels},layout=interleaved '
-                if lineout_default_kind == "inferno"
-                else f'audio/x-raw,rate={rate_hz},channels={channels},layout=interleaved '
-            )
-
             return (
-                # audio decode/convert → audiorate (perfect timestamps) → tee
+                # Normalise audio timestamps before the delayed NDI branch.
                 # audiorate helps prevent timestamp jitter/discontinuities from becoming audible artifacts
                 # in downstream RTP receivers.
                 f'{src_prefix} ! queue ! audioconvert ! audioresample ! audiorate '
-                f'! audio/x-raw,rate={rate_hz},channels={channels},layout=interleaved ! tee name=atee '
-                # audio → delayed → NDI
-                f'atee. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time={max_time_ns} '
+                f'! audio/x-raw,rate={rate_hz},channels={channels},layout=interleaved '
+                f'! queue max-size-buffers=0 max-size-bytes=0 max-size-time={max_time_ns} '
                 f'min-threshold-time={delay_ns} ! combiner.audio '
-                # audio -> line output (no NDI delay; valve closed by default)
-                f'atee. ! valve name=lineoutvalve drop=true '
-                f'! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time={lineout_queue_time_ns} '
-                f'! audioconvert ! audioresample '
-                f'! {lineout_caps}'
-                f'! volume name=lineoutvolume volume={lineout_pipeline_volume:.3f} '
-                f'! {lineout_sink}'
             )
 
         probe_clause = (

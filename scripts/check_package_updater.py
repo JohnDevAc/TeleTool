@@ -21,6 +21,9 @@ require(
     "packaging/debian/update-package",
     "apt-get -qq",
     "teletool-inferno=$target_version",
+    'inferno_action="${update_target#main-}"',
+    "teletool-inferno-",
+    "--no-install-recommends",
     "install --allow-downgrades",
     "apt-repo-dev",
     "update-status.json",
@@ -32,7 +35,8 @@ require(
     'INSTALL_CHANNEL="${1:-${TELETOOL_APT_CHANNEL:-}}"',
     'INSTALL_INFERNO="${2:-${TELETOOL_INSTALL_INFERNO:-auto}}"',
     "read -r selected_channel < /dev/tty",
-    "Install optional Inferno network audio support?",
+    "Inferno network audio output:",
+    "Choose Inferno option",
     "apt-cache madison teletool-inferno",
     "Suites: $APT_SUITE",
     'install "$apt_recommends_flag" -y "$@"',
@@ -43,8 +47,12 @@ require(
 )
 require(
     "packaging/debian/teletool.sudoers",
-    "/usr/bin/systemctl --no-block start teletool-update@main.service",
-    "/usr/bin/systemctl --no-block start teletool-update@dev.service",
+    "/usr/bin/systemctl --no-block start teletool-update@main-keep.service",
+    "/usr/bin/systemctl --no-block start teletool-update@main-install.service",
+    "/usr/bin/systemctl --no-block start teletool-update@main-remove.service",
+    "/usr/bin/systemctl --no-block start teletool-update@dev-keep.service",
+    "/usr/bin/systemctl --no-block start teletool-update@dev-install.service",
+    "/usr/bin/systemctl --no-block start teletool-update@dev-remove.service",
 )
 require(
     "scripts/build_deb.sh",
@@ -61,11 +69,19 @@ require(
     "STATIME_REF",
 )
 require(
+    "packaging/inferno/postinst",
+    "/usr/local/libexec/teletool-inferno/statime",
+    "/etc/alsa/conf.d/99-teletool-inferno.conf",
+    "/var/backups/teletool-inferno",
+)
+require(
     ".github/workflows/build-apt-package.yml",
     "teletool-arm64-dev-package",
     "TELETOOL_APT_SUITE: dev",
     "TELETOOL_RELEASE_BRANCH: dev",
     "scripts/build_inferno_deb.sh",
+    "scripts/check_inferno_update_api.py",
+    "scripts/check_audio_output_lifecycle.py",
     "teletool-dev-apt",
     "teletool-stable-apt",
     "scripts/sign_apt_repo.sh",
@@ -82,7 +98,10 @@ require(
 )
 require(
     "system_manager.py",
-    '_package_update_unit(branch)',
+    "_package_update_unit(branch, inferno_action)",
+    "_normalise_inferno_action",
+    '"inferno": _inferno_package_info()',
+    "INFERNO_PACKAGE_CACHE_TTL_S",
     "_recover_stale_update_status",
     "systemctl",
     "show",
@@ -93,6 +112,8 @@ require(
     "static/system.html",
     'btn.textContent = "Check for Update"',
     'branchSelect.disabled = false',
+    'id="updateInferno"',
+    "inferno_action: infernoAction",
 )
 
 for path in (ROOT / "app.py", ROOT / "system_manager.py", ROOT / "static" / "system.html"):

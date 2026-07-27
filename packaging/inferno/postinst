@@ -1,6 +1,37 @@
 #!/bin/sh
 set -e
 
+backup_dir="/var/backups/teletool-inferno"
+
+backup_legacy_file() {
+  path="$1"
+  signature="$2"
+  if [ ! -f "$path" ] || ! grep -Fq "$signature" "$path"; then
+    return
+  fi
+  install -d -o root -g root -m 0750 "$backup_dir"
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  backup="$backup_dir/$(basename "$path").legacy.$timestamp"
+  mv "$path" "$backup"
+  printf 'Backed up incompatible legacy Inferno file to %s\n' "$backup"
+}
+
+# Source-based test installs used these paths before the companion Debian
+# package existed. They override the package-owned unit and can make ALSA reject
+# every audio device, so migrate only files with the known legacy signatures.
+backup_legacy_file \
+  "/etc/systemd/system/teletool-inferno-clock.service" \
+  "/usr/local/libexec/teletool-inferno/statime"
+backup_legacy_file \
+  "/etc/alsa/conf.d/99-teletool-inferno.conf" \
+  'CLOCK_PATH "/dev/ptp0"'
+
+legacy_wants="/etc/systemd/system/multi-user.target.wants/teletool-inferno-clock.service"
+if [ -L "$legacy_wants" ] && \
+   [ "$(readlink "$legacy_wants")" = "/etc/systemd/system/teletool-inferno-clock.service" ]; then
+  rm -f "$legacy_wants"
+fi
+
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable teletool-inferno-clock.service 2>/dev/null || true
 systemctl restart teletool-inferno-clock.service 2>/dev/null || true

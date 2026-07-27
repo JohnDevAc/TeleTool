@@ -18,3 +18,8 @@ The clock service writes `/run/teletool-inferno/statime.toml` at start. By
 default it uses the default-route network interface, then the first active
 non-loopback interface, then `eth0`. Override with
 `TELETOOL_INFERNO_INTERFACE` in `/etc/default/teletool-inferno`.
+
+During package configuration, known source-install service and ALSA overrides
+are moved to timestamped files under `/var/backups/teletool-inferno/`. This
+allows the package-owned clock service and PCM definition to become active
+without discarding prior configuration.

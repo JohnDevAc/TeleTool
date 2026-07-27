@@ -155,7 +155,7 @@ Depends: alsa-utils, iproute2, libc6, systemd
 Recommends: teletool (= $VERSION)
 Description: Inferno-AoIP companion package for TeleTool
  Provides a pinned upstream Inferno-AoIP ALSA PCM and the Inferno Statime
- clock service used by TeleTool's experimental Dante-compatible network
+ clock service used by TeleTool's Dante-compatible network
  audio output. Inferno-AoIP is unofficial and is not affiliated with or
  endorsed by Audinate.
 X-TeleTool-Inferno-Ref: $INFERNO_REF

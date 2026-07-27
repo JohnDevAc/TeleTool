@@ -71,7 +71,7 @@ select_package_source() {
 normalise_yes_no() {
   case "$(normalise_channel "$1")" in
     y|yes|1|true|on) printf yes ;;
-    n|no|0|false|off) printf no ;;
+    n|no|2|0|false|off) printf no ;;
     auto|'') printf auto ;;
     *) printf invalid ;;
   esac
@@ -85,14 +85,19 @@ select_inferno_option() {
   fi
 
   default_inferno="no"
-  default_prompt="y/N"
   if [ "$APT_SUITE" = "dev" ]; then
     default_inferno="yes"
-    default_prompt="Y/n"
   fi
 
   if [ "$selected_inferno" = "auto" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
-    printf '\nInstall optional Inferno network audio support? [%s]: ' "$default_prompt" > /dev/tty
+    default_choice="2"
+    if [ "$default_inferno" = "yes" ]; then
+      default_choice="1"
+    fi
+    printf '\nInferno network audio output:\n' > /dev/tty
+    printf '  1) Install Inferno audio\n' > /dev/tty
+    printf '  2) Do not install Inferno audio\n' > /dev/tty
+    printf 'Choose Inferno option [%s]: ' "$default_choice" > /dev/tty
     IFS= read -r selected_inferno < /dev/tty || selected_inferno=""
     selected_inferno="$(normalise_yes_no "$selected_inferno")"
     if [ "$selected_inferno" = "invalid" ]; then

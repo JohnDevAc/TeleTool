@@ -138,8 +138,11 @@ class GstPipelineBase:
         """
         with self._lock:
             ctx = self._context
+            gst_thread = self._thread
         if ctx is None:
             raise RuntimeError("GStreamer context is not running")
+        if gst_thread is threading.current_thread():
+            return fn()
         done = threading.Event()
         box = {"ok": False, "result": None, "error": None}
 
@@ -165,7 +168,12 @@ class GstPipelineBase:
 
     def _start_pipeline(self, pipeline_desc: str, poll_cb: Optional[Callable[[], bool]] = None):
         GstPipelineBase.stop(self)
+        self._clear_status()
 
+        self._thread = threading.Thread(target=self._run_gst_thread, args=(pipeline_desc, poll_cb), daemon=True)
+        self._thread.start()
+
+    def _clear_status(self) -> None:
         with self._lock:
             self._log_full.clear()
             self._log_tail.clear()
@@ -173,8 +181,33 @@ class GstPipelineBase:
             self._last_error = None
             self._last_warning = None
 
-        self._thread = threading.Thread(target=self._run_gst_thread, args=(pipeline_desc, poll_cb), daemon=True)
-        self._thread.start()
+    def _wait_until_playing(self, timeout_s: float = 8.0) -> None:
+        """Wait for a newly started pipeline to reach PLAYING or fail."""
+        deadline = time.monotonic() + max(0.1, float(timeout_s))
+        last_state = "NULL"
+        while time.monotonic() < deadline:
+            with self._lock:
+                pipeline = self._pipeline
+                last_error = self._last_error
+                thread = self._thread
+            if last_error:
+                raise RuntimeError(last_error)
+            if pipeline is not None:
+                try:
+                    result, state, _pending = pipeline.get_state(0)
+                    last_state = Gst.Element.state_get_name(state)
+                    if result == Gst.StateChangeReturn.FAILURE:
+                        raise RuntimeError(f"Pipeline failed while entering {last_state}")
+                    if state == Gst.State.PLAYING:
+                        return
+                except RuntimeError:
+                    raise
+                except Exception:
+                    pass
+            if thread is not None and not thread.is_alive() and pipeline is None:
+                raise RuntimeError("Pipeline stopped before reaching PLAYING")
+            time.sleep(0.05)
+        raise RuntimeError(f"Timed out waiting for pipeline to reach PLAYING (last state: {last_state})")
 
     def stop(self):
         with self._lock:

@@ -15,10 +15,13 @@
       <h1>TeleTool Fleet Manager</h1>
     </div>
     <div class="rightTop">
-      <a class="miniBtn" href="/">NDI®</a>
-      <a class="miniBtn" href="/audio">Audio</a>
-      <a class="miniBtn" href="/system">System</a>
-      <div class="pill" title="Fleet Manager polling state">
+      <nav class="pageNav" aria-label="TeleTool pages">
+        <a class="miniBtn navBtn" href="/">NDI®</a>
+        <a class="miniBtn navBtn" href="/audio">Audio</a>
+        <a class="miniBtn navBtn isActive" href="/manager" aria-current="page">Fleet Manager</a>
+        <a class="miniBtn navBtn" href="/system">System</a>
+      </nav>
+      <div class="pill headerStatus" title="Fleet Manager polling state">
         <span id="managerDot" class="dot"></span>
         <span id="managerStatusText">CONNECTING</span>
       </div>

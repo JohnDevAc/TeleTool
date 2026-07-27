@@ -9,17 +9,22 @@ wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh
 ```
 
 The installer asks which branch to install. Press Enter for Main, or choose Dev
-when testing development builds. It also asks whether to install the optional
-Inferno network audio package when that package is available from the selected
+when testing development builds. A second numbered choice installs or omits the
+optional Inferno network audio package when it is available from the selected
 repository.
 
 For unattended installs:
 
 ```sh
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- main
+wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- main yes
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- dev
 wget -qO- https://johndevac.github.io/TeleTool/apt-repo/install.sh | sudo sh -s -- dev yes
 ```
+
+The second argument controls Inferno: use `yes` to install the network audio
+output or `no` to omit it. Package-managed units can later keep, install, or
+remove Inferno when updating from the System page.
 
 The installer adds the selected signed TeleTool package repository, installs
 TeleTool and its dependencies, and displays the Web UI address when complete.
@@ -43,11 +48,15 @@ http://<teletool-host>:8000/
 
 ## Inferno-AoIP
 
-Experimental Inferno-AoIP support is supplied through the optional
+Inferno-AoIP support is supplied through the optional
 `teletool-inferno` companion package from the signed TeleTool APT repository.
 That package installs a pinned upstream Inferno ALSA PCM, the Statime clock
 service it needs, and source/licence material under
 `/usr/share/doc/teletool-inferno/`.
+
+Runtime audio uses a bounded, audio-only GStreamer pipeline. It does not decode
+video a second time, and an audio-device or network-clock failure cannot stop
+the primary NDI stream.
 
 ## Documentation
 

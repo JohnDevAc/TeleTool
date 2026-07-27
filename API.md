@@ -68,10 +68,10 @@ non-AArch64, oversized, or non-NDI files.
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/audio/devices` | List suitable local outputs and a separately installed Inferno ALSA network output (experimental). |
+| `GET` | `/api/audio/devices` | List suitable local outputs and a separately installed Inferno ALSA network output, including readiness. |
 | `GET` | `/api/audio/defaults` | Current default audio device and volume. |
 | `GET` | `/api/audio/status?logs=1` | Local audio output status. |
-| `POST` | `/api/audio/start` | Start line output from the active NDI pipeline. |
+| `POST` | `/api/audio/start` | Start an isolated audio-only output for the active TV channel. |
 | `POST` | `/api/audio/stop` | Stop line output. |
 
 Start audio:
@@ -147,7 +147,7 @@ automatically after the restart.
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/release` | App version and release branch. |
+| `GET` | `/api/release` | App version, release branch, and Inferno package state. |
 | `GET` | `/api/system/hostname` | Current hostname. |
 | `POST` | `/api/system/hostname` | Set hostname. |
 | `GET` | `/api/system/network_info` | Current network interfaces and warnings. |
@@ -155,7 +155,7 @@ automatically after the restart.
 | `POST` | `/api/system/restart_program` | Restart the TeleTool process. |
 | `POST` | `/api/system/reboot` | Reboot the Pi, if permitted. |
 | `GET` | `/api/system/update_status` | Poll software update state. |
-| `POST` | `/api/system/update_from_server` | Update a checkout from GitHub, or switch a package-managed unit to the signed Main/Dev APT channel selected by `branch`. |
+| `POST` | `/api/system/update_from_server` | Switch a package-managed unit to the signed Main/Dev APT channel selected by `branch`, with `inferno_action` set to `keep`, `install`, or `remove`. |
 
 Manual network example:
 
@@ -182,7 +182,8 @@ Update example:
 ```json
 {
   "confirm": true,
-  "branch": "dev"
+  "branch": "dev",
+  "inferno_action": "install"
 }
 ```
 

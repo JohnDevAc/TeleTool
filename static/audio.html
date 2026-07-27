@@ -15,10 +15,13 @@
       <h1 class="srOnly">TV Line Audio Output</h1>
     </div>
     <div class="rightTop">
-      <a class="miniBtn" href="/manager">Fleet Manager</a>
-      <a class="miniBtn" href="/">NDI®</a>
-      <a class="miniBtn" href="/system">System</a>
-      <div class="pill" title="Audio output running state">
+      <nav class="pageNav" aria-label="TeleTool pages">
+        <a class="miniBtn navBtn" href="/">NDI®</a>
+        <a class="miniBtn navBtn isActive" href="/audio" aria-current="page">Audio</a>
+        <a class="miniBtn navBtn" href="/manager">Fleet Manager</a>
+        <a class="miniBtn navBtn" href="/system">System</a>
+      </nav>
+      <div class="pill headerStatus" title="Audio output running state">
         <span id="dot" class="dot"></span>
         <span id="statusText">STOPPED</span>
       </div>
@@ -185,9 +188,7 @@ function updateDeviceHelp(){
     help.textContent = "";
     return;
   }
-  help.textContent = found.experimental
-    ? "Experimental reverse-engineered network output. Requires Inferno and PTP clock services on this unit."
-    : (found.details || "");
+  help.textContent = found.details || "";
 }
 
 async function loadDevices(){
@@ -209,6 +210,7 @@ async function loadDevices(){
       const opt = document.createElement("option");
       opt.value = d.id;
       opt.textContent = d.label || d.id;
+      opt.disabled = d.ready === false;
       sel.appendChild(opt);
     }
     const wanted = previous || data.selected || "";
@@ -243,7 +245,8 @@ async function refreshStatus(){
   const stopBtn = document.getElementById("stop");
   const deviceSel = document.getElementById("device");
   const volumeInput = document.getElementById("volume");
-  if (startBtn) startBtn.disabled = audioBusy || !ndiRunning || audioRunning || !deviceSel.value;
+  const selectedUnavailable = !!deviceSel.selectedOptions[0]?.disabled;
+  if (startBtn) startBtn.disabled = audioBusy || !ndiRunning || audioRunning || !deviceSel.value || selectedUnavailable;
   if (stopBtn) stopBtn.disabled = audioBusy || !audioRunning;
   if (deviceSel) deviceSel.disabled = audioBusy || audioRunning;
   if (volumeInput) volumeInput.disabled = audioBusy || audioRunning;

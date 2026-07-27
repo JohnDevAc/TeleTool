@@ -805,6 +805,13 @@ def _restore_desired_lineout(reason: str = "supervisor restore") -> None:
         current = ndi_bridge.lineout_status(include_logs=False)
         if current.get("running"):
             return
+        if current.get("last_error"):
+            error = str(current["last_error"])
+            with NDI_SUPERVISOR_LOCK:
+                NDI_SUPERVISOR_STATE["lineout_desired"] = False
+                NDI_SUPERVISOR_STATE["lineout_request"] = None
+                NDI_SUPERVISOR_STATE["lineout_last_restore_error"] = error
+            return
     except Exception:
         pass
     try:

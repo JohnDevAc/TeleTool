@@ -3,6 +3,7 @@ set -euo pipefail
 
 GST_NDI_VERSION="${TELETOOL_GST_NDI_VERSION:-0.13.5}"
 GST_NDI_SHA256="${TELETOOL_GST_NDI_SHA256:-ec8417e75002857f4c8e8fd2f2f1a7521937eaac3de264f7bb6904a0d22cba23}"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_PATH="${1:-dist/libgstndi.so}"
 OUTPUT_DIR="$(dirname "$OUTPUT_PATH")"
 NOTICE_DIR="${TELETOOL_GST_NDI_NOTICES_DIR:-$OUTPUT_DIR/gst-plugin-ndi-licenses}"

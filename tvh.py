@@ -738,6 +738,35 @@ class TvheadendClient:
     def scan_network(self, network_uuid: str) -> None:
         self._post_jsonish("/api/mpegts/network/scan", data={"uuid": network_uuid})
 
+    def set_mux_tuning(self, mux_uuids: List[str], tuning: Dict[str, Any]) -> int:
+        """Apply a bounded set of tuner parameters to selected muxes."""
+        allowed = {
+            "fec_hi",
+            "fec_lo",
+            "constellation",
+            "transmission_mode",
+            "guard_interval",
+            "hierarchy",
+            "plp_id",
+        }
+        values = {
+            key: value
+            for key, value in tuning.items()
+            if key in allowed
+        }
+        if not values:
+            return 0
+        updated = 0
+        for mux_uuid in dict.fromkeys(str(uuid or "").strip() for uuid in mux_uuids):
+            if not mux_uuid:
+                continue
+            self._post_jsonish(
+                "/api/idnode/save",
+                data={"node": json.dumps({"uuid": mux_uuid, **values})},
+            )
+            updated += 1
+        return updated
+
     def scan_muxes(self, mux_uuids: List[str]) -> None:
         """Queue selected multiplexes for a user-requested scan."""
         for mux_uuid in dict.fromkeys(str(uuid or "").strip() for uuid in mux_uuids):

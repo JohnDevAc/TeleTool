@@ -1557,6 +1557,26 @@ def _uk_auto_ready_centres(muxes: List[Dict[str, Any]]) -> List[int]:
     return sorted(ready)
 
 
+def _uk_auto_mux_uuids_for_centres(
+    muxes: List[Dict[str, Any]],
+    centres: List[int],
+    delivery_system: str,
+) -> List[str]:
+    wanted = {int(centre) for centre in centres}
+    delivery = re.sub(r"[^A-Z0-9]", "", delivery_system.upper())
+    return [
+        str(mux.get("uuid") or "")
+        for mux in muxes
+        if mux.get("uuid")
+        and (_coerce_int(mux.get("frequency") or mux.get("freq")) or 0) in wanted
+        and re.sub(
+            r"[^A-Z0-9]",
+            "",
+            str(mux.get("delsys") or mux.get("delivery_system") or "").upper(),
+        ) == delivery
+    ]
+
+
 def _uk_auto_rf_candidate_centres(
     muxes: List[Dict[str, Any]],
     measurements: Dict[str, Dict[str, Any]],
@@ -1784,7 +1804,7 @@ def _run_staged_uk_auto_scan(
             restore_full_grace("Restored full tuner grace for strong RF candidate recovery")
             max_recovery_passes = _config_int(
                 "tvh_auto_recovery_passes",
-                3,
+                1,
                 min_value=1,
                 max_value=3,
             )
@@ -1863,6 +1883,117 @@ def _run_staged_uk_auto_scan(
                 _tv_setup_log(
                     f"Strong RF recovery pass {recovery_pass} completed with "
                     f"{len(_uk_auto_ready_centres(muxes))} ready centre(s)."
+                )
+
+            explicit_variants = (
+                (
+                    "DVB-T 64-QAM 2/3",
+                    "DVB-T",
+                    {
+                        "constellation": "QAM/64",
+                        "fec_hi": "2/3",
+                        "fec_lo": "NONE",
+                        "transmission_mode": "8k",
+                        "guard_interval": "1/32",
+                        "hierarchy": "NONE",
+                    },
+                ),
+                (
+                    "DVB-T 64-QAM 3/4",
+                    "DVB-T",
+                    {
+                        "constellation": "QAM/64",
+                        "fec_hi": "3/4",
+                        "fec_lo": "NONE",
+                        "transmission_mode": "8k",
+                        "guard_interval": "1/32",
+                        "hierarchy": "NONE",
+                    },
+                ),
+                (
+                    "DVB-T QPSK 3/4",
+                    "DVB-T",
+                    {
+                        "constellation": "QPSK",
+                        "fec_hi": "3/4",
+                        "fec_lo": "NONE",
+                        "transmission_mode": "8k",
+                        "guard_interval": "1/32",
+                        "hierarchy": "NONE",
+                    },
+                ),
+                (
+                    "DVB-T2 256-QAM 2/3",
+                    "DVB-T2",
+                    {
+                        "constellation": "QAM/256",
+                        "fec_hi": "2/3",
+                        "fec_lo": "NONE",
+                        "transmission_mode": "32k",
+                        "guard_interval": "1/128",
+                        "hierarchy": "NONE",
+                        "plp_id": -1,
+                    },
+                ),
+            )
+            for variant_index, (variant_label, delivery_system, tuning) in enumerate(
+                explicit_variants,
+                start=1,
+            ):
+                service_centres = _uk_auto_service_centres(muxes)
+                unresolved_centres = sorted(
+                    set(rf_candidate_centres) - set(service_centres)
+                )
+                if not unresolved_centres:
+                    break
+                muxes = tvh.list_muxes_for_network(network_uuid)
+                explicit_targets = _uk_auto_mux_uuids_for_centres(
+                    muxes,
+                    unresolved_centres,
+                    delivery_system,
+                )
+                if not explicit_targets:
+                    continue
+                baseline_scan_last = {
+                    str(mux.get("uuid") or ""): mux.get("scan_last")
+                    for mux in muxes
+                    if str(mux.get("uuid") or "") in set(explicit_targets)
+                }
+                tvh.set_mux_tuning(explicit_targets, tuning)
+                _tv_setup_set(
+                    percent=min(51, 47 + variant_index),
+                    step=f"UK Auto: trying {variant_label}…",
+                )
+                _tv_setup_log(
+                    f"Explicit UK tuning fallback {variant_label}: "
+                    f"checking {len(unresolved_centres)} RF centre(s)."
+                )
+                tvh.scan_muxes(explicit_targets)
+                explicit_timeout_s = max(
+                    60,
+                    min(900, len(explicit_targets) * (recovery_grace_s + 15)),
+                )
+                muxes, variant_complete = _wait_for_component_retries(
+                    network_uuid,
+                    explicit_targets,
+                    baseline_scan_last,
+                    measurements,
+                    explicit_timeout_s,
+                    progress_label=f"{variant_label} fallback",
+                )
+                recovery_complete = recovery_complete and variant_complete
+                if not variant_complete:
+                    note = f"{variant_label} fallback timed out after {explicit_timeout_s} seconds."
+                    _tv_setup_log(note)
+                    scan_note = _append_scan_note(scan_note, note)
+                    muxes = _cancel_pending_scan_queue(
+                        network_uuid,
+                        f"after the {variant_label} fallback",
+                    )
+                muxes = _deduplicate_transport_muxes(network_uuid, muxes, measurements)
+                _tv_setup_log(
+                    f"{variant_label} fallback completed with services on "
+                    f"{len(_uk_auto_service_centres(muxes))} centre(s)."
                 )
 
         successful_centres = _uk_auto_service_centres(muxes)

@@ -169,6 +169,17 @@ uk_auto_ready_centres = load_function(
         "_uk_auto_centre_for_frequency": uk_auto_centre_for_frequency,
     },
 )
+uk_auto_mux_uuids_for_centres = load_function(
+    ROOT / "app.py",
+    "_uk_auto_mux_uuids_for_centres",
+    {
+        "Any": Any,
+        "Dict": Dict,
+        "List": List,
+        "_coerce_int": coerce_int,
+        "re": re,
+    },
+)
 assert uk_auto_centre_for_frequency(545_833_000) == 546_000_000
 assert uk_auto_centre_for_frequency(546_167_000) == 546_000_000
 assert uk_auto_centre_for_frequency(700_000_000) is None
@@ -184,6 +195,15 @@ assert uk_auto_ready_centres([
     {"frequency": 514_000_000, "num_svc": 17, "onid": 9_018, "tsid": 0},
     {"frequency": 545_833_000, "num_svc": 13, "onid": 9_018, "tsid": 16_516},
 ]) == [490_000_000, 546_000_000]
+assert uk_auto_mux_uuids_for_centres(
+    [
+        {"uuid": "dvbt-nominal", "frequency": 586_000_000, "delsys": "DVB-T"},
+        {"uuid": "dvbt2-nominal", "frequency": 586_000_000, "delsys": "DVB-T2"},
+        {"uuid": "dvbt-offset", "frequency": 585_833_000, "delsys": "DVB-T"},
+    ],
+    [586_000_000],
+    "DVBT",
+) == ["dvbt-nominal"]
 
 measurement_key = lambda mux: str(mux.get("frequency") or mux.get("freq") or "")
 rf_candidate_logs = []
@@ -400,6 +420,40 @@ class FakeTvh:
 
 
 fake_tvh = FakeTvh()
+set_mux_tuning = load_function(
+    ROOT / "tvh.py",
+    "set_mux_tuning",
+    {"Any": Any, "Dict": Dict, "List": List, "json": json},
+)
+assert set_mux_tuning(
+    fake_tvh,
+    ["mux-a", "mux-a", "", "mux-b"],
+    {
+        "constellation": "QPSK",
+        "fec_hi": "3/4",
+        "transmission_mode": "8k",
+        "guard_interval": "1/32",
+        "frequency": 586_000_000,
+    },
+) == 2
+assert [json.loads(data["node"]) for _path, data in fake_tvh.calls] == [
+    {
+        "uuid": "mux-a",
+        "constellation": "QPSK",
+        "fec_hi": "3/4",
+        "transmission_mode": "8k",
+        "guard_interval": "1/32",
+    },
+    {
+        "uuid": "mux-b",
+        "constellation": "QPSK",
+        "fec_hi": "3/4",
+        "transmission_mode": "8k",
+        "guard_interval": "1/32",
+    },
+]
+fake_tvh.calls.clear()
+
 scan_muxes(fake_tvh, ["mux-a", "mux-a", "", "mux-b"])
 assert [json.loads(data["node"]) for _path, data in fake_tvh.calls] == [
     {"uuid": "mux-a", "scan_state": 3},
@@ -566,6 +620,9 @@ assert "_uk_auto_rf_candidate_centres(muxes, measurements)" in app_source
 assert "_uk_auto_ready_centres(muxes)" in app_source
 assert '"tvh_auto_recovery_passes"' in app_source
 assert "for recovery_pass in range(1, max_recovery_passes + 1)" in app_source
+assert '"DVB-T QPSK 3/4"' in app_source
+assert '"DVB-T2 256-QAM 2/3"' in app_source
+assert "tvh.set_mux_tuning(explicit_targets, tuning)" in app_source
 assert "_deduplicate_transport_muxes(network_uuid, muxes, measurements)" in app_source
 assert "offsets=[offset_hz]" in app_source
 assert '(-167_000, "negative", 52, 62)' in app_source

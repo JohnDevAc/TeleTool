@@ -100,6 +100,16 @@
 
         <div id="tvSetupProgressWrap" class="hidden" style="margin-top:10px;">
           <div class="small" id="tvSetupStep">Idle</div>
+          <div class="tvSetupMetrics" aria-live="polite">
+            <div class="tvSetupMetric">
+              <span class="tvSetupMetricLabel">Muxes scanned</span>
+              <strong id="tvSetupMuxCount" class="tvSetupMetricValue">0 / 0</strong>
+            </div>
+            <div class="tvSetupMetric">
+              <span class="tvSetupMetricLabel">Services found</span>
+              <strong id="tvSetupServiceCount" class="tvSetupMetricValue">0</strong>
+            </div>
+          </div>
           <div class="progressTrack" aria-hidden="true">
             <div id="tvSetupProgressBar" class="progressBar"></div>
           </div>
@@ -279,10 +289,17 @@ function renderTvSetupStatus(st){
   const step = document.getElementById("tvSetupStep");
   const bar = document.getElementById("tvSetupProgressBar");
   const log = document.getElementById("tvSetupLog");
+  const muxCount = document.getElementById("tvSetupMuxCount");
+  const serviceCount = document.getElementById("tvSetupServiceCount");
 
   const show = !!(st && (st.running || st.done || (st.logs && st.logs.length)));
+  const muxesTotal = Math.max(0, Number((st && st.muxes_total) || 0));
+  const muxesScanned = Math.max(0, Math.min(muxesTotal, Number((st && st.muxes_scanned) || 0)));
+  const servicesFound = Math.max(0, Number((st && st.services_found) || 0));
   wrap.classList.toggle("hidden", !show);
   step.textContent = (st && st.step) ? st.step : "Idle";
+  muxCount.textContent = `${muxesScanned} / ${muxesTotal}`;
+  serviceCount.textContent = String(servicesFound);
   bar.style.width = `${Math.max(0, Math.min(100, Number((st && st.percent) || 0)))}%`;
   log.textContent = (st && st.logs && st.logs.length) ? st.logs.join("\n") : "No activity yet.";
   tvSetupRunning = !!(st && st.running);

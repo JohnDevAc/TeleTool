@@ -573,6 +573,30 @@ html{ scrollbar-gutter:stable; }
   background: rgba(255,255,255,.06);
   overflow:hidden;
 }
+.tvSetupMetrics{
+  display:flex;
+  align-items:baseline;
+  flex-wrap:wrap;
+  gap:8px 28px;
+  min-height:24px;
+  margin-top:8px;
+}
+.tvSetupMetric{
+  display:inline-flex;
+  align-items:baseline;
+  gap:8px;
+  min-width:170px;
+}
+.tvSetupMetricLabel{
+  color:var(--muted);
+  font-size:12px;
+}
+.tvSetupMetricValue{
+  min-width:58px;
+  color:var(--text);
+  font-size:14px;
+  font-variant-numeric:tabular-nums;
+}
 .progressBar{
   width:0%;
   height:100%;

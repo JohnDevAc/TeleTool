@@ -105,6 +105,10 @@ TV setup rebuilds Tvheadend tuner/channel data and should not be run while on ai
 | `POST` | `/api/tv/setup/run` | Start a destructive Tvheadend scan and service map. |
 | `GET` | `/api/tv/setup/status` | Poll setup progress, logs, and result. |
 
+Setup status includes `muxes_scanned`, `muxes_total`, and `services_found`.
+These counters are updated by the existing scan poll and remain available in
+complete, partial, and failed results.
+
 Run TV setup with the default region:
 
 ```json
@@ -144,9 +148,12 @@ Common keys include:
 
 New installations and an empty `tvh_dvbt_scanfile` select TeleTool's Generic
 Auto Default UK profile, which scans UHF channels 21-48 using both DVB-T and
-DVB-T2. Existing installations using the legacy Tvheadend Generic profile are
-migrated to this default when the tuning page is loaded. The legacy profile is
-DVB-T only.
+DVB-T2. DVB-T2 is checked at the nominal centre frequency and the UK
+`+/-167 kHz` offsets so HD multiplexes are not dependent on tuner AFC behavior.
+Existing installations using the legacy Tvheadend Generic profile are migrated
+to this default when the tuning page is loaded. The legacy profile is DVB-T
+only. A scan that finds standard-definition services but does not lock a DVB-T2
+multiplex is reported as partial because HD services may be missing.
 After TV setup completes, TeleTool stores the exact scanfile key returned by the
 installed Tvheadend version.
 `ndi_groups` and `ndi_discovery_server` accept comma-separated values; discovery

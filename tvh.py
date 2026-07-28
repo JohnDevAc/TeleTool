@@ -561,14 +561,22 @@ class TvheadendClient:
         frequencies as DVB-T only. It therefore cannot discover UK HD services
         on DVB-T2 and wastes time above the current UK television band.
 
-        Scan UHF channels 21-48 once for each delivery system. The tuner AFC
-        handles the small +/-167 kHz transmitter offsets, while transmitter-
-        specific profiles remain available for the fastest exact-frequency scan.
+        Scan UHF channels 21-48 at their nominal DVB-T frequency. For DVB-T2,
+        also try the +/-167 kHz offsets used by UK transmitters because some
+        receivers will find the carrier at the nominal centre frequency but
+        will not lock the HD multiplex. Transmitter-specific profiles remain
+        available for the fastest exact-frequency scan.
         """
         muxes: List[Dict[str, Any]] = []
         for channel in range(21, 49):
-            frequency = 474_000_000 + ((channel - 21) * 8_000_000)
-            for delivery_system in ("DVB-T2", "DVB-T"):
+            centre_frequency = 474_000_000 + ((channel - 21) * 8_000_000)
+            scan_variants = (
+                ("DVB-T", centre_frequency),
+                ("DVB-T2", centre_frequency),
+                ("DVB-T2", centre_frequency - 167_000),
+                ("DVB-T2", centre_frequency + 167_000),
+            )
+            for delivery_system, frequency in scan_variants:
                 muxes.append({
                     "enabled": 1,
                     "epg": 1,

@@ -58,7 +58,12 @@ require(
     "scripts/build_deb.sh",
     "packaging/debian/teletool-update@.service",
     "packaging/debian/update-package",
+    "scan_report.py",
     "TELETOOL_RELEASE_BRANCH",
+)
+require(
+    "packaging/debian/control.in",
+    "python3-reportlab",
 )
 require(
     "scripts/build_inferno_deb.sh",
@@ -82,6 +87,8 @@ require(
     "scripts/build_inferno_deb.sh",
     "scripts/check_inferno_update_api.py",
     "scripts/check_audio_output_lifecycle.py",
+    "scripts/check_rf_status.py",
+    "scripts/check_tv_scan_report.py",
     "teletool-dev-apt",
     "teletool-stable-apt",
     "scripts/sign_apt_repo.sh",

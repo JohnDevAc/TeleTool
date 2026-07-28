@@ -96,6 +96,8 @@
         <div class="actions">
           <button id="runTvSetup" class="primary">Run TV Setup</button>
           <span id="tvSetupInlineState" class="badge" style="display:none;"></span>
+          <a id="downloadTvScanReport" class="inlineLink small hidden" href="/api/tv/setup/report" download>Download scan report</a>
+          <span id="tvSetupReportError" class="small reportError hidden"></span>
         </div>
 
         <div id="tvSetupProgressWrap" class="hidden" style="margin-top:10px;">
@@ -291,6 +293,8 @@ function renderTvSetupStatus(st){
   const log = document.getElementById("tvSetupLog");
   const muxCount = document.getElementById("tvSetupMuxCount");
   const serviceCount = document.getElementById("tvSetupServiceCount");
+  const reportLink = document.getElementById("downloadTvScanReport");
+  const reportError = document.getElementById("tvSetupReportError");
 
   const show = !!(st && (st.running || st.done || (st.logs && st.logs.length)));
   const muxesTotal = Math.max(0, Number((st && st.muxes_total) || 0));
@@ -302,6 +306,11 @@ function renderTvSetupStatus(st){
   serviceCount.textContent = String(servicesFound);
   bar.style.width = `${Math.max(0, Math.min(100, Number((st && st.percent) || 0)))}%`;
   log.textContent = (st && st.logs && st.logs.length) ? st.logs.join("\n") : "No activity yet.";
+  const reportReady = !!(st && st.report_available && st.report_url);
+  reportLink.href = reportReady ? st.report_url : "/api/tv/setup/report";
+  reportLink.classList.toggle("hidden", !reportReady);
+  reportError.textContent = (st && st.report_error) ? `Report unavailable: ${st.report_error}` : "";
+  reportError.classList.toggle("hidden", !reportError.textContent);
   tvSetupRunning = !!(st && st.running);
   updateNdiControls();
   updateTvSetupControls();
@@ -509,7 +518,7 @@ function renderRfStatus(rf){
   const label = document.createElement("span");
   dot.className = `rfDot ${kind}`;
   dot.setAttribute("aria-hidden", "true");
-  label.textContent = rfSignalLabel(rf);
+  label.textContent = rfSignalStatsLabel(rf);
   el.title = rfSignalTitle(rf);
   el.replaceChildren(dot, label);
 }
@@ -527,7 +536,7 @@ async function refreshStatus() {
     running,
     pipeline_state: st.pipeline_state || (running ? "PLAYING" : "NULL"),
     ndi_name: running ? (st.ndi_name || "—") : "—",
-    rf_label: rfSignalLabel(rf),
+    rf_label: rfSignalStatsLabel(rf),
     rf_kind: rfSignalKind(rf),
     last_error: st.last_error || "",
     last_warning: st.last_warning || ""

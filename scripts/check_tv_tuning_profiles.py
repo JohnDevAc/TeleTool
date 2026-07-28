@@ -132,6 +132,7 @@ merge_values = [
 assert merge_values == [True], "TV service mapping must merge duplicate channel names"
 
 index_html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+common_js = (ROOT / "static" / "common.js").read_text(encoding="utf-8")
 assert "Generic Auto Legacy (DVB-T only)" in index_html
 assert "teletool-uk-auto-dvbt-dvbt2" in index_html
 profile_helper = index_html.index("function isTeleToolUkAuto(value)")
@@ -144,11 +145,17 @@ assert 'id="tvSetupServiceCount"' in index_html
 assert "st.muxes_scanned" in index_html
 assert "st.muxes_total" in index_html
 assert "st.services_found" in index_html
+assert "rfSignalStatsLabel(rf)" in index_html
+assert "function rfCnrLabel(rf)" in common_js
+assert "function rfSignalStatsLabel(rf)" in common_js
+assert "| C/N ${rfCnrLabel(rf)}" in common_js
 
 app_source = (ROOT / "app.py").read_text(encoding="utf-8")
 assert 'muxes_scanned=summary["complete"]' in app_source
 assert 'muxes_total=summary["muxes"]' in app_source
 assert 'services_found=summary["services"]' in app_source
 assert "No DVB-T2 multiplex locked" in app_source
+assert '"cnr_db": cnr_db' in app_source
+assert '"cnr_label": cnr_label' in app_source
 
 print("UK DVB-T/T2 tuning profile checks passed.")

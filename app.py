@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -20,6 +21,7 @@ from pydantic import BaseModel, Field
 import requests
 import fleet_manager
 import system_manager
+from scan_report import build_scan_report, mux_report_key
 from ndi_runtime_config import (
     DEFAULT_NDI_MULTICAST_NETMASK,
     DEFAULT_NDI_MULTICAST_NETPREFIX,
@@ -38,6 +40,11 @@ configure_ndi_environment()
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("TELETOOL_CONFIG_PATH", str(BASE_DIR / "config.json"))).expanduser()
 CONFIG_LOCK = threading.Lock()
+TV_SCAN_REPORT_PATH = Path(
+    os.environ.get("TELETOOL_TV_SCAN_REPORT_PATH", "/var/lib/teletool/teletool-tv-scan-report.pdf")
+).expanduser()
+TV_SCAN_REPORT_URL = "/api/tv/setup/report"
+TV_SCAN_REPORT_LOGO_PATH = BASE_DIR / "static" / "teletool-logo.png"
 NDI_RUNTIME_NAME = "libndi.so.6"
 NDI_SDK_URL = "https://ndi.video/for-developers/ndi-sdk/"
 NDI_RUNTIME_PATH = Path(os.environ.get("TELETOOL_NDI_RUNTIME_PATH", "/usr/local/lib/libndi.so.6")).expanduser()
@@ -570,12 +577,17 @@ def _rf_status_from_fields(
     percent = signal_percent if signal_percent is not None else snr_percent
     dbm, dbm_estimated = _rf_dbm_from_signal_scaled(signal, signal_scale, signal_percent)
     dbm_label = _rf_dbm_label(dbm, dbm_estimated)
+    cnr_db = _rf_scaled_db_value(snr, snr_scale)
+    cnr_label = (
+        f"{cnr_db:.1f}".rstrip("0").rstrip(".") + " dB"
+        if cnr_db is not None
+        else None
+    )
     available = dbm is not None or percent is not None or signal not in (None, "") or snr not in (None, "")
-    snr_for_kind = _rf_scaled_db_value(snr, snr_scale) if _rf_scale_is_db(snr_scale) else snr
     label = dbm_label if dbm is not None else (f"{percent}%" if percent is not None else (_rf_text(signal) or _rf_text(snr) or "N/A"))
     out = {
         "available": available,
-        "kind": _rf_kind_from_dbm(dbm, percent, snr=snr_for_kind),
+        "kind": _rf_kind_from_dbm(dbm, percent, snr=cnr_db),
         "label": label,
         "dbm": dbm,
         "dbm_estimated": dbm_estimated,
@@ -585,6 +597,8 @@ def _rf_status_from_fields(
         "signal_percent": signal_percent,
         "snr": _rf_scaled_snr_text(snr, snr_scale),
         "snr_percent": snr_percent,
+        "cnr_db": cnr_db,
+        "cnr_label": cnr_label,
         "mux": mux_label,
         "source": source,
     }
@@ -760,6 +774,8 @@ def _rf_unavailable() -> Dict[str, Any]:
         "signal_percent": None,
         "snr": None,
         "snr_percent": None,
+        "cnr_db": None,
+        "cnr_label": None,
         "mux": None,
         "source": "unavailable",
     }
@@ -1048,12 +1064,45 @@ TV_SETUP_STATE: Dict[str, Any] = {
     "muxes_scanned": 0,
     "muxes_total": 0,
     "services_found": 0,
+    "report_available": False,
+    "report_url": None,
+    "report_format": None,
+    "report_filename": None,
+    "report_error": None,
 }
 TV_SETUP_LOCK = threading.Lock()
 
+
+def _tv_scan_report_filename() -> str:
+    hostname = re.sub(r"[^a-zA-Z0-9._-]+", "-", system_manager.persistent_hostname()).strip("-")
+    return f"{hostname or 'TeleTool'}-tv-scan-report.pdf"
+
+
+def _tv_scan_report_exists() -> bool:
+    try:
+        return TV_SCAN_REPORT_PATH.is_file() and TV_SCAN_REPORT_PATH.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _clear_tv_scan_report() -> None:
+    try:
+        TV_SCAN_REPORT_PATH.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"Could not replace the previous TV scan report: {exc}") from exc
+
+
 def _tv_setup_snapshot() -> Dict[str, Any]:
     with TV_SETUP_LOCK:
-        return dict(TV_SETUP_STATE)
+        snapshot = dict(TV_SETUP_STATE)
+    report_available = _tv_scan_report_exists()
+    snapshot.update({
+        "report_available": report_available,
+        "report_url": TV_SCAN_REPORT_URL if report_available else None,
+        "report_format": "pdf" if report_available else None,
+        "report_filename": _tv_scan_report_filename() if report_available else None,
+    })
+    return snapshot
 
 def _tv_setup_set(**patch: Any) -> None:
     with TV_SETUP_LOCK:
@@ -1257,18 +1306,123 @@ def _scan_setup_percent(summary: Dict[str, int], start: float = 20, end: float =
     return round(start + ((end - start) * complete / total), 1)
 
 
-def _wait_for_scan(network_uuid: str, timeout_s: int = 600, stall_timeout_s: int = 120) -> Tuple[List[Dict[str, Any]], bool, Optional[str]]:
+def _primary_ipv4_address() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 9))
+            address = str(probe.getsockname()[0] or "").strip()
+            if address and not address.startswith("127."):
+                return address
+    except OSError:
+        pass
+    try:
+        addresses = socket.gethostbyname_ex(socket.gethostname())[2]
+    except OSError:
+        addresses = []
+    return next((address for address in addresses if address and not address.startswith("127.")), "N/A")
+
+
+def _capture_scan_rf_measurements(
+    muxes: List[Dict[str, Any]],
+    measurements: Dict[str, Dict[str, Any]],
+) -> None:
+    try:
+        inputs = tvh.status_inputs()
+    except Exception:
+        return
+    for input_status in inputs:
+        mux = next((candidate for candidate in muxes if _rf_input_matches_mux(input_status, candidate)), None)
+        if mux is None:
+            continue
+        rf = _rf_status_from_input(input_status, mux=mux, source="tv_scan")
+        dbm = rf.get("dbm") if not rf.get("dbm_estimated") else None
+        cnr = rf.get("cnr_db")
+        if dbm is None and cnr is None:
+            continue
+        bucket = measurements.setdefault(
+            mux_report_key(mux),
+            {"samples": 0, "dbm_values": [], "cnr_values": []},
+        )
+        bucket["samples"] = int(bucket.get("samples") or 0) + 1
+        if dbm is not None:
+            bucket["dbm_values"].append(float(dbm))
+        if cnr is not None:
+            bucket["cnr_values"].append(float(cnr))
+
+
+def _tv_scan_profile_label(scanfile: Optional[str]) -> str:
+    key = str(scanfile or "").strip()
+    if not key:
+        return "Existing mux list"
+    try:
+        for region in tvh.list_dvb_scanfiles("dvb-t"):
+            if str(region.get("key") or "").strip() == key:
+                return str(region.get("val") or key).strip()
+    except Exception:
+        pass
+    if key == TELETOOL_UK_AUTO_SCANFILE:
+        return "Generic Auto Default (DVB-T/T2)"
+    return key
+
+
+def _create_tv_scan_report(
+    *,
+    result: str,
+    scanfile: Optional[str],
+    muxes: List[Dict[str, Any]],
+    measurements: Dict[str, Dict[str, Any]],
+    services_found: int,
+    finished_at: int,
+    note: Optional[str] = None,
+    error: Optional[str] = None,
+) -> None:
+    release = system_manager.release_info()
+    build_scan_report(
+        pdf_path=TV_SCAN_REPORT_PATH,
+        logo_path=TV_SCAN_REPORT_LOGO_PATH,
+        identity={
+            "hostname": system_manager.persistent_hostname(),
+            "ip_address": _primary_ipv4_address(),
+            "version": release.get("version"),
+        },
+        summary={
+            "result": result,
+            "scanfile": _tv_scan_profile_label(scanfile),
+            "services_found": services_found,
+            "finished_at": finished_at,
+            "note": note,
+            "error": error,
+        },
+        muxes=muxes,
+        measurements=measurements,
+    )
+    _tv_setup_set(
+        report_available=True,
+        report_url=TV_SCAN_REPORT_URL,
+        report_format="pdf",
+        report_filename=_tv_scan_report_filename(),
+    )
+    _tv_setup_log("TV scan report is ready to download.")
+
+
+def _wait_for_scan(
+    network_uuid: str,
+    timeout_s: int = 600,
+    stall_timeout_s: int = 120,
+) -> Tuple[List[Dict[str, Any]], bool, Optional[str], Dict[str, Dict[str, Any]]]:
     deadline = time.time() + timeout_s
     stable = 0
     last_progress_key = None
     last_progress_at = time.time()
     diag_every = 0
     last_muxes: List[Dict[str, Any]] = []
+    measurements: Dict[str, Dict[str, Any]] = {}
     while time.time() < deadline:
         now = time.time()
         muxes = tvh.list_muxes_for_network(network_uuid)
         last_muxes = muxes
         summary = _scan_mux_summary(muxes)
+        _capture_scan_rf_measurements(muxes, measurements)
         scan_step = "Scanning muxes and discovering services…"
         _tv_setup_set(
             percent=_scan_setup_percent(summary),
@@ -1292,7 +1446,7 @@ def _wait_for_scan(network_uuid: str, timeout_s: int = 600, stall_timeout_s: int
         if muxes and summary["active"] == 0:
             stable += 1
             if stable >= 3:
-                return muxes, True, None
+                return muxes, True, None, measurements
         else:
             stable = 0
 
@@ -1304,7 +1458,7 @@ def _wait_for_scan(network_uuid: str, timeout_s: int = 600, stall_timeout_s: int
             )
             _tv_setup_log(note)
             _log_mux_diagnostics(muxes, prefix="Mux at stall")
-            return muxes, False, note
+            return muxes, False, note, measurements
 
         time.sleep(3)
     muxes = last_muxes or tvh.list_muxes_for_network(network_uuid)
@@ -1315,7 +1469,7 @@ def _wait_for_scan(network_uuid: str, timeout_s: int = 600, stall_timeout_s: int
     )
     _tv_setup_log(note)
     _log_mux_diagnostics(muxes, prefix="Mux at timeout")
-    return muxes, False, note
+    return muxes, False, note, measurements
 
 def _mapper_counts(status: Dict[str, Any]) -> Tuple[int, int, int, int, int]:
     total = _coerce_int(status.get("total")) or 0
@@ -1385,8 +1539,13 @@ def _wait_for_mapped_channels(min_count: int = 1, timeout_s: int = 60) -> List[D
 
 
 def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
+    report_muxes: List[Dict[str, Any]] = []
+    scan_measurements: Dict[str, Dict[str, Any]] = {}
+    network_uuid = ""
+    services_found = 0
+    scan_note: Optional[str] = None
+    scanfile_key = str(scanfile_key or cfg.get("tvh_dvbt_scanfile") or "").strip() or None
     try:
-        scanfile_key = str(scanfile_key or cfg.get("tvh_dvbt_scanfile") or "").strip() or None
         if not scanfile_key:
             scanfile_key = _preferred_dvbt_scanfile(tvh.list_dvb_scanfiles("dvb-t"), "") or None
         _tv_setup_set(
@@ -1401,6 +1560,11 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
             muxes_scanned=0,
             muxes_total=0,
             services_found=0,
+            report_available=False,
+            report_url=None,
+            report_format=None,
+            report_filename=None,
+            report_error=None,
         )
         if _stop_ndi_for_tv_setup():
             _tv_setup_log("Stopped active NDI/audio pipeline before TV Setup.")
@@ -1469,7 +1633,12 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
             max_value=3600,
         )
         scan_stall_s = _config_int("tvh_scan_stall_timeout_s", 120, min_value=30, max_value=900)
-        muxes, scan_complete, scan_note = _wait_for_scan(network_uuid, timeout_s=scan_timeout_s, stall_timeout_s=scan_stall_s)
+        muxes, scan_complete, scan_note, scan_measurements = _wait_for_scan(
+            network_uuid,
+            timeout_s=scan_timeout_s,
+            stall_timeout_s=scan_stall_s,
+        )
+        report_muxes = muxes
         scan_summary = _scan_mux_summary(muxes)
         _tv_setup_set(
             muxes_scanned=scan_summary["complete"],
@@ -1492,6 +1661,7 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
         _tv_setup_set(percent=82, step="Loading discovered services…")
         scanned_services = tvh.list_services(hidemode="none")
         service_uuids = [s.get("uuid") for s in scanned_services if s.get("uuid")]
+        services_found = len(service_uuids)
         _tv_setup_set(services_found=len(service_uuids))
         _tv_setup_log(f"Discovered {len(service_uuids)} service(s) available for mapping.")
         if scanned_services:
@@ -1503,6 +1673,7 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
             time.sleep(10)
             scanned_services = tvh.list_services(hidemode="none")
             service_uuids = [s.get("uuid") for s in scanned_services if s.get("uuid")]
+            services_found = len(service_uuids)
             _tv_setup_set(services_found=len(service_uuids))
             _tv_setup_log(f"Second service check found {len(service_uuids)} service(s).")
         if not service_uuids:
@@ -1532,6 +1703,21 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
                 "TV service mapper reported mapped services, but no channels appeared in the channel list"
             )
 
+        finished_at = int(time.time())
+        try:
+            _create_tv_scan_report(
+                result="Complete" if scan_complete else "Partially complete",
+                scanfile=scanfile_key,
+                muxes=report_muxes,
+                measurements=scan_measurements,
+                services_found=services_found,
+                finished_at=finished_at,
+                note=scan_note,
+            )
+        except Exception as report_exc:
+            _tv_setup_log(f"Scan report could not be created: {report_exc}")
+            _tv_setup_set(report_error=str(report_exc))
+
         if scan_complete:
             _tv_setup_set(
                 running=False,
@@ -1540,7 +1726,7 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
                 percent=100,
                 step="TV Setup complete",
                 scan_note=None,
-                finished_at=int(time.time()),
+                finished_at=finished_at,
             )
         else:
             _tv_setup_set(
@@ -1550,10 +1736,30 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
                 percent=100,
                 step="TV Setup partially complete",
                 scan_note=scan_note,
-                finished_at=int(time.time()),
+                finished_at=finished_at,
             )
     except Exception as e:
         _tv_setup_log(f"ERROR: {e}")
+        finished_at = int(time.time())
+        if network_uuid and not report_muxes:
+            try:
+                report_muxes = tvh.list_muxes_for_network(network_uuid)
+            except Exception:
+                report_muxes = []
+        try:
+            _create_tv_scan_report(
+                result="Failed",
+                scanfile=scanfile_key,
+                muxes=report_muxes,
+                measurements=scan_measurements,
+                services_found=services_found,
+                finished_at=finished_at,
+                note=scan_note,
+                error=str(e),
+            )
+        except Exception as report_exc:
+            _tv_setup_log(f"Scan report could not be created: {report_exc}")
+            _tv_setup_set(report_error=str(report_exc))
         _tv_setup_set(
             running=False,
             done=True,
@@ -1561,7 +1767,7 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
             percent=100,
             step="TV Setup failed",
             error=str(e),
-            finished_at=int(time.time()),
+            finished_at=finished_at,
         )
 
 @asynccontextmanager
@@ -2193,6 +2399,18 @@ def _stop_ndi_for_tv_setup() -> bool:
 def api_tv_setup_status():
     return _tv_setup_snapshot()
 
+
+@app.get("/api/tv/setup/report")
+def api_tv_setup_report():
+    if not _tv_scan_report_exists():
+        raise HTTPException(404, "No TV scan report is available")
+    return FileResponse(
+        str(TV_SCAN_REPORT_PATH),
+        media_type="application/pdf",
+        filename=_tv_scan_report_filename(),
+    )
+
+
 @app.get("/api/tv/setup/regions")
 def api_tv_setup_regions():
     try:
@@ -2224,6 +2442,10 @@ def api_tv_setup_run(req: TVSetupRunReq):
             raise HTTPException(500, f"Could not validate selected region with TV: {e}")
         if scanfile_key not in valid:
             raise HTTPException(400, f"Unknown TV DVB-T/T2 predefined mux region: {scanfile_key}")
+    try:
+        _clear_tv_scan_report()
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
     _tv_setup_set(
         running=True,
         done=False,
@@ -2236,6 +2458,11 @@ def api_tv_setup_run(req: TVSetupRunReq):
         finished_at=None,
         selected_scanfile=scanfile_key,
         scan_note=None,
+        report_available=False,
+        report_url=None,
+        report_format=None,
+        report_filename=None,
+        report_error=None,
     )
     t = threading.Thread(target=_run_tv_setup_worker, args=(scanfile_key,), name="tv-setup-worker", daemon=True)
     t.start()

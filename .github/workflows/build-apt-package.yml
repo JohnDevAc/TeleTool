@@ -49,6 +49,7 @@ jobs:
             libgstreamer-plugins-base1.0-dev \
             libasound2-dev \
             pkg-config \
+            python3-reportlab \
             rustc \
             xz-utils
 
@@ -75,6 +76,12 @@ jobs:
 
       - name: Validate UK DVB-T/T2 tuning profiles
         run: python3 scripts/check_tv_tuning_profiles.py
+
+      - name: Validate RF status conversion
+        run: python3 scripts/check_rf_status.py
+
+      - name: Validate TV scan PDF report
+        run: python3 scripts/check_tv_scan_report.py
 
       - name: Build the Debian package
         env:

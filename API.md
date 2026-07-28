@@ -24,7 +24,7 @@ FastAPI also publishes generated docs at `/docs` and the OpenAPI schema at `/ope
 | --- | --- | --- |
 | `GET` | `/api/channels?force_refresh=0` | List Tvheadend channels. |
 | `GET` | `/api/status?lite=1&stats=1&logs=0&rf=0` | Current NDI, audio, and supervisor status. Set `rf=1` to include RF status in the same response. |
-| `GET` | `/api/rf` | Current cached/live Tvheadend RF status. The web UI polls this separately from pipeline status. |
+| `GET` | `/api/rf` | Current cached/live Tvheadend RF status. Calibrated carrier-to-noise is returned as `cnr_db` and `cnr_label`; the web UI polls this separately from pipeline status. |
 | `GET` | `/api/ndi/runtime` | NDI SDK runtime readiness, paths, SDK URL, and upload availability. |
 | `POST` | `/api/ndi/runtime/upload` | Upload, validate, and install an ARM64 `libndi.so.6` request body. |
 | `POST` | `/api/start` | Start or restart the NDI stream. |
@@ -104,10 +104,14 @@ TV setup rebuilds Tvheadend tuner/channel data and should not be run while on ai
 | `GET` | `/api/tv/setup/regions` | List DVB-T/T2 scan regions and the selected default. |
 | `POST` | `/api/tv/setup/run` | Start a destructive Tvheadend scan and service map. |
 | `GET` | `/api/tv/setup/status` | Poll setup progress, logs, and result. |
+| `GET` | `/api/tv/setup/report` | Download the most recent TV scan report as a PDF. |
 
-Setup status includes `muxes_scanned`, `muxes_total`, and `services_found`.
+Setup status includes `muxes_scanned`, `muxes_total`, `services_found`,
+`report_available`, `report_url`, and `report_error`.
 These counters are updated by the existing scan poll and remain available in
-complete, partial, and failed results.
+complete, partial, and failed results. Starting a new scan removes the previous
+report. The replacement PDF records the unit identity, scan result, mux/service
+counts, and calibrated average dBm and C/N readings for each mux.
 
 Run TV setup with the default region:
 

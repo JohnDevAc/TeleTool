@@ -71,12 +71,21 @@ function rfSignalLabel(rf){
   return String(rf.label || "N/A");
 }
 
+function rfCnrLabel(rf){
+  if (!rf || !rf.cnr_label) return "N/A";
+  return String(rf.cnr_label);
+}
+
+function rfSignalStatsLabel(rf){
+  return `${rfSignalLabel(rf)} | C/N ${rfCnrLabel(rf)}`;
+}
+
 function rfSignalTitle(rf){
   if (!rf || !rf.available) return "RF signal unavailable";
   const parts = [`RF signal ${rfSignalLabel(rf)}`];
   if (rf.dbm_estimated) parts.push("estimated from TV signal strength");
   if (Number.isFinite(Number(rf.percent))) parts.push(`${Math.round(Number(rf.percent))}%`);
-  if (rf.snr) parts.push(`SNR ${rf.snr}`);
+  if (rf.cnr_label) parts.push(`C/N ${rf.cnr_label}`);
   if (rf.mux) parts.push(String(rf.mux));
   return parts.join(" | ");
 }

@@ -563,6 +563,7 @@ html{ scrollbar-gutter:stable; }
 }
 
 .hidden{ display:none !important; }
+.reportError{ color:var(--bad); }
 
 .progressTrack{
   width:100%;

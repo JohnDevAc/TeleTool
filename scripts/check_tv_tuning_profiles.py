@@ -146,9 +146,20 @@ discovered = [
         "dvb_servicetype": 25,
         "enabled": False,
     },
+    {
+        "uuid": "verified-unnamed",
+        "multiplex_uuid": "mux-hd",
+        "sid": 17540,
+        "svcname": "",
+        "dvb_servicetype": 0,
+        "enabled": True,
+    },
 ]
-assert component_retry_targets(discovered, [{"uuid": "verified-tv"}]) == {
-    "mux-hd": ["BBC ONE HD"],
+assert component_retry_targets(
+    discovered,
+    [{"uuid": "verified-tv"}, {"uuid": "verified-unnamed"}],
+) == {
+    "mux-hd": ["BBC ONE HD", "Service SID 17540"],
 }
 
 preferred_scanfile = load_function(

@@ -1344,11 +1344,20 @@ def _component_retry_targets(
     for service in discovered_services:
         service_uuid = str(service.get("uuid") or "").strip()
         mux_uuid = str(service.get("multiplex_uuid") or "").strip()
-        if not service_uuid or service_uuid in verified_uuids or not mux_uuid:
+        if not service_uuid or not mux_uuid or not service.get("enabled", True):
             continue
-        if not _is_broadcast_av_service(service):
+        service_name = str(service.get("svcname") or service.get("name") or "").strip()
+        try:
+            service_type = int(str(service.get("dvb_servicetype") or "0"), 0)
+        except (TypeError, ValueError):
+            service_type = 0
+        identity_missing = not service_name or service_type <= 0
+        if service_uuid in verified_uuids and not identity_missing:
             continue
-        name = str(service.get("svcname") or service.get("name") or service_uuid).strip()
+        if not identity_missing and not _is_broadcast_av_service(service):
+            continue
+        sid = service.get("sid")
+        name = service_name or (f"Service SID {sid}" if sid is not None else service_uuid)
         targets.setdefault(mux_uuid, []).append(name)
     return targets
 
@@ -1824,7 +1833,7 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
             unverified_count = sum(len(retry_targets[uuid]) for uuid in ordered_targets)
             _tv_setup_set(percent=85, step="Completing TV service information…")
             _tv_setup_log(
-                f"{unverified_count} broadcast service(s) need more component data; "
+                f"{unverified_count} service(s) need more identity or component data; "
                 f"retrying {len(ordered_targets)} affected mux(es) once."
             )
             for mux_uuid in ordered_targets:
@@ -1858,10 +1867,21 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
             remaining_targets = _component_retry_targets(scanned_services, verified_services)
             remaining_count = sum(len(names) for names in remaining_targets.values())
             broadcast_count = sum(1 for service in scanned_services if _is_broadcast_av_service(service))
+            verified_uuids = {
+                str(service.get("uuid") or "")
+                for service in verified_services
+                if service.get("uuid")
+            }
+            verified_broadcast_count = sum(
+                1
+                for service in scanned_services
+                if _is_broadcast_av_service(service)
+                and str(service.get("uuid") or "") in verified_uuids
+            )
             _tv_setup_log(
-                f"Service readiness after retry: {broadcast_count - remaining_count}/"
-                f"{broadcast_count} broadcast service(s) verified; "
-                f"{remaining_count} currently unavailable."
+                f"Service readiness after retry: {verified_broadcast_count}/"
+                f"{broadcast_count} identified broadcast service(s) verified; "
+                f"{remaining_count} service(s) still incomplete."
             )
             _tv_setup_set(services_found=services_found)
         else:

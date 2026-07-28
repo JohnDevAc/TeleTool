@@ -12,7 +12,7 @@ from urllib3.util.retry import Retry
 
 
 TELETOOL_UK_AUTO_SCANFILE = "teletool/uk-auto-dvbt-dvbt2"
-TELETOOL_UK_AUTO_LABEL = "United Kingdom: auto DVB-T/T2 (TeleTool, slower)"
+TELETOOL_UK_AUTO_LABEL = "Generic Auto Default (UK DVB-T/T2)"
 
 
 class TvheadendClient:
@@ -555,37 +555,41 @@ class TvheadendClient:
         return muxes
 
     def _load_uk_auto_dvbt2_muxes(self) -> List[Dict[str, Any]]:
-        """Build a UK-wide DVB-T/T2 scan set from Tvheadend's transmitter files.
+        """Build a deterministic UK-wide DVB-T/T2 UHF scan set.
 
-        Tvheadend's built-in ``auto-Default`` table is DVB-T only, so it misses
-        UK HD services carried on DVB-T2 multiplexes. This synthetic option keeps
-        setup easy while preserving exact UK offsets, PLP ids, and delivery
-        systems from the bundled transmitter tables.
+        Tvheadend's built-in ``auto-Default`` table scans legacy VHF and UHF
+        frequencies as DVB-T only. It therefore cannot discover UK HD services
+        on DVB-T2 and wastes time above the current UK television band.
+
+        Scan UHF channels 21-48 once for each delivery system. The tuner AFC
+        handles the small +/-167 kHz transmitter offsets, while transmitter-
+        specific profiles remain available for the fastest exact-frequency scan.
         """
-        muxes_by_key: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
-        for region in self.list_dvb_scanfiles("dvb-t"):
-            key = str(region.get("key") or "")
-            if not key.startswith("dvb-t/uk/"):
-                continue
-            try:
-                muxes = self.load_scanfile_muxes(key)
-            except Exception:
-                continue
-            for mux in muxes:
-                frequency = mux.get("frequency")
-                if not frequency:
-                    continue
-                mux_key = (
-                    int(frequency),
-                    str(mux.get("delsys") or ""),
-                    str(mux.get("bandwidth") or ""),
-                    int(mux.get("plp_id") if mux.get("plp_id") is not None else -1),
-                )
-                muxes_by_key[mux_key] = dict(mux)
-        return [
-            muxes_by_key[key]
-            for key in sorted(muxes_by_key, key=lambda k: (k[0], k[1], k[3]))
-        ]
+        muxes: List[Dict[str, Any]] = []
+        for channel in range(21, 49):
+            frequency = 474_000_000 + ((channel - 21) * 8_000_000)
+            for delivery_system in ("DVB-T2", "DVB-T"):
+                muxes.append({
+                    "enabled": 1,
+                    "epg": 1,
+                    "delsys": delivery_system,
+                    "frequency": frequency,
+                    "bandwidth": "8MHz",
+                    "fec_hi": "AUTO",
+                    "fec_lo": "NONE",
+                    "constellation": "QAM/AUTO",
+                    "transmission_mode": "AUTO",
+                    "guard_interval": "AUTO",
+                    "hierarchy": "NONE",
+                    "plp_id": -1,
+                    "scan_state": 0,
+                    "tsid_zero": False,
+                    "pmt_06_ac3": 0,
+                    "eit_tsid_nocheck": False,
+                    "sid_filter": 0,
+                    "charset": "AUTO",
+                })
+        return muxes
 
     def delete_muxes(self, uuids: List[str]) -> None:
         if not uuids:
@@ -668,7 +672,7 @@ class TvheadendClient:
         node = {
             "services": service_uuids,
             "encrypted": True,
-            "merge_same_name": False,
+            "merge_same_name": True,
             "check_availability": False,
             "type_tags": True,
             "provider_tags": False,

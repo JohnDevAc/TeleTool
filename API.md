@@ -142,7 +142,11 @@ Common keys include:
 }
 ```
 
-An empty `tvh_dvbt_scanfile` selects Tvheadend's Generic Auto Default entry.
+New installations and an empty `tvh_dvbt_scanfile` select TeleTool's Generic
+Auto Default UK profile, which scans UHF channels 21-48 using both DVB-T and
+DVB-T2. Existing installations using the legacy Tvheadend Generic profile are
+migrated to this default when the tuning page is loaded. The legacy profile is
+DVB-T only.
 After TV setup completes, TeleTool stores the exact scanfile key returned by the
 installed Tvheadend version.
 `ndi_groups` and `ndi_discovery_server` accept comma-separated values; discovery

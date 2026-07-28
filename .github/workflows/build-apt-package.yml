@@ -73,6 +73,9 @@ jobs:
       - name: Validate NDI multicast configuration
         run: python3 scripts/check_ndi_multicast_config.py
 
+      - name: Validate UK DVB-T/T2 tuning profiles
+        run: python3 scripts/check_tv_tuning_profiles.py
+
       - name: Build the Debian package
         env:
           TELETOOL_GST_NDI_PLUGIN: ${{ github.workspace }}/dist/libgstndi.so

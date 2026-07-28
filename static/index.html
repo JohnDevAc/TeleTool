@@ -261,11 +261,11 @@ function preferredTvSetupRegion(options, selected){
   };
   const selectedText = normalized(selected);
   const selectedOption = options.find(o => o.value === selected || normalized(o.value) === selectedText || normalized(o.textContent) === selectedText);
-  if (selectedOption && selectedOption.value) return selectedOption.value;
-  const genericAutoDefault = options.find(isGenericAutoDefault);
-  if (genericAutoDefault) return genericAutoDefault.value;
+  if (selectedOption && selectedOption.value && !isGenericAutoDefault(selectedOption)) return selectedOption.value;
   const teletoolUkAuto = options.find(o => isTeleToolUkAuto(o.value) || isTeleToolUkAuto(o.textContent));
   if (teletoolUkAuto) return teletoolUkAuto.value;
+  const genericAutoDefault = options.find(isGenericAutoDefault);
+  if (genericAutoDefault) return genericAutoDefault.value;
   const autoDefault = options.find(o => isAutoDefault(o.value) || isAutoDefault(o.textContent));
   return autoDefault ? autoDefault.value : "";
 }
@@ -344,9 +344,10 @@ async function loadTvSetupRegions(){
       opt.value = r.key;
       const regionLabel = r.val || r.key;
       const normalizedLabel = String(regionLabel).toLowerCase().replace(/[^a-z0-9]+/g, "-");
-      opt.textContent = normalizedLabel.includes("generic") && normalizedLabel.includes("auto-defaul")
-        ? "Generic Auto Default"
-        : regionLabel;
+      const isLegacyGeneric = !isTeleToolUkAuto(r.key) &&
+        normalizedLabel.includes("generic") &&
+        normalizedLabel.includes("auto-defaul");
+      opt.textContent = isLegacyGeneric ? "Generic Auto Legacy (DVB-T only)" : regionLabel;
       sel.appendChild(opt);
     }
     const options = Array.from(sel.options);

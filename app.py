@@ -1076,11 +1076,16 @@ def _preferred_dvbt_scanfile(regions: List[Dict[str, Any]], configured: str = ""
         return "auto-defaul" in normalized
 
     if configured and configured in valid:
-        return configured
+        if configured == TELETOOL_UK_AUTO_SCANFILE or not is_auto_default(configured):
+            return configured
+
+    # TeleTool's Generic profile covers the current UK UHF band with both DVB-T
+    # and DVB-T2. Tvheadend's similarly named built-in profile is DVB-T only.
+    if TELETOOL_UK_AUTO_SCANFILE in valid:
+        return TELETOOL_UK_AUTO_SCANFILE
 
     # Tvheadend scanfile keys vary by release and can be truncated by its API
-    # (for example, dvb-t_auto-Defaul). Prefer the stable human-readable Generic
-    # label and use the key only as a fallback signal.
+    # (for example, dvb-t_auto-Defaul), so use both label and key as fallbacks.
     for region in regions:
         key = str(region.get("key") or "").strip()
         val = str(region.get("val") or "").strip()
@@ -1090,9 +1095,6 @@ def _preferred_dvbt_scanfile(regions: List[Dict[str, Any]], configured: str = ""
             "dvb-t-auto" in key_norm and is_auto_default(key)
         ):
             return key
-
-    if TELETOOL_UK_AUTO_SCANFILE in valid:
-        return TELETOOL_UK_AUTO_SCANFILE
 
     for region in regions:
         key = str(region.get("key") or "").strip()

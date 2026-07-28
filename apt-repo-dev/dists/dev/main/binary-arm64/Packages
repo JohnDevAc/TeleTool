@@ -1,14 +1,14 @@
 Package: teletool
-Version: 1.8.13+dev.62
+Version: 1.8.14+dev.63
 Architecture: arm64
 Maintainer: TeleTool Project <teletool@localhost>
 Depends: adduser, alsa-utils, avahi-daemon, avahi-utils, binutils, dtv-scan-tables, file, gir1.2-gst-plugins-bad-1.0, gir1.2-gst-plugins-base-1.0, gir1.2-gstreamer-1.0, gstreamer1.0-alsa, gstreamer1.0-libav, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-tools, libc-bin, network-manager, python3, python3-fastapi (>= 0.100), python3-gi, python3-gi-cairo, python3-pydantic (>= 2), python3-requests, python3-urllib3 (>= 2), python3-uvicorn (>= 0.30), sudo, tvheadend
-Recommends: teletool-inferno (= 1.8.13+dev.62)
-Filename: pool/main/t/teletool/teletool_1.8.13+dev.62_arm64.deb
-Size: 900092
-MD5sum: 33210541455cf4b1e3d46a183d11f8d4
-SHA1: c1a671a186103b80373b1024c340db1125515886
-SHA256: 98af96523c52c23bf0ae4f125ae2aba04a671fff9c5e410e971d1dc315c5cc1d
+Recommends: teletool-inferno (= 1.8.14+dev.63)
+Filename: pool/main/t/teletool/teletool_1.8.14+dev.63_arm64.deb
+Size: 900288
+MD5sum: 7071722a122e3addd6d79285926a75a3
+SHA1: 83b8c30ddf9ae6b586c9363878f2c3f333d96483
+SHA256: 5907e6f93317bf99c649c36812bfd3b6bfb6c5b57e77adc9e4a205f7c6272761
 Section: video
 Priority: optional
 Homepage: https://github.com/JohnDevAc/TeleTool
@@ -20,16 +20,16 @@ Description: Tvheadend to NDI® and local-audio bridge for Raspberry Pi
 X-Teletool-Installer-Version: 1.3
 
 Package: teletool-inferno
-Version: 1.8.13+dev.62
+Version: 1.8.14+dev.63
 Architecture: arm64
 Maintainer: TeleTool Project <teletool@localhost>
 Depends: alsa-utils, iproute2, libc6, systemd
-Recommends: teletool (= 1.8.13+dev.62)
-Filename: pool/main/t/teletool-inferno/teletool-inferno_1.8.13+dev.62_arm64.deb
-Size: 12764848
-MD5sum: 42bd2e3f7dc4f5394bf31657784baeaa
-SHA1: 945b7f30ba5fa3e78fd1193fcad8ff442d093805
-SHA256: 11dfd0543479b8cf2106d4d524cb7c4d45b4c8aa06be31a70873727f8745b865
+Recommends: teletool (= 1.8.14+dev.63)
+Filename: pool/main/t/teletool-inferno/teletool-inferno_1.8.14+dev.63_arm64.deb
+Size: 12764908
+MD5sum: 7b763df48964fa2e646666522f9e7964
+SHA1: 4b05d85084f677c79082cb6068e36be9b0221219
+SHA256: ddb93e6ed30f46414d8be02f86eefa76ad153fe297137f7d3df426ed96eeedae
 Section: sound
 Priority: optional
 Homepage: https://github.com/teodly/inferno

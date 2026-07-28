@@ -12,6 +12,7 @@ import uuid
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from pathlib import Path
+from statistics import median
 from typing import Dict, List, Optional, Tuple, Any
 from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -1520,6 +1521,137 @@ def _append_scan_note(current: Optional[str], note: Optional[str]) -> Optional[s
     return f"{current} {text}".strip() if current else text
 
 
+def _uk_auto_centre_for_frequency(value: Any) -> Optional[int]:
+    frequency = _coerce_int(value)
+    if frequency is None:
+        return None
+    channel_index = round((frequency - 474_000_000) / 8_000_000)
+    if channel_index < 0 or channel_index > 27:
+        return None
+    centre = 474_000_000 + (channel_index * 8_000_000)
+    return centre if abs(frequency - centre) <= 250_000 else None
+
+
+def _uk_auto_service_centres(muxes: List[Dict[str, Any]]) -> List[int]:
+    return sorted({
+        centre
+        for mux in muxes
+        if (_coerce_int(mux.get("num_svc")) or 0) > 0
+        for centre in [_uk_auto_centre_for_frequency(mux.get("frequency") or mux.get("freq"))]
+        if centre is not None
+    })
+
+
+def _uk_auto_rf_candidate_centres(
+    muxes: List[Dict[str, Any]],
+    measurements: Dict[str, Dict[str, Any]],
+) -> List[int]:
+    levels: Dict[int, float] = {}
+    cnr_centres = set()
+    for mux in muxes:
+        centre = _uk_auto_centre_for_frequency(mux.get("frequency") or mux.get("freq"))
+        if centre is None:
+            continue
+        measurement = measurements.get(mux_report_key(mux), {})
+        dbm_values = [
+            float(value)
+            for value in measurement.get("dbm_values") or []
+            if value is not None
+        ]
+        cnr_values = [
+            float(value)
+            for value in measurement.get("cnr_values") or []
+            if value is not None
+        ]
+        if dbm_values:
+            levels[centre] = max(levels.get(centre, -200.0), max(dbm_values))
+        if cnr_values and max(cnr_values) >= 3.0:
+            cnr_centres.add(centre)
+
+    candidates = set(cnr_centres)
+    if levels:
+        noise_floor = float(median(levels.values()))
+        margin_db = _config_int("tvh_auto_rf_candidate_margin_db", 7, min_value=3, max_value=20)
+        threshold = noise_floor + margin_db
+        candidates.update(
+            centre
+            for centre, dbm in levels.items()
+            if dbm >= threshold
+        )
+        _tv_setup_log(
+            f"RF candidate detection: noise floor {noise_floor:.1f} dBm, "
+            f"retry threshold {threshold:.1f} dBm, {len(candidates)} centre(s) selected."
+        )
+    elif candidates:
+        _tv_setup_log(
+            f"RF candidate detection selected {len(candidates)} centre(s) from C/N lock data."
+        )
+    else:
+        _tv_setup_log("RF candidate detection did not identify any additional centre frequencies.")
+    return sorted(candidates)
+
+
+def _mux_tuning_specificity(mux: Dict[str, Any]) -> int:
+    score = 0
+    for key in ("constellation", "transmission_mode", "guard_interval", "fec_hi"):
+        value = str(mux.get(key) or "").strip().upper()
+        if value and "AUTO" not in value:
+            score += 1
+    return score
+
+
+def _deduplicate_transport_muxes(
+    network_uuid: str,
+    muxes: List[Dict[str, Any]],
+    measurements: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    groups: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
+    for mux in muxes:
+        onid = _coerce_int(mux.get("onid")) or 0
+        tsid = _coerce_int(mux.get("tsid")) or 0
+        if onid <= 0 or tsid <= 0 or (_coerce_int(mux.get("num_svc")) or 0) <= 0:
+            continue
+        groups.setdefault((onid, tsid), []).append(mux)
+
+    delete_uuids: List[str] = []
+    for (onid, tsid), duplicates in groups.items():
+        if len(duplicates) < 2:
+            continue
+
+        def preference(mux: Dict[str, Any]) -> Tuple[int, int, float, int]:
+            measurement = measurements.get(mux_report_key(mux), {})
+            cnr_values = [
+                float(value)
+                for value in measurement.get("cnr_values") or []
+                if value is not None
+            ]
+            return (
+                _mux_tuning_specificity(mux),
+                1 if str(mux.get("pnetwork_name") or "").strip() else 0,
+                max(cnr_values) if cnr_values else -200.0,
+                _coerce_int(mux.get("num_svc")) or 0,
+            )
+
+        keep = max(duplicates, key=preference)
+        removed = [mux for mux in duplicates if mux is not keep]
+        delete_uuids.extend(
+            str(mux.get("uuid") or "")
+            for mux in removed
+            if mux.get("uuid")
+        )
+        removed_labels = ", ".join(_mux_label(mux) for mux in removed)
+        _tv_setup_log(
+            f"Collapsed duplicate transport ONID {onid} / TSID {tsid}: "
+            f"kept {_mux_label(keep)}; removed {removed_labels}."
+        )
+
+    if delete_uuids:
+        tvh.delete_muxes(delete_uuids)
+        time.sleep(1)
+        return tvh.list_muxes_for_network(network_uuid)
+    return muxes
+
+
 def _cancel_pending_scan_queue(network_uuid: str, reason: str) -> List[Dict[str, Any]]:
     muxes = tvh.list_muxes_for_network(network_uuid)
     active_uuids = _active_mux_uuids(muxes)
@@ -1552,6 +1684,16 @@ def _run_staged_uk_auto_scan(
     scan_note: Optional[str] = None
     original_grace: Dict[str, int] = {}
     grace_restored = False
+
+    def restore_full_grace(message: str) -> None:
+        nonlocal grace_restored
+        if original_grace:
+            tvh.set_dvbt_scan_grace_values(original_grace)
+            restored_grace = max(original_grace.values())
+            _tv_setup_log(f"{message} (up to {restored_grace} seconds).")
+        else:
+            tvh.ensure_dvbt_scan_grace(scan_grace_s)
+        grace_restored = True
 
     try:
         grace_results = tvh.set_dvbt_scan_grace(fast_grace_s)
@@ -1604,28 +1746,106 @@ def _run_staged_uk_auto_scan(
             target_mux_uuids=nominal_targets,
             step="UK Auto: scanning nominal frequencies…",
             percent_start=20,
-            percent_end=50,
+            percent_end=43,
         )
         _merge_scan_measurements(measurements, stage_measurements)
         if not nominal_complete:
             scan_note = _append_scan_note(scan_note, f"Nominal stage: {nominal_note}")
         muxes = _cancel_pending_scan_queue(network_uuid, "after the nominal stage")
+        muxes = _deduplicate_transport_muxes(network_uuid, muxes, measurements)
 
-        nominal_target_set = set(nominal_targets)
-        successful_centres = sorted({
-            _coerce_int(mux.get("frequency") or mux.get("freq")) or 0
-            for mux in muxes
-            if str(mux.get("uuid") or "") in nominal_target_set
-            and (_coerce_int(mux.get("num_svc")) or 0) > 0
-        })
-        offset_configs = tvh.uk_auto_offset_muxes(successful_centres)
+        successful_centres = _uk_auto_service_centres(muxes)
+        rf_candidate_centres = _uk_auto_rf_candidate_centres(muxes, measurements)
+        recovery_centres = sorted(set(rf_candidate_centres) - set(successful_centres))
         _tv_setup_log(
             f"UK Auto nominal stage found services on {len(successful_centres)} centre "
-            f"frequency/frequencies; creating {len(offset_configs)} DVB-T2 offset candidate(s)."
+            f"frequency/frequencies; {len(recovery_centres)} strong RF candidate(s) need a full retry."
+        )
+
+        recovery_complete = True
+        if recovery_centres:
+            restore_full_grace("Restored full tuner grace for strong RF candidate recovery")
+            recovery_set = set(recovery_centres)
+            recovery_configs = [
+                config
+                for config in nominal_configs
+                if (_coerce_int(config.get("frequency") or config.get("freq")) or 0) in recovery_set
+            ]
+            muxes = tvh.list_muxes_for_network(network_uuid)
+            recovery_targets = _mux_uuids_for_configs(muxes, recovery_configs)
+            if not recovery_targets:
+                raise RuntimeError("UK Auto RF candidate recovery found no scannable muxes")
+            baseline_scan_last = {
+                str(mux.get("uuid") or ""): mux.get("scan_last")
+                for mux in muxes
+                if str(mux.get("uuid") or "") in set(recovery_targets)
+            }
+            _tv_setup_set(percent=45, step="UK Auto: retrying strong RF candidates…")
+            tvh.scan_muxes(recovery_targets)
+            recovery_grace_s = max(
+                [scan_grace_s, *original_grace.values()]
+                if original_grace
+                else [scan_grace_s]
+            )
+            recovery_timeout_default = max(
+                120,
+                min(900, len(recovery_targets) * (recovery_grace_s + 15)),
+            )
+            recovery_timeout_s = _config_int(
+                "tvh_auto_recovery_timeout_s",
+                recovery_timeout_default,
+                min_value=60,
+                max_value=1200,
+            )
+            muxes, recovery_complete = _wait_for_component_retries(
+                network_uuid,
+                recovery_targets,
+                baseline_scan_last,
+                measurements,
+                recovery_timeout_s,
+                progress_label="Strong RF candidate recovery",
+            )
+            if not recovery_complete:
+                note = f"Strong RF candidate recovery timed out after {recovery_timeout_s} seconds."
+                _tv_setup_log(note)
+                scan_note = _append_scan_note(scan_note, note)
+                muxes = _cancel_pending_scan_queue(
+                    network_uuid,
+                    "after strong RF candidate recovery",
+                )
+            muxes = _deduplicate_transport_muxes(network_uuid, muxes, measurements)
+
+        successful_centres = _uk_auto_service_centres(muxes)
+        _tv_setup_log(
+            f"UK Auto recovery now has services on {len(successful_centres)} centre "
+            "frequency/frequencies."
         )
 
         offset_complete = True
-        if offset_configs:
+        offset_stages = (
+            (-167_000, "negative", 52, 62),
+            (167_000, "positive", 62, 72),
+        )
+        for offset_hz, offset_label, percent_start, percent_end in offset_stages:
+            successful_centres = _uk_auto_service_centres(muxes)
+            offset_configs = tvh.uk_auto_offset_muxes(
+                successful_centres,
+                offsets=[offset_hz],
+            )
+            _tv_setup_log(
+                f"UK Auto {offset_label} offset stage: {len(offset_configs)} "
+                "remaining DVB-T2 candidate(s)."
+            )
+            if not offset_configs:
+                continue
+
+            if grace_restored:
+                tvh.set_dvbt_scan_grace(fast_grace_s)
+                grace_restored = False
+                _tv_setup_log(
+                    f"Using {fast_grace_s}-second tuner grace for the DVB-T2 offset sweep."
+                )
+
             offset_result = tvh.create_muxes(network_uuid, offset_configs)
             if offset_result.get("skipped"):
                 _tv_setup_log(
@@ -1649,32 +1869,32 @@ def _run_staged_uk_auto_scan(
                 min_value=60,
                 max_value=1200,
             )
-            muxes, offset_complete, offset_note, stage_measurements = _wait_for_scan(
+            muxes, stage_complete, offset_note, stage_measurements = _wait_for_scan(
                 network_uuid,
                 timeout_s=offset_timeout_s,
                 stall_timeout_s=stage_stall_s,
                 target_mux_uuids=offset_targets,
-                step="UK Auto: checking DVB-T2 offsets…",
-                percent_start=50,
-                percent_end=72,
+                step=f"UK Auto: checking {offset_label} DVB-T2 offsets…",
+                percent_start=percent_start,
+                percent_end=percent_end,
             )
             _merge_scan_measurements(measurements, stage_measurements)
-            if not offset_complete:
-                scan_note = _append_scan_note(scan_note, f"Offset stage: {offset_note}")
-            muxes = _cancel_pending_scan_queue(network_uuid, "after the offset stage")
-
-        if original_grace:
-            tvh.set_dvbt_scan_grace_values(original_grace)
-            restored_grace = max(original_grace.values())
-            _tv_setup_log(
-                f"Restored tuner scan grace before completing detected muxes "
-                f"(up to {restored_grace} seconds)."
+            offset_complete = offset_complete and stage_complete
+            if not stage_complete:
+                scan_note = _append_scan_note(
+                    scan_note,
+                    f"{offset_label.title()} offset stage: {offset_note}",
+                )
+            muxes = _cancel_pending_scan_queue(
+                network_uuid,
+                f"after the {offset_label} offset stage",
             )
-        else:
-            tvh.ensure_dvbt_scan_grace(scan_grace_s)
-        grace_restored = True
+            muxes = _deduplicate_transport_muxes(network_uuid, muxes, measurements)
+
+        restore_full_grace("Restored tuner scan grace before completing detected muxes")
 
         muxes = tvh.list_muxes_for_network(network_uuid)
+        muxes = _deduplicate_transport_muxes(network_uuid, muxes, measurements)
         detected_targets = [
             str(mux.get("uuid") or "")
             for mux in muxes
@@ -1716,7 +1936,13 @@ def _run_staged_uk_auto_scan(
                 muxes = _cancel_pending_scan_queue(network_uuid, "after detected mux refinement")
 
         muxes = tvh.list_muxes_for_network(network_uuid)
-        scan_complete = nominal_complete and offset_complete and refinement_complete
+        muxes = _deduplicate_transport_muxes(network_uuid, muxes, measurements)
+        scan_complete = (
+            nominal_complete
+            and recovery_complete
+            and offset_complete
+            and refinement_complete
+        )
         return muxes, scan_complete, scan_note, measurements, len(muxes)
     finally:
         if original_grace and not grace_restored:

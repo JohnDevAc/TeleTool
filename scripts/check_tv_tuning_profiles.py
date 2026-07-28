@@ -5,6 +5,7 @@ import ast
 import collections
 import json
 import re
+from statistics import median
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -59,7 +60,7 @@ nominal_muxes = load_function(
 offset_muxes = load_function(
     ROOT / "tvh.py",
     "uk_auto_offset_muxes",
-    {"Any": Any, "Dict": Dict, "List": List},
+    {"Any": Any, "Dict": Dict, "List": List, "Optional": Optional},
 )
 
 
@@ -86,6 +87,12 @@ assert not {
     for mux in offsets
     if 545_000_000 <= mux["frequency"] <= 547_000_000
 }
+negative_offsets = offset_muxes(fake_auto_profile, [546_000_000], [-167_000])
+positive_offsets = offset_muxes(fake_auto_profile, [546_000_000], [167_000])
+assert len(negative_offsets) == 27
+assert len(positive_offsets) == 27
+assert all((mux["frequency"] + 167_000) % 8_000_000 == 2_000_000 for mux in negative_offsets)
+assert all((mux["frequency"] - 167_000) % 8_000_000 == 2_000_000 for mux in positive_offsets)
 
 coerce_int = load_function(
     ROOT / "app.py",
@@ -134,6 +141,92 @@ assert dvbt2_muxes_with_services([
     {"delsys": "DVB-T2", "num_svc": 6},
     {"delivery_system": "DVBT2", "num_svc": 0},
 ]) == 1
+
+uk_auto_centre_for_frequency = load_function(
+    ROOT / "app.py",
+    "_uk_auto_centre_for_frequency",
+    {"Any": Any, "Optional": Optional, "_coerce_int": coerce_int},
+)
+uk_auto_service_centres = load_function(
+    ROOT / "app.py",
+    "_uk_auto_service_centres",
+    {
+        "Any": Any,
+        "Dict": Dict,
+        "List": List,
+        "_coerce_int": coerce_int,
+        "_uk_auto_centre_for_frequency": uk_auto_centre_for_frequency,
+    },
+)
+assert uk_auto_centre_for_frequency(545_833_000) == 546_000_000
+assert uk_auto_centre_for_frequency(546_167_000) == 546_000_000
+assert uk_auto_centre_for_frequency(700_000_000) is None
+assert uk_auto_service_centres([
+    {"frequency": 529_833_000, "num_svc": 29},
+    {"frequency": 530_000_000, "num_svc": 29},
+    {"frequency": 545_833_000, "num_svc": 13},
+    {"frequency": 586_000_000, "num_svc": 0},
+]) == [530_000_000, 546_000_000]
+
+measurement_key = lambda mux: str(mux.get("frequency") or mux.get("freq") or "")
+rf_candidate_logs = []
+uk_auto_rf_candidate_centres = load_function(
+    ROOT / "app.py",
+    "_uk_auto_rf_candidate_centres",
+    {
+        "Any": Any,
+        "Dict": Dict,
+        "List": List,
+        "_uk_auto_centre_for_frequency": uk_auto_centre_for_frequency,
+        "_config_int": lambda *_args, **_kwargs: 7,
+        "_tv_setup_log": rf_candidate_logs.append,
+        "median": median,
+        "mux_report_key": measurement_key,
+    },
+)
+rf_candidate_muxes = [
+    {"frequency": 474_000_000},
+    {"frequency": 482_000_000},
+    {"frequency": 490_000_000},
+    {"frequency": 498_000_000},
+    {"frequency": 506_000_000},
+    {"frequency": 514_000_000},
+    {"frequency": 522_000_000},
+    {"frequency": 530_000_000},
+]
+rf_candidate_measurements = {
+    "474000000": {"dbm_values": [-60.0]},
+    "482000000": {"dbm_values": [-38.0]},
+    "490000000": {"dbm_values": [-39.0], "cnr_values": [15.0]},
+    "498000000": {"dbm_values": [-58.0]},
+    "506000000": {"dbm_values": [-38.1]},
+    "514000000": {"dbm_values": [-38.2]},
+    "522000000": {"dbm_values": [-59.0]},
+    "530000000": {"dbm_values": [-70.0], "cnr_values": [8.0]},
+}
+assert uk_auto_rf_candidate_centres(
+    rf_candidate_muxes,
+    rf_candidate_measurements,
+) == [482_000_000, 490_000_000, 506_000_000, 514_000_000, 530_000_000]
+assert "retry threshold" in rf_candidate_logs[-1]
+
+mux_tuning_specificity = load_function(
+    ROOT / "app.py",
+    "_mux_tuning_specificity",
+    {"Any": Any, "Dict": Dict},
+)
+assert mux_tuning_specificity({
+    "constellation": "QAM/64",
+    "transmission_mode": "8k",
+    "guard_interval": "1/32",
+    "fec_hi": "2/3",
+}) == 4
+assert mux_tuning_specificity({
+    "constellation": "QAM/AUTO",
+    "transmission_mode": "AUTO",
+    "guard_interval": "AUTO",
+    "fec_hi": "AUTO",
+}) == 0
 
 is_broadcast_av_service = load_function(
     ROOT / "app.py",
@@ -402,6 +495,7 @@ assert "st.muxes_scanned" in index_html
 assert "st.muxes_total" in index_html
 assert "st.services_found" in index_html
 assert "rfSignalStatsLabel(rf)" in index_html
+assert "tvSetupRunning ? null : loadChannels(true)" in index_html
 assert "function rfCnrLabel(rf)" in common_js
 assert "function rfSignalStatsLabel(rf)" in common_js
 assert "| C/N ${rfCnrLabel(rf)}" in common_js
@@ -419,7 +513,11 @@ assert "_wait_for_component_retries(" in app_source
 assert "Service readiness after retry:" in app_source
 assert "_run_staged_uk_auto_scan(network_uuid, scan_grace_s)" in app_source
 assert "tvh.uk_auto_nominal_muxes()" in app_source
-assert "tvh.uk_auto_offset_muxes(successful_centres)" in app_source
+assert "_uk_auto_rf_candidate_centres(muxes, measurements)" in app_source
+assert "_deduplicate_transport_muxes(network_uuid, muxes, measurements)" in app_source
+assert "offsets=[offset_hz]" in app_source
+assert '(-167_000, "negative", 52, 62)' in app_source
+assert '(167_000, "positive", 62, 72)' in app_source
 assert "tvh.cancel_scan_muxes(active_uuids)" in app_source
 assert '"after the service acquisition retry"' in app_source
 assert '"after TV Setup failed"' in app_source

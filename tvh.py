@@ -612,15 +612,20 @@ class TvheadendClient:
             if int(mux.get("frequency") or 0) in centres
         ]
 
-    def uk_auto_offset_muxes(self, successful_centres: List[int]) -> List[Dict[str, Any]]:
+    def uk_auto_offset_muxes(
+        self,
+        successful_centres: List[int],
+        offsets: Optional[List[int]] = None,
+    ) -> List[Dict[str, Any]]:
         """Return DVB-T2 offset candidates where nominal tuning found no services."""
         successful = {int(frequency) for frequency in successful_centres}
         centres = self.uk_auto_centre_frequencies()
+        wanted_offsets = offsets if offsets is not None else [-167_000, 167_000]
         wanted = {
             centre + offset
             for centre in centres
             if centre not in successful
-            for offset in (-167_000, 167_000)
+            for offset in wanted_offsets
         }
         return [
             mux

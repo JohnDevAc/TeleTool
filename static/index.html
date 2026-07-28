@@ -670,6 +670,9 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     refreshStatus();
     refreshRfStatus();
+    refreshTvSetupStatus()
+      .then(() => tvSetupRunning ? null : loadChannels(true))
+      .catch(e => console.warn("Visible page channel refresh failed", e));
   } else {
     if (statusPollTimer) {
       clearTimeout(statusPollTimer);

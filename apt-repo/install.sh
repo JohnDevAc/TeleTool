@@ -10,7 +10,7 @@ TT_UI_BLUE=""
 TT_UI_GREEN=""
 TT_UI_YELLOW=""
 TT_UI_RED=""
-TT_UI_INSTALLER_VERSION="${TELETOOL_INSTALLER_VERSION:-1.0}"
+TT_UI_INSTALLER_VERSION="${TELETOOL_INSTALLER_VERSION:-1.3}"
 TT_UI_LAST_PERCENT=0
 
 tt_ui_init() {
@@ -194,10 +194,100 @@ if ! command -v tt_ui_init >/dev/null 2>&1; then
   tt_ui_status() { printf '  [%s] %s\n' "$1" "$2"; }
 fi
 
-REPOSITORY_URL="${TELETOOL_REPOSITORY_URL:-https://johndevac.github.io/TeleTool/apt-repo}"
+MAIN_REPOSITORY_URL="https://johndevac.github.io/TeleTool/apt-repo"
+DEV_REPOSITORY_URL="https://raw.githubusercontent.com/JohnDevAc/TeleTool/dev/apt-repo-dev"
+INSTALL_CHANNEL="${1:-${TELETOOL_APT_CHANNEL:-}}"
+INSTALL_INFERNO="${2:-${TELETOOL_INSTALL_INFERNO:-auto}}"
+REPOSITORY_URL="${TELETOOL_REPOSITORY_URL:-}"
+APT_SUITE="${TELETOOL_APT_SUITE:-}"
+CHANNEL_LABEL=""
+INFERNO_WANTED=""
 KEYRING="/usr/share/keyrings/teletool-archive-keyring.gpg"
 SOURCE_FILE="/etc/apt/sources.list.d/teletool.sources"
 LOG_FILE="/var/log/teletool-installer.log"
+
+normalise_channel() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+select_package_source() {
+  selected_channel="$INSTALL_CHANNEL"
+  if [ -n "$REPOSITORY_URL" ] || [ -n "$APT_SUITE" ]; then
+    REPOSITORY_URL="${REPOSITORY_URL:-$MAIN_REPOSITORY_URL}"
+    APT_SUITE="${APT_SUITE:-stable}"
+    CHANNEL_LABEL="${INSTALL_CHANNEL:-custom}"
+    return
+  fi
+
+  if [ -z "$selected_channel" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf '\nTeleTool install branch:\n' > /dev/tty
+    printf '  1) Main (default)\n' > /dev/tty
+    printf '  2) Dev\n' > /dev/tty
+    printf 'Choose branch [1]: ' > /dev/tty
+    IFS= read -r selected_channel < /dev/tty || selected_channel=""
+  fi
+
+  case "$(normalise_channel "$selected_channel")" in
+    ''|1|m|main|stable)
+      REPOSITORY_URL="$MAIN_REPOSITORY_URL"
+      APT_SUITE="stable"
+      CHANNEL_LABEL="Main"
+      ;;
+    2|d|dev|development)
+      REPOSITORY_URL="$DEV_REPOSITORY_URL"
+      APT_SUITE="dev"
+      CHANNEL_LABEL="Dev"
+      ;;
+    *)
+      tt_ui_failure "Unknown TeleTool branch: $selected_channel"
+      exit 1
+      ;;
+  esac
+}
+
+normalise_yes_no() {
+  case "$(normalise_channel "$1")" in
+    y|yes|1|true|on) printf yes ;;
+    n|no|2|0|false|off) printf no ;;
+    auto|'') printf auto ;;
+    *) printf invalid ;;
+  esac
+}
+
+select_inferno_option() {
+  selected_inferno="$(normalise_yes_no "$INSTALL_INFERNO")"
+  if [ "$selected_inferno" = "invalid" ]; then
+    tt_ui_failure "Unknown Inferno install option: $INSTALL_INFERNO"
+    exit 1
+  fi
+
+  default_inferno="no"
+  if [ "$APT_SUITE" = "dev" ]; then
+    default_inferno="yes"
+  fi
+
+  if [ "$selected_inferno" = "auto" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    default_choice="2"
+    if [ "$default_inferno" = "yes" ]; then
+      default_choice="1"
+    fi
+    printf '\nInferno network audio output:\n' > /dev/tty
+    printf '  1) Install Inferno audio\n' > /dev/tty
+    printf '  2) Do not install Inferno audio\n' > /dev/tty
+    printf 'Choose Inferno option [%s]: ' "$default_choice" > /dev/tty
+    IFS= read -r selected_inferno < /dev/tty || selected_inferno=""
+    selected_inferno="$(normalise_yes_no "$selected_inferno")"
+    if [ "$selected_inferno" = "invalid" ]; then
+      tt_ui_failure "Unknown Inferno install option: $selected_inferno"
+      exit 1
+    fi
+  fi
+
+  if [ "$selected_inferno" = "auto" ]; then
+    selected_inferno="$default_inferno"
+  fi
+  INFERNO_WANTED="$selected_inferno"
+}
 
 run_apt_with_progress() {
   download_start="$1"
@@ -307,11 +397,14 @@ if [ "$(dpkg --print-architecture)" != "arm64" ]; then
   exit 1
 fi
 
+select_package_source
+select_inferno_option
+
 install -d -m 0755 /var/log
 : > "$LOG_FILE"
 chmod 0644 "$LOG_FILE"
 
-tt_ui_progress 8 "Preparing the TeleTool package source" "Package output is being recorded in $LOG_FILE"
+tt_ui_progress 8 "Preparing the TeleTool $CHANNEL_LABEL package source" "Package output is being recorded in $LOG_FILE"
 install -d -m 0755 /usr/share/keyrings
 tmp_key="$(mktemp)"
 if ! curl -fsSL "$REPOSITORY_URL/teletool-archive-keyring.gpg" -o "$tmp_key" >>"$LOG_FILE" 2>&1; then
@@ -325,7 +418,7 @@ rm -f "$tmp_key"
 cat > "$SOURCE_FILE" <<EOF
 Types: deb
 URIs: $REPOSITORY_URL
-Suites: stable
+Suites: $APT_SUITE
 Components: main
 Architectures: arm64
 Signed-By: $KEYRING
@@ -339,12 +432,24 @@ if ! run_apt_with_progress 15 5 20 0 "Preparing TeleTool" \
   exit 1
 fi
 
+inferno_version="$(apt-cache madison teletool-inferno | awk 'NR == 1 {print $3}')"
+apt_recommends_flag="--no-install-recommends"
+set -- teletool
+if [ "$INFERNO_WANTED" = "yes" ]; then
+  if [ -z "$inferno_version" ]; then
+    tt_ui_failure "Inferno network audio is not available from the selected TeleTool repository." "$LOG_FILE"
+    exit 1
+  fi
+  set -- "$@" teletool-inferno
+  apt_recommends_flag="--install-recommends"
+fi
+
 export DEBIAN_FRONTEND=noninteractive
 tt_ui_progress 20 "Installing TeleTool" "Please be patient, TeleTool is installing..."
 export TELETOOL_DEFER_COMPLETION=1
 if ! run_apt_with_progress 20 30 50 45 "Installing TeleTool" \
   "Please be patient, TeleTool is installing..." \
-  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 install -y teletool; then
+  apt-get -qq -o Dpkg::Use-Pty=0 -o APT::Status-Fd=2 install "$apt_recommends_flag" -y "$@"; then
   printf 'retry=delayed-tvheadend-recovery after initial package configuration failure\n' >>"$LOG_FILE"
   tt_ui_progress 94 "Finalising TeleTool" "Please be patient, TeleTool is completing the installation..."
   if ! recover_tvheadend_configuration || \

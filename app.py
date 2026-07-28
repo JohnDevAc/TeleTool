@@ -1542,6 +1542,21 @@ def _uk_auto_service_centres(muxes: List[Dict[str, Any]]) -> List[int]:
     })
 
 
+def _uk_auto_ready_centres(muxes: List[Dict[str, Any]]) -> List[int]:
+    ready = set()
+    for mux in muxes:
+        if (_coerce_int(mux.get("num_svc")) or 0) <= 0:
+            continue
+        onid = _coerce_int(mux.get("onid")) or 0
+        tsid = _coerce_int(mux.get("tsid")) or 0
+        if not (0 < onid < 65_536 and 0 < tsid < 65_536):
+            continue
+        centre = _uk_auto_centre_for_frequency(mux.get("frequency") or mux.get("freq"))
+        if centre is not None:
+            ready.add(centre)
+    return sorted(ready)
+
+
 def _uk_auto_rf_candidate_centres(
     muxes: List[Dict[str, Any]],
     measurements: Dict[str, Dict[str, Any]],
@@ -1571,7 +1586,7 @@ def _uk_auto_rf_candidate_centres(
     candidates = set(cnr_centres)
     if levels:
         noise_floor = float(median(levels.values()))
-        margin_db = _config_int("tvh_auto_rf_candidate_margin_db", 7, min_value=3, max_value=20)
+        margin_db = _config_int("tvh_auto_rf_candidate_margin_db", 4, min_value=3, max_value=20)
         threshold = noise_floor + margin_db
         candidates.update(
             centre
@@ -1755,70 +1770,107 @@ def _run_staged_uk_auto_scan(
         muxes = _deduplicate_transport_muxes(network_uuid, muxes, measurements)
 
         successful_centres = _uk_auto_service_centres(muxes)
+        ready_centres = _uk_auto_ready_centres(muxes)
         rf_candidate_centres = _uk_auto_rf_candidate_centres(muxes, measurements)
-        recovery_centres = sorted(set(rf_candidate_centres) - set(successful_centres))
+        recovery_centres = sorted(set(rf_candidate_centres) - set(ready_centres))
         _tv_setup_log(
             f"UK Auto nominal stage found services on {len(successful_centres)} centre "
-            f"frequency/frequencies; {len(recovery_centres)} strong RF candidate(s) need a full retry."
+            f"frequency/frequencies, with {len(ready_centres)} complete transport identity/identities; "
+            f"{len(recovery_centres)} strong RF candidate(s) need a full retry."
         )
 
         recovery_complete = True
         if recovery_centres:
             restore_full_grace("Restored full tuner grace for strong RF candidate recovery")
-            recovery_set = set(recovery_centres)
-            recovery_configs = [
-                config
-                for config in nominal_configs
-                if (_coerce_int(config.get("frequency") or config.get("freq")) or 0) in recovery_set
-            ]
-            muxes = tvh.list_muxes_for_network(network_uuid)
-            recovery_targets = _mux_uuids_for_configs(muxes, recovery_configs)
-            if not recovery_targets:
-                raise RuntimeError("UK Auto RF candidate recovery found no scannable muxes")
-            baseline_scan_last = {
-                str(mux.get("uuid") or ""): mux.get("scan_last")
-                for mux in muxes
-                if str(mux.get("uuid") or "") in set(recovery_targets)
-            }
-            _tv_setup_set(percent=45, step="UK Auto: retrying strong RF candidates…")
-            tvh.scan_muxes(recovery_targets)
+            max_recovery_passes = _config_int(
+                "tvh_auto_recovery_passes",
+                3,
+                min_value=1,
+                max_value=3,
+            )
             recovery_grace_s = max(
                 [scan_grace_s, *original_grace.values()]
                 if original_grace
                 else [scan_grace_s]
             )
-            recovery_timeout_default = max(
-                120,
-                min(900, len(recovery_targets) * (recovery_grace_s + 15)),
-            )
-            recovery_timeout_s = _config_int(
-                "tvh_auto_recovery_timeout_s",
-                recovery_timeout_default,
-                min_value=60,
-                max_value=1200,
-            )
-            muxes, recovery_complete = _wait_for_component_retries(
-                network_uuid,
-                recovery_targets,
-                baseline_scan_last,
-                measurements,
-                recovery_timeout_s,
-                progress_label="Strong RF candidate recovery",
-            )
-            if not recovery_complete:
-                note = f"Strong RF candidate recovery timed out after {recovery_timeout_s} seconds."
-                _tv_setup_log(note)
-                scan_note = _append_scan_note(scan_note, note)
-                muxes = _cancel_pending_scan_queue(
-                    network_uuid,
-                    "after strong RF candidate recovery",
+            for recovery_pass in range(1, max_recovery_passes + 1):
+                ready_centres = _uk_auto_ready_centres(muxes)
+                recovery_centres = sorted(
+                    set(rf_candidate_centres) - set(ready_centres)
                 )
-            muxes = _deduplicate_transport_muxes(network_uuid, muxes, measurements)
+                if not recovery_centres:
+                    break
+
+                recovery_set = set(recovery_centres)
+                recovery_configs = [
+                    config
+                    for config in nominal_configs
+                    if (_coerce_int(config.get("frequency") or config.get("freq")) or 0)
+                    in recovery_set
+                ]
+                muxes = tvh.list_muxes_for_network(network_uuid)
+                recovery_targets = _mux_uuids_for_configs(muxes, recovery_configs)
+                if not recovery_targets:
+                    raise RuntimeError("UK Auto RF candidate recovery found no scannable muxes")
+                baseline_scan_last = {
+                    str(mux.get("uuid") or ""): mux.get("scan_last")
+                    for mux in muxes
+                    if str(mux.get("uuid") or "") in set(recovery_targets)
+                }
+                _tv_setup_set(
+                    percent=44 + recovery_pass,
+                    step=(
+                        f"UK Auto: retrying strong RF candidates "
+                        f"({recovery_pass}/{max_recovery_passes})…"
+                    ),
+                )
+                _tv_setup_log(
+                    f"Strong RF candidate recovery pass {recovery_pass}/"
+                    f"{max_recovery_passes}: retrying {len(recovery_centres)} centre(s)."
+                )
+                tvh.scan_muxes(recovery_targets)
+                recovery_timeout_default = max(
+                    120,
+                    min(900, len(recovery_targets) * (recovery_grace_s + 15)),
+                )
+                recovery_timeout_s = _config_int(
+                    "tvh_auto_recovery_timeout_s",
+                    recovery_timeout_default,
+                    min_value=60,
+                    max_value=1200,
+                )
+                muxes, pass_complete = _wait_for_component_retries(
+                    network_uuid,
+                    recovery_targets,
+                    baseline_scan_last,
+                    measurements,
+                    recovery_timeout_s,
+                    progress_label=f"Strong RF recovery pass {recovery_pass}",
+                )
+                recovery_complete = recovery_complete and pass_complete
+                if not pass_complete:
+                    note = (
+                        f"Strong RF recovery pass {recovery_pass} timed out "
+                        f"after {recovery_timeout_s} seconds."
+                    )
+                    _tv_setup_log(note)
+                    scan_note = _append_scan_note(scan_note, note)
+                    muxes = _cancel_pending_scan_queue(
+                        network_uuid,
+                        f"after strong RF recovery pass {recovery_pass}",
+                    )
+                muxes = _deduplicate_transport_muxes(network_uuid, muxes, measurements)
+                _tv_setup_log(
+                    f"Strong RF recovery pass {recovery_pass} completed with "
+                    f"{len(_uk_auto_ready_centres(muxes))} ready centre(s)."
+                )
 
         successful_centres = _uk_auto_service_centres(muxes)
+        ready_centres = _uk_auto_ready_centres(muxes)
         _tv_setup_log(
             f"UK Auto recovery now has services on {len(successful_centres)} centre "
-            "frequency/frequencies."
+            f"frequency/frequencies and complete transport identity on "
+            f"{len(ready_centres)} centre frequency/frequencies."
         )
 
         offset_complete = True

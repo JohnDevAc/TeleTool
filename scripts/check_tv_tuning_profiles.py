@@ -158,6 +158,17 @@ uk_auto_service_centres = load_function(
         "_uk_auto_centre_for_frequency": uk_auto_centre_for_frequency,
     },
 )
+uk_auto_ready_centres = load_function(
+    ROOT / "app.py",
+    "_uk_auto_ready_centres",
+    {
+        "Any": Any,
+        "Dict": Dict,
+        "List": List,
+        "_coerce_int": coerce_int,
+        "_uk_auto_centre_for_frequency": uk_auto_centre_for_frequency,
+    },
+)
 assert uk_auto_centre_for_frequency(545_833_000) == 546_000_000
 assert uk_auto_centre_for_frequency(546_167_000) == 546_000_000
 assert uk_auto_centre_for_frequency(700_000_000) is None
@@ -167,9 +178,23 @@ assert uk_auto_service_centres([
     {"frequency": 545_833_000, "num_svc": 13},
     {"frequency": 586_000_000, "num_svc": 0},
 ]) == [530_000_000, 546_000_000]
+assert uk_auto_ready_centres([
+    {"frequency": 482_000_000, "num_svc": 26, "onid": 65_536, "tsid": 20_544},
+    {"frequency": 490_000_000, "num_svc": 26, "onid": 9_018, "tsid": 4_164},
+    {"frequency": 514_000_000, "num_svc": 17, "onid": 9_018, "tsid": 0},
+    {"frequency": 545_833_000, "num_svc": 13, "onid": 9_018, "tsid": 16_516},
+]) == [490_000_000, 546_000_000]
 
 measurement_key = lambda mux: str(mux.get("frequency") or mux.get("freq") or "")
 rf_candidate_logs = []
+rf_candidate_config_calls = []
+
+
+def rf_candidate_config(name, default, **_kwargs):
+    rf_candidate_config_calls.append((name, default))
+    return default
+
+
 uk_auto_rf_candidate_centres = load_function(
     ROOT / "app.py",
     "_uk_auto_rf_candidate_centres",
@@ -178,7 +203,7 @@ uk_auto_rf_candidate_centres = load_function(
         "Dict": Dict,
         "List": List,
         "_uk_auto_centre_for_frequency": uk_auto_centre_for_frequency,
-        "_config_int": lambda *_args, **_kwargs: 7,
+        "_config_int": rf_candidate_config,
         "_tv_setup_log": rf_candidate_logs.append,
         "median": median,
         "mux_report_key": measurement_key,
@@ -193,6 +218,14 @@ rf_candidate_muxes = [
     {"frequency": 514_000_000},
     {"frequency": 522_000_000},
     {"frequency": 530_000_000},
+    {"frequency": 538_000_000},
+    {"frequency": 546_000_000},
+    {"frequency": 554_000_000},
+    {"frequency": 562_000_000},
+    {"frequency": 570_000_000},
+    {"frequency": 578_000_000},
+    {"frequency": 586_000_000},
+    {"frequency": 594_000_000},
 ]
 rf_candidate_measurements = {
     "474000000": {"dbm_values": [-60.0]},
@@ -203,11 +236,27 @@ rf_candidate_measurements = {
     "514000000": {"dbm_values": [-38.2]},
     "522000000": {"dbm_values": [-59.0]},
     "530000000": {"dbm_values": [-70.0], "cnr_values": [8.0]},
+    "538000000": {"dbm_values": [-61.0]},
+    "546000000": {"dbm_values": [-60.0]},
+    "554000000": {"dbm_values": [-59.0]},
+    "562000000": {"dbm_values": [-58.0]},
+    "570000000": {"dbm_values": [-57.0]},
+    "578000000": {"dbm_values": [-56.0]},
+    "586000000": {"dbm_values": [-49.3]},
+    "594000000": {"dbm_values": [-55.0]},
 }
 assert uk_auto_rf_candidate_centres(
     rf_candidate_muxes,
     rf_candidate_measurements,
-) == [482_000_000, 490_000_000, 506_000_000, 514_000_000, 530_000_000]
+) == [
+    482_000_000,
+    490_000_000,
+    506_000_000,
+    514_000_000,
+    530_000_000,
+    586_000_000,
+]
+assert rf_candidate_config_calls == [("tvh_auto_rf_candidate_margin_db", 4)]
 assert "retry threshold" in rf_candidate_logs[-1]
 
 mux_tuning_specificity = load_function(
@@ -514,6 +563,9 @@ assert "Service readiness after retry:" in app_source
 assert "_run_staged_uk_auto_scan(network_uuid, scan_grace_s)" in app_source
 assert "tvh.uk_auto_nominal_muxes()" in app_source
 assert "_uk_auto_rf_candidate_centres(muxes, measurements)" in app_source
+assert "_uk_auto_ready_centres(muxes)" in app_source
+assert '"tvh_auto_recovery_passes"' in app_source
+assert "for recovery_pass in range(1, max_recovery_passes + 1)" in app_source
 assert "_deduplicate_transport_muxes(network_uuid, muxes, measurements)" in app_source
 assert "offsets=[offset_hz]" in app_source
 assert '(-167_000, "negative", 52, 62)' in app_source

@@ -81,5 +81,10 @@ assert merge_values == [True], "TV service mapping must merge duplicate channel 
 index_html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 assert "Generic Auto Legacy (DVB-T only)" in index_html
 assert "teletool-uk-auto-dvbt-dvbt2" in index_html
+profile_helper = index_html.index("function isTeleToolUkAuto(value)")
+profile_preference = index_html.index("function preferredTvSetupRegion(options, selected)")
+profile_loader = index_html.index("async function loadTvSetupRegions()")
+assert profile_helper < profile_preference < profile_loader
+assert "const isTeleToolUkAuto" not in index_html
 
 print("UK DVB-T/T2 tuning profile checks passed.")

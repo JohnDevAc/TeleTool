@@ -243,24 +243,28 @@ function setTvSetupBadge(kind, text){
   b.className = "badge " + (kind || "");
 }
 
+function normalizedTvSetupRegion(value){
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function isTeleToolUkAuto(value){
+  const n = normalizedTvSetupRegion(value);
+  return n === "teletool-uk-auto-dvbt-dvbt2" || n.includes("auto-dvb-t-t2-teletool");
+}
+
 function preferredTvSetupRegion(options, selected){
-  const normalized = value => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  const isTeleToolUkAuto = value => {
-    const n = normalized(value);
-    return n === "teletool-uk-auto-dvbt-dvbt2" || n.includes("auto-dvb-t-t2-teletool");
-  };
   const isAutoDefault = value => {
-    const n = normalized(value);
+    const n = normalizedTvSetupRegion(value);
     return n.includes("auto-defaul");
   };
   const isGenericAutoDefault = option => {
-    const value = normalized(option && option.value);
-    const label = normalized(option && option.textContent);
+    const value = normalizedTvSetupRegion(option && option.value);
+    const label = normalizedTvSetupRegion(option && option.textContent);
     return (label.includes("generic") && label.includes("auto-defaul")) ||
       (value.includes("dvb-t-auto") && value.includes("auto-defaul"));
   };
-  const selectedText = normalized(selected);
-  const selectedOption = options.find(o => o.value === selected || normalized(o.value) === selectedText || normalized(o.textContent) === selectedText);
+  const selectedText = normalizedTvSetupRegion(selected);
+  const selectedOption = options.find(o => o.value === selected || normalizedTvSetupRegion(o.value) === selectedText || normalizedTvSetupRegion(o.textContent) === selectedText);
   if (selectedOption && selectedOption.value && !isGenericAutoDefault(selectedOption)) return selectedOption.value;
   const teletoolUkAuto = options.find(o => isTeleToolUkAuto(o.value) || isTeleToolUkAuto(o.textContent));
   if (teletoolUkAuto) return teletoolUkAuto.value;

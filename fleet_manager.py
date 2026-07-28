@@ -22,6 +22,11 @@ import uuid
 import requests
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+from ndi_runtime_config import (
+    DEFAULT_NDI_MULTICAST_NETMASK,
+    DEFAULT_NDI_MULTICAST_NETPREFIX,
+    DEFAULT_NDI_MULTICAST_TTL,
+)
 
 
 router = APIRouter()
@@ -988,20 +993,35 @@ def _manager_start_payload_from_status(status: Dict[str, Any], unit_config: Dict
         or unit_config.get("tvh_stream_profile")
         or "pass"
     )
+    multicast_netprefix = str(
+        last_req.get("ndi_multicast_netprefix")
+        or last_req.get("ndi_multicast_addr")
+        or unit_config.get("ndi_multicast_netprefix")
+        or unit_config.get("ndi_multicast_addr")
+        or DEFAULT_NDI_MULTICAST_NETPREFIX
+    )
 
     return {
         "channel_uuid": channel_uuid,
         "ndi_name": ndi_name,
+        "ndi_groups": str(last_req.get("ndi_groups") or unit_config.get("ndi_groups") or ""),
         "profile": str(profile or "pass").strip() or "pass",
         "ndi_multicast_enabled": _manager_bool_value(
             last_req.get("ndi_multicast_enabled"),
             _manager_bool_value(unit_config.get("ndi_multicast_enabled"), False),
         ),
-        "ndi_multicast_addr": str(last_req.get("ndi_multicast_addr") or unit_config.get("ndi_multicast_addr") or ""),
+        "ndi_multicast_netprefix": multicast_netprefix,
+        "ndi_multicast_netmask": str(
+            last_req.get("ndi_multicast_netmask")
+            or unit_config.get("ndi_multicast_netmask")
+            or DEFAULT_NDI_MULTICAST_NETMASK
+        ),
+        # Keep the old alias while Fleet Manager may control an older release.
+        "ndi_multicast_addr": multicast_netprefix,
         "ndi_multicast_ttl": _manager_int_value(
             last_req.get("ndi_multicast_ttl", unit_config.get("ndi_multicast_ttl")),
+            DEFAULT_NDI_MULTICAST_TTL,
             1,
-            0,
             255,
         ),
         "deinterlace": _manager_bool_value(

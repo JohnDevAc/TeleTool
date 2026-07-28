@@ -42,10 +42,16 @@ Start NDI:
   "buffer_extra_ms": 0,
   "ndi_qos": false,
   "ndi_multicast_enabled": false,
-  "ndi_multicast_addr": "",
+  "ndi_multicast_netprefix": "239.255.0.0",
+  "ndi_multicast_netmask": "255.255.0.0",
   "ndi_multicast_ttl": 1
 }
 ```
+
+The multicast prefix must be the first address in a contiguous IPv4 multicast
+range. Changing NDI groups, Discovery Server, or multicast settings causes a
+controlled program restart; the requested stream starts automatically after
+the NDI runtime reloads its configuration.
 
 Minimal curl example:
 
@@ -73,6 +79,10 @@ non-AArch64, oversized, or non-NDI files.
 | `GET` | `/api/audio/status?logs=1` | Local audio output status. |
 | `POST` | `/api/audio/start` | Start an isolated audio-only output for the active TV channel. |
 | `POST` | `/api/audio/stop` | Stop line output. |
+
+Inferno device entries include `ptp_state` and set `ready` to `false` while no
+PTP grandmaster or primary leader is available. In that state, `details`
+contains a short operator-facing explanation and audio start returns HTTP 409.
 
 Start audio:
 

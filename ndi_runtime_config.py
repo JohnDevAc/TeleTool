@@ -7,6 +7,9 @@ from typing import Any, Dict, List, Optional
 
 
 NDI_CONFIG_FILENAME = "ndi-config.v1.json"
+DEFAULT_NDI_MULTICAST_NETPREFIX = "239.255.0.0"
+DEFAULT_NDI_MULTICAST_NETMASK = "255.255.0.0"
+DEFAULT_NDI_MULTICAST_TTL = 1
 
 
 def normalise_ndi_groups(value: Any) -> str:
@@ -74,11 +77,92 @@ def normalise_ndi_discovery_servers(value: Any) -> str:
     return ",".join(servers)
 
 
-def ndi_runtime_settings(config: Dict[str, Any], *, ndi_groups: Optional[str] = None) -> Dict[str, str]:
+def normalise_ndi_multicast_settings(
+    *,
+    enabled: Any,
+    netprefix: Any,
+    netmask: Any,
+    ttl: Any,
+) -> Dict[str, Any]:
+    if isinstance(enabled, str):
+        enabled_value = enabled.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        enabled_value = bool(enabled)
+
+    prefix_text = str(netprefix or "").strip()
+    if not prefix_text:
+        if enabled_value:
+            raise ValueError("Enter an NDI multicast address prefix")
+        prefix_text = DEFAULT_NDI_MULTICAST_NETPREFIX
+    try:
+        prefix = ipaddress.IPv4Address(prefix_text)
+    except ipaddress.AddressValueError:
+        raise ValueError("Enter a valid IPv4 multicast address prefix")
+    if not prefix.is_multicast:
+        raise ValueError("The NDI multicast address prefix must be between 224.0.0.0 and 239.255.255.255")
+
+    mask_text = str(netmask or "").strip()
+    if not mask_text:
+        if enabled_value:
+            raise ValueError("Enter an NDI multicast network mask")
+        mask_text = DEFAULT_NDI_MULTICAST_NETMASK
+    try:
+        mask_network = ipaddress.IPv4Network(f"0.0.0.0/{mask_text}")
+    except (ipaddress.AddressValueError, ipaddress.NetmaskValueError):
+        raise ValueError("Enter a valid contiguous IPv4 multicast network mask")
+    canonical_mask = str(mask_network.netmask)
+    multicast_network = ipaddress.IPv4Network((str(prefix), canonical_mask), strict=False)
+    if prefix != multicast_network.network_address:
+        raise ValueError("The NDI multicast address prefix must be the first address in its masked range")
+    if not multicast_network.broadcast_address.is_multicast:
+        raise ValueError("The NDI multicast prefix and mask must describe only multicast addresses")
+    if multicast_network.num_addresses < 4:
+        raise ValueError("The NDI multicast range must contain at least four addresses")
+
+    try:
+        ttl_value = int(ttl)
+    except (TypeError, ValueError):
+        raise ValueError("NDI multicast TTL must be a whole number")
+    if ttl_value < 1 or ttl_value > 255:
+        raise ValueError("NDI multicast TTL must be between 1 and 255")
+
+    return {
+        "ndi_multicast_enabled": enabled_value,
+        "ndi_multicast_netprefix": str(prefix),
+        "ndi_multicast_netmask": canonical_mask,
+        "ndi_multicast_ttl": ttl_value,
+    }
+
+
+def ndi_runtime_settings(
+    config: Dict[str, Any],
+    *,
+    ndi_groups: Optional[str] = None,
+    ndi_multicast_enabled: Optional[bool] = None,
+    ndi_multicast_netprefix: Optional[str] = None,
+    ndi_multicast_netmask: Optional[str] = None,
+    ndi_multicast_ttl: Optional[int] = None,
+) -> Dict[str, Any]:
     groups_value = config.get("ndi_groups", "") if ndi_groups is None else ndi_groups
+    prefix_default = config.get("ndi_multicast_netprefix")
+    if not str(prefix_default or "").strip():
+        prefix_default = config.get("ndi_multicast_addr") or DEFAULT_NDI_MULTICAST_NETPREFIX
+    multicast = normalise_ndi_multicast_settings(
+        enabled=config.get("ndi_multicast_enabled", False)
+        if ndi_multicast_enabled is None
+        else ndi_multicast_enabled,
+        netprefix=prefix_default if ndi_multicast_netprefix is None else ndi_multicast_netprefix,
+        netmask=config.get("ndi_multicast_netmask", DEFAULT_NDI_MULTICAST_NETMASK)
+        if ndi_multicast_netmask is None
+        else ndi_multicast_netmask,
+        ttl=config.get("ndi_multicast_ttl", DEFAULT_NDI_MULTICAST_TTL)
+        if ndi_multicast_ttl is None
+        else ndi_multicast_ttl,
+    )
     return {
         "ndi_groups": normalise_ndi_groups(groups_value),
         "ndi_discovery_server": normalise_ndi_discovery_servers(config.get("ndi_discovery_server", "")),
+        **multicast,
     }
 
 
@@ -111,9 +195,24 @@ def configure_ndi_environment() -> Path:
     return directory
 
 
-def write_ndi_runtime_config(config: Dict[str, Any], *, ndi_groups: Optional[str] = None) -> Dict[str, str]:
+def write_ndi_runtime_config(
+    config: Dict[str, Any],
+    *,
+    ndi_groups: Optional[str] = None,
+    ndi_multicast_enabled: Optional[bool] = None,
+    ndi_multicast_netprefix: Optional[str] = None,
+    ndi_multicast_netmask: Optional[str] = None,
+    ndi_multicast_ttl: Optional[int] = None,
+) -> Dict[str, Any]:
     configure_ndi_environment()
-    settings = ndi_runtime_settings(config, ndi_groups=ndi_groups)
+    settings = ndi_runtime_settings(
+        config,
+        ndi_groups=ndi_groups,
+        ndi_multicast_enabled=ndi_multicast_enabled,
+        ndi_multicast_netprefix=ndi_multicast_netprefix,
+        ndi_multicast_netmask=ndi_multicast_netmask,
+        ndi_multicast_ttl=ndi_multicast_ttl,
+    )
     groups_value = settings["ndi_groups"]
     discovery_value = settings["ndi_discovery_server"]
     path = ndi_config_path()
@@ -157,6 +256,23 @@ def write_ndi_runtime_config(config: Dict[str, Any], *, ndi_groups: Optional[str
         ndi["groups"] = groups
     else:
         ndi.pop("groups", None)
+
+    multicast = ndi.get("multicast")
+    if not isinstance(multicast, dict):
+        multicast = {}
+    multicast_send = multicast.get("send")
+    if not isinstance(multicast_send, dict):
+        multicast_send = {}
+    multicast_send.update(
+        {
+            "enable": settings["ndi_multicast_enabled"],
+            "netprefix": settings["ndi_multicast_netprefix"],
+            "netmask": settings["ndi_multicast_netmask"],
+            "ttl": settings["ndi_multicast_ttl"],
+        }
+    )
+    multicast["send"] = multicast_send
+    ndi["multicast"] = multicast
 
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")

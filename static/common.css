@@ -1043,6 +1043,47 @@ input[type="range"]::-moz-range-thumb{
   min-width:124px;
   justify-content:center;
 }
+.ndiMulticastSection{
+  margin-top:16px;
+  padding-top:14px;
+  border-top:1px solid rgba(255,255,255,.1);
+}
+.ndiMulticastHead{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+.ndiMulticastHead h2{
+  margin:0;
+}
+.ndiToggle{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  min-height:32px;
+  color:var(--text);
+  font-size:13px;
+  font-weight:650;
+  cursor:pointer;
+}
+.ndiToggle input{
+  width:18px;
+  height:18px;
+  margin:0;
+  padding:0;
+  accent-color:var(--accent);
+}
+.ndiToggle:has(input:disabled){
+  color:var(--muted);
+  cursor:default;
+}
+.ndiMulticastFields{
+  display:grid;
+  grid-template-columns:repeat(3, minmax(0, 1fr));
+  gap:10px;
+  margin-top:10px;
+}
 header > .title{
   min-height:27px;
 }
@@ -1071,6 +1112,9 @@ header > .title{
   header .brandLogoLink{
     order:3;
     margin-left:auto;
+  }
+  .ndiMulticastFields{
+    grid-template-columns:1fr;
   }
 }
 @media (max-width: 460px){

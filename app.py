@@ -21,10 +21,14 @@ import requests
 import fleet_manager
 import system_manager
 from ndi_runtime_config import (
+    DEFAULT_NDI_MULTICAST_NETMASK,
+    DEFAULT_NDI_MULTICAST_NETPREFIX,
+    DEFAULT_NDI_MULTICAST_TTL,
     configure_ndi_environment,
     ndi_runtime_settings,
     normalise_ndi_discovery_servers,
     normalise_ndi_groups,
+    normalise_ndi_multicast_settings,
     write_ndi_runtime_config,
 )
 from tvh import TELETOOL_UK_AUTO_SCANFILE, TvheadendClient
@@ -225,7 +229,14 @@ _active_profile: str = "pass"
 
 # Default (fixed) NDI delay applied when starting the pipeline
 NDI_DELAY_DEFAULT_MS: int = 250
-NDI_RUNTIME_CONFIG_AT_START: Dict[str, str] = {"ndi_groups": "", "ndi_discovery_server": ""}
+NDI_RUNTIME_CONFIG_AT_START: Dict[str, Any] = {
+    "ndi_groups": "",
+    "ndi_discovery_server": "",
+    "ndi_multicast_enabled": False,
+    "ndi_multicast_netprefix": DEFAULT_NDI_MULTICAST_NETPREFIX,
+    "ndi_multicast_netmask": DEFAULT_NDI_MULTICAST_NETMASK,
+    "ndi_multicast_ttl": DEFAULT_NDI_MULTICAST_TTL,
+}
 
 
 # ---------------- NDI supervision / auto-reconnect ----------------
@@ -270,6 +281,16 @@ def _ndi_supervisor_config() -> Dict[str, Any]:
 
 
 def _ndi_req_to_dict(req: "StartReq") -> Dict[str, Any]:
+    prefix = req.ndi_multicast_netprefix
+    fields_set = getattr(req, "model_fields_set", set())
+    if "ndi_multicast_addr" in fields_set and "ndi_multicast_netprefix" not in fields_set:
+        prefix = req.ndi_multicast_addr
+    multicast = normalise_ndi_multicast_settings(
+        enabled=req.ndi_multicast_enabled,
+        netprefix=prefix,
+        netmask=req.ndi_multicast_netmask,
+        ttl=req.ndi_multicast_ttl,
+    )
     return {
         "channel_uuid": req.channel_uuid,
         "ndi_name": req.ndi_name,
@@ -278,9 +299,7 @@ def _ndi_req_to_dict(req: "StartReq") -> Dict[str, Any]:
         "deinterlace": bool(req.deinterlace),
         "buffer_extra_ms": int(req.buffer_extra_ms),
         "ndi_qos": bool(req.ndi_qos),
-        "ndi_multicast_enabled": bool(req.ndi_multicast_enabled),
-        "ndi_multicast_addr": str(req.ndi_multicast_addr or ""),
-        "ndi_multicast_ttl": int(req.ndi_multicast_ttl),
+        **multicast,
     }
 
 
@@ -291,9 +310,37 @@ def _lineout_req_to_dict(req: "LineOutStartReq") -> Dict[str, Any]:
     }
 
 
-def _runtime_settings_for_request(req_d: Dict[str, Any]) -> Dict[str, str]:
+def _normalise_ndi_request_dict(req_d: Dict[str, Any]) -> Dict[str, Any]:
+    prefix = req_d.get("ndi_multicast_netprefix")
+    if not str(prefix or "").strip():
+        prefix = req_d.get("ndi_multicast_addr")
+    if not str(prefix or "").strip():
+        prefix = cfg.get("ndi_multicast_netprefix") or cfg.get("ndi_multicast_addr") or DEFAULT_NDI_MULTICAST_NETPREFIX
+    multicast = normalise_ndi_multicast_settings(
+        enabled=req_d.get("ndi_multicast_enabled", cfg.get("ndi_multicast_enabled", False)),
+        netprefix=prefix,
+        netmask=req_d.get(
+            "ndi_multicast_netmask",
+            cfg.get("ndi_multicast_netmask", DEFAULT_NDI_MULTICAST_NETMASK),
+        ),
+        ttl=req_d.get("ndi_multicast_ttl", cfg.get("ndi_multicast_ttl", DEFAULT_NDI_MULTICAST_TTL)),
+    )
+    req_d.update(multicast)
+    req_d.pop("ndi_multicast_addr", None)
+    return req_d
+
+
+def _runtime_settings_for_request(req_d: Dict[str, Any]) -> Dict[str, Any]:
     try:
-        return ndi_runtime_settings(cfg, ndi_groups=req_d.get("ndi_groups"))
+        _normalise_ndi_request_dict(req_d)
+        return ndi_runtime_settings(
+            cfg,
+            ndi_groups=req_d.get("ndi_groups"),
+            ndi_multicast_enabled=req_d.get("ndi_multicast_enabled"),
+            ndi_multicast_netprefix=req_d.get("ndi_multicast_netprefix"),
+            ndi_multicast_netmask=req_d.get("ndi_multicast_netmask"),
+            ndi_multicast_ttl=req_d.get("ndi_multicast_ttl"),
+        )
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -307,13 +354,17 @@ def _schedule_pending_ndi_start_after_restart(req_d: Dict[str, Any]) -> None:
     patch = {
         "ndi_default_name": req_d["ndi_name"],
         "ndi_groups": req_d["ndi_groups"],
+        "ndi_multicast_enabled": req_d["ndi_multicast_enabled"],
+        "ndi_multicast_netprefix": req_d["ndi_multicast_netprefix"],
+        "ndi_multicast_netmask": req_d["ndi_multicast_netmask"],
+        "ndi_multicast_ttl": req_d["ndi_multicast_ttl"],
         "tvh_stream_profile": req_d["profile"],
         "ndi_last_start_request": deepcopy(req_d),
         "ndi_pending_start_request": deepcopy(req_d),
     }
     updated = _update_config(patch)
     try:
-        write_ndi_runtime_config(updated, ndi_groups=req_d.get("ndi_groups"))
+        write_ndi_runtime_config(updated)
     except ValueError as e:
         raise HTTPException(400, str(e))
     system_manager.schedule_program_restart(0.75)
@@ -826,6 +877,7 @@ def _restore_desired_lineout(reason: str = "supervisor restore") -> None:
 
 def _start_ndi_pipeline_from_dict(req_d: Dict[str, Any], *, reason: str, force_refresh: bool = False) -> str:
     """Resolve a tvheadend URL and start/restart the NDI pipeline."""
+    _normalise_ndi_request_dict(req_d)
     stream_url = tvh.get_stream_url_for_uuid(req_d["channel_uuid"], profile=req_d["profile"], force_refresh=force_refresh)
     channel_summary = _channel_summary_for_uuid(req_d.get("channel_uuid"))
     req_d.update(channel_summary)
@@ -852,7 +904,8 @@ def _start_ndi_pipeline_from_dict(req_d: Dict[str, Any], *, reason: str, force_r
         ndi_qos=req_d["ndi_qos"],
         ndi_groups=req_d["ndi_groups"],
         ndi_multicast_enabled=req_d["ndi_multicast_enabled"],
-        ndi_multicast_addr=req_d["ndi_multicast_addr"],
+        ndi_multicast_netprefix=req_d["ndi_multicast_netprefix"],
+        ndi_multicast_netmask=req_d["ndi_multicast_netmask"],
         ndi_multicast_ttl=req_d["ndi_multicast_ttl"],
     )
     return stream_url
@@ -1469,7 +1522,14 @@ async def _app_lifespan(_app: FastAPI):
     try:
         NDI_RUNTIME_CONFIG_AT_START = write_ndi_runtime_config(cfg)
     except ValueError:
-        NDI_RUNTIME_CONFIG_AT_START = {"ndi_groups": "", "ndi_discovery_server": ""}
+        NDI_RUNTIME_CONFIG_AT_START = {
+            "ndi_groups": "",
+            "ndi_discovery_server": "",
+            "ndi_multicast_enabled": False,
+            "ndi_multicast_netprefix": DEFAULT_NDI_MULTICAST_NETPREFIX,
+            "ndi_multicast_netmask": DEFAULT_NDI_MULTICAST_NETMASK,
+            "ndi_multicast_ttl": DEFAULT_NDI_MULTICAST_TTL,
+        }
 
     from gst_ndi import GstNDIBridge
 
@@ -1796,7 +1856,8 @@ UI_CONFIG_KEYS = {
     "ndi_reconnect_initial_backoff_s",
     "ndi_reconnect_max_backoff_s",
     "ndi_multicast_enabled",
-    "ndi_multicast_addr",
+    "ndi_multicast_netprefix",
+    "ndi_multicast_netmask",
     "ndi_multicast_ttl",
     "lineout_default_device",
     "lineout_volume",
@@ -1837,8 +1898,10 @@ class UIConfigUpdateReq(BaseModel):
     ndi_reconnect_initial_backoff_s: Optional[float] = Field(default=None, ge=0.25, le=300)
     ndi_reconnect_max_backoff_s: Optional[float] = Field(default=None, ge=1, le=600)
     ndi_multicast_enabled: Optional[bool] = None
+    ndi_multicast_netprefix: Optional[str] = None
+    ndi_multicast_netmask: Optional[str] = None
     ndi_multicast_addr: Optional[str] = None
-    ndi_multicast_ttl: Optional[int] = Field(default=None, ge=0, le=255)
+    ndi_multicast_ttl: Optional[int] = Field(default=None, ge=1, le=255)
     lineout_default_device: Optional[str] = None
     lineout_volume: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     lineout_sink_sync: Optional[bool] = None
@@ -1856,18 +1919,33 @@ def api_config_ui_update(req: UIConfigUpdateReq):
     patch = req.model_dump(exclude_none=True)
     if not patch:
         return {"ok": True, "restart_required": False, "config": api_config_ui()}
+    if "ndi_multicast_addr" in patch and "ndi_multicast_netprefix" not in patch:
+        patch["ndi_multicast_netprefix"] = patch.pop("ndi_multicast_addr")
     if "ndi_groups" in patch:
         patch["ndi_groups"] = _normalise_ndi_groups(patch.get("ndi_groups"))
     if "ndi_discovery_server" in patch:
         patch["ndi_discovery_server"] = _normalise_ndi_discovery_servers(patch.get("ndi_discovery_server"))
-    updated = _update_config(patch)
+    runtime_keys = {
+        "ndi_groups",
+        "ndi_discovery_server",
+        "ndi_multicast_enabled",
+        "ndi_multicast_netprefix",
+        "ndi_multicast_netmask",
+        "ndi_multicast_ttl",
+    }
+    settings = None
     restart_required = False
-    if "ndi_groups" in patch or "ndi_discovery_server" in patch:
+    if runtime_keys.intersection(patch):
         try:
-            settings = write_ndi_runtime_config(updated)
-            restart_required = settings != NDI_RUNTIME_CONFIG_AT_START
+            candidate = deepcopy(cfg)
+            candidate.update(patch)
+            settings = ndi_runtime_settings(candidate)
         except ValueError as e:
             raise HTTPException(400, str(e))
+    updated = _update_config(patch)
+    if settings is not None:
+        write_ndi_runtime_config(updated)
+        restart_required = settings != NDI_RUNTIME_CONFIG_AT_START
     return {
         "ok": True,
         "restart_required": restart_required,
@@ -1907,16 +1985,30 @@ class StartReq(BaseModel):
         description="Enable NDI multicast for this stream.",
     )
 
-    ndi_multicast_addr: str = Field(
-        default_factory=lambda: str(cfg.get("ndi_multicast_addr", "")),
-        description="NDI multicast address (required if multicast is enabled).",
+    ndi_multicast_netprefix: str = Field(
+        default_factory=lambda: str(
+            cfg.get("ndi_multicast_netprefix")
+            or cfg.get("ndi_multicast_addr")
+            or DEFAULT_NDI_MULTICAST_NETPREFIX
+        ),
+        description="First address in the NDI multicast range.",
+    )
+
+    ndi_multicast_netmask: str = Field(
+        default_factory=lambda: str(cfg.get("ndi_multicast_netmask", DEFAULT_NDI_MULTICAST_NETMASK)),
+        description="Contiguous IPv4 network mask for the NDI multicast range.",
     )
 
     ndi_multicast_ttl: int = Field(
-        default_factory=lambda: int(cfg.get("ndi_multicast_ttl", 1)),
-        ge=0,
+        default_factory=lambda: int(cfg.get("ndi_multicast_ttl", DEFAULT_NDI_MULTICAST_TTL)),
+        ge=1,
         le=255,
         description="NDI multicast TTL (default 1).",
+    )
+
+    ndi_multicast_addr: Optional[str] = Field(
+        default=None,
+        description="Deprecated alias for ndi_multicast_netprefix.",
     )
 
 @app.post("/api/start")
@@ -1925,9 +2017,10 @@ def api_start(req: StartReq):
     if _tv_setup_snapshot().get("running"):
         raise HTTPException(409, "TV Setup is running; NDI cannot be started until setup finishes")
     try:
-        if req.ndi_multicast_enabled and not str(req.ndi_multicast_addr or "").strip():
-            raise HTTPException(400, "Multicast is enabled but no multicast address was provided")
-        req_d = _ndi_req_to_dict(req)
+        try:
+            req_d = _ndi_req_to_dict(req)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         if _ndi_runtime_restart_required(req_d):
             _schedule_pending_ndi_start_after_restart(req_d)
             return {
@@ -1942,12 +2035,16 @@ def api_start(req: StartReq):
         updated = _update_config({
             "ndi_default_name": req.ndi_name,
             "ndi_groups": req_d["ndi_groups"],
+            "ndi_multicast_enabled": req_d["ndi_multicast_enabled"],
+            "ndi_multicast_netprefix": req_d["ndi_multicast_netprefix"],
+            "ndi_multicast_netmask": req_d["ndi_multicast_netmask"],
+            "ndi_multicast_ttl": req_d["ndi_multicast_ttl"],
             "tvh_stream_profile": req.profile,
             "ndi_last_start_request": req_d,
             "ndi_pending_start_request": None,
         })
         try:
-            write_ndi_runtime_config(updated, ndi_groups=req_d["ndi_groups"])
+            write_ndi_runtime_config(updated)
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -2139,6 +2236,8 @@ def api_audio_start(req: LineOutStartReq):
 
     try:
         ndi_bridge.lineout_start(device_id=req.device_id, volume=req.volume)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
     except Exception as e:
         raise HTTPException(500, f"Failed to start audio output: {e}")
     with NDI_SUPERVISOR_LOCK:

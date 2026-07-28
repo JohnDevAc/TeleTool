@@ -52,6 +52,30 @@
         </div>
       </div>
 
+      <div class="ndiMulticastSection">
+        <div class="ndiMulticastHead">
+          <h2>Multicast</h2>
+          <label class="ndiToggle" for="ndiMulticastEnabled">
+            <input id="ndiMulticastEnabled" type="checkbox" />
+            <span>Enable</span>
+          </label>
+        </div>
+        <div class="ndiMulticastFields">
+          <div class="field">
+            <label for="ndiMulticastNetprefix">Address prefix</label>
+            <input id="ndiMulticastNetprefix" inputmode="decimal" value="239.255.0.0" />
+          </div>
+          <div class="field">
+            <label for="ndiMulticastNetmask">Network mask</label>
+            <input id="ndiMulticastNetmask" inputmode="decimal" value="255.255.0.0" />
+          </div>
+          <div class="field">
+            <label for="ndiMulticastTtl">TTL</label>
+            <input id="ndiMulticastTtl" type="number" min="1" max="255" step="1" value="1" />
+          </div>
+        </div>
+      </div>
+
       <div class="actions">
         <button id="start" class="primary">Start NDI</button>
         <button id="stop" class="danger">Stop</button>
@@ -125,6 +149,16 @@ let ndiStreamRunning = false;
 let tvSetupRunning = false;
 let tvSetupRegionsLoading = false;
 
+function updateMulticastControls(){
+  const enabled = document.getElementById("ndiMulticastEnabled");
+  const locked = !!ndiStreamRunning || !!tvSetupRunning;
+  if (enabled) enabled.disabled = locked;
+  for (const id of ["ndiMulticastNetprefix","ndiMulticastNetmask","ndiMulticastTtl"]){
+    const el = document.getElementById(id);
+    if (el) el.disabled = locked || !(enabled && enabled.checked);
+  }
+}
+
 function updateNdiControls(){
   const busyWithSetup = !!tvSetupRunning;
   for (const id of ["channel","ndiname","ndigroups"]){
@@ -135,6 +169,7 @@ function updateNdiControls(){
   const stopBtn = document.getElementById("stop");
   if (startBtn) startBtn.disabled = !!ndiStreamRunning || busyWithSetup;
   if (stopBtn) stopBtn.disabled = !ndiStreamRunning || busyWithSetup;
+  updateMulticastControls();
 }
 
 function updateTvSetupControls(){
@@ -170,6 +205,15 @@ function populateFormFromStatus(st){
   if (n && st.ndi_name) n.value = st.ndi_name;
   const g = document.getElementById("ndigroups");
   if (g) g.value = st.ndi_groups || "";
+  const multicastEnabled = document.getElementById("ndiMulticastEnabled");
+  if (multicastEnabled) multicastEnabled.checked = !!st.ndi_multicast_enabled;
+  const multicastNetprefix = document.getElementById("ndiMulticastNetprefix");
+  if (multicastNetprefix && st.ndi_multicast_netprefix) multicastNetprefix.value = st.ndi_multicast_netprefix;
+  const multicastNetmask = document.getElementById("ndiMulticastNetmask");
+  if (multicastNetmask && st.ndi_multicast_netmask) multicastNetmask.value = st.ndi_multicast_netmask;
+  const multicastTtl = document.getElementById("ndiMulticastTtl");
+  if (multicastTtl && st.ndi_multicast_ttl) multicastTtl.value = String(st.ndi_multicast_ttl);
+  updateMulticastControls();
 }
 
 function setAlertBadge(kind, text){
@@ -258,6 +302,19 @@ async function loadUiConfig(){
   if (groupInput && !groupInput.value.trim()) {
     groupInput.value = uiConfig.ndi_groups || "";
   }
+  const multicastEnabled = document.getElementById("ndiMulticastEnabled");
+  if (multicastEnabled) multicastEnabled.checked = !!uiConfig.ndi_multicast_enabled;
+  const multicastNetprefix = document.getElementById("ndiMulticastNetprefix");
+  if (multicastNetprefix) {
+    multicastNetprefix.value = uiConfig.ndi_multicast_netprefix || "239.255.0.0";
+  }
+  const multicastNetmask = document.getElementById("ndiMulticastNetmask");
+  if (multicastNetmask) {
+    multicastNetmask.value = uiConfig.ndi_multicast_netmask || "255.255.0.0";
+  }
+  const multicastTtl = document.getElementById("ndiMulticastTtl");
+  if (multicastTtl) multicastTtl.value = String(uiConfig.ndi_multicast_ttl || 1);
+  updateMulticastControls();
 }
 
 
@@ -355,6 +412,7 @@ async function refreshTvSetupStatus(){
 }
 
 document.getElementById("tvSetupRegion").addEventListener("change", updateTvSetupControls);
+document.getElementById("ndiMulticastEnabled").addEventListener("change", updateMulticastControls);
 
 document.getElementById("runTvSetup").addEventListener("click", async () => {
   const regionSel = document.getElementById("tvSetupRegion");
@@ -492,8 +550,20 @@ document.getElementById("start").addEventListener("click", async () => {
   const uuid = document.getElementById("channel").value;
   const ndi = document.getElementById("ndiname").value.trim();
   const groups = document.getElementById("ndigroups").value.trim();
+  const multicastEnabled = document.getElementById("ndiMulticastEnabled").checked;
+  const multicastNetprefix = document.getElementById("ndiMulticastNetprefix").value.trim();
+  const multicastNetmask = document.getElementById("ndiMulticastNetmask").value.trim();
+  const multicastTtl = Number(document.getElementById("ndiMulticastTtl").value);
   if (!ndi){
     toast("Please enter an NDI name.", "bad");
+    return;
+  }
+  if (multicastEnabled && (!multicastNetprefix || !multicastNetmask)) {
+    toast("Enter the multicast address prefix and network mask.", "bad");
+    return;
+  }
+  if (!Number.isInteger(multicastTtl) || multicastTtl < 1 || multicastTtl > 255) {
+    toast("Multicast TTL must be a whole number from 1 to 255.", "bad");
     return;
   }
   if (tvSetupRunning) {
@@ -515,15 +585,20 @@ document.getElementById("start").addEventListener("click", async () => {
       ndi_name: ndi,
       ndi_groups: groups,
       profile: uiConfig.tvh_stream_profile || "pass",
-      ndi_multicast_enabled: !!uiConfig.ndi_multicast_enabled,
-      ndi_multicast_addr: uiConfig.ndi_multicast_addr || "",
-      ndi_multicast_ttl: Number(uiConfig.ndi_multicast_ttl || 1),
+      ndi_multicast_enabled: multicastEnabled,
+      ndi_multicast_netprefix: multicastNetprefix,
+      ndi_multicast_netmask: multicastNetmask,
+      ndi_multicast_ttl: multicastTtl,
       deinterlace: !!uiConfig.ndi_deinterlace,
       buffer_extra_ms: Number(uiConfig.ndi_buffer_extra_ms || 0),
       ndi_qos: !!uiConfig.ndi_qos,
     });
     uiConfig.ndi_default_name = ndi;
     uiConfig.ndi_groups = groups;
+    uiConfig.ndi_multicast_enabled = multicastEnabled;
+    uiConfig.ndi_multicast_netprefix = multicastNetprefix;
+    uiConfig.ndi_multicast_netmask = multicastNetmask;
+    uiConfig.ndi_multicast_ttl = multicastTtl;
     if (result && result.restart_required) {
       restartRequested = true;
       toast("Applying NDI settings. Program restarting...", "warn", 6000);

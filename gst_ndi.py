@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from inferno_status import inferno_clock_status
 from ndi_runtime_config import write_ndi_runtime_config
 
 _DEFAULT_CONFIG_PATH = Path(
@@ -61,6 +62,10 @@ class RunState:
     ndi_delay_ms: Optional[int]
     ndi_groups: Optional[str]
     ndi_discovery_server: Optional[str]
+    ndi_multicast_enabled: bool
+    ndi_multicast_netprefix: Optional[str]
+    ndi_multicast_netmask: Optional[str]
+    ndi_multicast_ttl: Optional[int]
 
     # qos/drops
     dropped: int
@@ -125,9 +130,10 @@ class GstNDIBridge(GstPipelineBase):
         self._ndi_groups: Optional[str] = None
         self._ndi_discovery_server: Optional[str] = None
 
-        # NDI multicast (per-stream overrides; only meaningful while running)
+        # NDI multicast settings used by the running sender.
         self._ndi_multicast_enabled: bool = False
-        self._ndi_multicast_addr: Optional[str] = None
+        self._ndi_multicast_netprefix: Optional[str] = None
+        self._ndi_multicast_netmask: Optional[str] = None
         self._ndi_multicast_ttl: Optional[int] = None
 
         self._qos_events: int = 0
@@ -205,29 +211,44 @@ class GstNDIBridge(GstPipelineBase):
             return "pulsesink"
         return "fakesink"
 
+    def _inferno_clock_status(self, *, force: bool = False) -> Dict[str, Any]:
+        clock_path = str(
+            self._cfg.get(
+                "inferno_clock_path",
+                "/run/teletool-inferno/usrvclock.sock",
+            )
+            or "/run/teletool-inferno/usrvclock.sock"
+        )
+        observation_path = str(
+            self._cfg.get(
+                "inferno_clock_observation_path",
+                "/run/teletool-inferno/observe.sock",
+            )
+            or "/run/teletool-inferno/observe.sock"
+        )
+        return inferno_clock_status(
+            clock_path,
+            observation_path,
+            timeout_s=0.2,
+            max_age_s=1.0,
+            force=force,
+        )
+
     def audio_output_devices(self) -> List[Dict[str, Any]]:
         """Detect supported local outputs and the optional Inferno ALSA PCM."""
         sink_factory = self._select_lineout_sink_factory()
         devices: List[Dict[str, Any]] = []
         seen = set()
         inferno_device = str(self._cfg.get("inferno_alsa_device", "teletool_inferno") or "").strip()
-        inferno_clock_path = Path(
-            str(
-                self._cfg.get(
-                    "inferno_clock_path",
-                    "/run/teletool-inferno/usrvclock.sock",
-                )
-                or "/run/teletool-inferno/usrvclock.sock"
-            )
-        )
+        inferno_status = self._inferno_clock_status()
 
         def add(device_id: str, label: str, *, device: Optional[str], sink: str, kind: str, details: str = "") -> None:
             if device_id in seen:
                 return
             seen.add(device_id)
-            ready = kind != "inferno" or inferno_clock_path.exists()
+            ready = kind != "inferno" or bool(inferno_status.get("ready"))
             if kind == "inferno" and not ready:
-                details = "Inferno clock service is not ready."
+                details = str(inferno_status.get("details") or "Inferno PTP clock is not synchronized.")
             devices.append(
                 {
                     "id": device_id,
@@ -240,6 +261,7 @@ class GstNDIBridge(GstPipelineBase):
                     "network_output": kind == "inferno",
                     "requires_clock_service": kind == "inferno",
                     "sample_format": "S32LE" if kind == "inferno" else None,
+                    "ptp_state": inferno_status.get("state") if kind == "inferno" else None,
                 }
             )
 
@@ -362,6 +384,10 @@ class GstNDIBridge(GstPipelineBase):
                 ndi_delay_ms=self._ndi_delay_ms,
                 ndi_groups=self._ndi_groups if base["running"] else None,
                 ndi_discovery_server=self._ndi_discovery_server if base["running"] else None,
+                ndi_multicast_enabled=bool(self._ndi_multicast_enabled) if base["running"] else False,
+                ndi_multicast_netprefix=self._ndi_multicast_netprefix if base["running"] else None,
+                ndi_multicast_netmask=self._ndi_multicast_netmask if base["running"] else None,
+                ndi_multicast_ttl=self._ndi_multicast_ttl if base["running"] else None,
                 dropped=self._dropped,
                 qos_events=self._qos_events,
                 ndi_rendered=self._ndi_rendered,
@@ -397,7 +423,9 @@ class GstNDIBridge(GstPipelineBase):
                 "ndi_groups": self._ndi_groups if running else None,
                 "ndi_discovery_server": self._ndi_discovery_server if running else None,
                 "ndi_multicast_enabled": bool(self._ndi_multicast_enabled) if running else False,
-                "ndi_multicast_addr": self._ndi_multicast_addr if running else None,
+                "ndi_multicast_netprefix": self._ndi_multicast_netprefix if running else None,
+                "ndi_multicast_netmask": self._ndi_multicast_netmask if running else None,
+                "ndi_multicast_addr": self._ndi_multicast_netprefix if running else None,
                 "ndi_multicast_ttl": self._ndi_multicast_ttl if running else None,
             }
             if include_logs:
@@ -514,13 +542,27 @@ class GstNDIBridge(GstPipelineBase):
 
     def lineout_start(self, device_id: Optional[str] = None, volume: Optional[float] = None):
         """Start an isolated audio-only pipeline for the active TV channel."""
+        with self._lock:
+            self._lineout_last_error = None
         base = self._base_status_fields(include_log=False)
         if not base.get("running"):
             raise RuntimeError("NDI pipeline must be running before line output can be started")
 
-        selected = self._resolve_audio_output_device(device_id or self._cfg.get("lineout_default_device"))
+        try:
+            selected = self._resolve_audio_output_device(device_id or self._cfg.get("lineout_default_device"))
+        except ValueError as e:
+            with self._lock:
+                self._lineout_last_error = str(e)
+            raise
         sink_factory = str(selected.get("sink") or "")
         selected_kind = str(selected.get("kind") or "")
+        if selected_kind == "inferno":
+            ptp_status = self._inferno_clock_status(force=True)
+            if not ptp_status.get("ready"):
+                error = str(ptp_status.get("details") or "Inferno PTP clock is not synchronized.")
+                with self._lock:
+                    self._lineout_last_error = error
+                raise ValueError(error)
 
         try:
             volume_i = float(self._cfg.get("lineout_volume", 0.8) if volume is None else volume)
@@ -546,8 +588,20 @@ class GstNDIBridge(GstPipelineBase):
             )
         except Exception as e:
             self._lineout_pipeline.stop()
+            error = str(e)
+            if selected_kind == "inferno":
+                ptp_status = self._inferno_clock_status(force=True)
+                if not ptp_status.get("ready"):
+                    error = str(ptp_status.get("details") or error)
+                else:
+                    error = (
+                        "Inferno audio could not synchronize with the PTP primary leader. "
+                        "Check the audio network and try again."
+                    )
             with self._lock:
-                self._lineout_last_error = str(e)
+                self._lineout_last_error = error
+            if selected_kind == "inferno":
+                raise ValueError(error) from e
             raise
 
         with self._lock:
@@ -600,7 +654,8 @@ class GstNDIBridge(GstPipelineBase):
         enable_bitrate_probe: Optional[bool] = None,
         ndi_groups: Optional[str] = None,
         ndi_multicast_enabled: Optional[bool] = None,
-        ndi_multicast_addr: Optional[str] = None,
+        ndi_multicast_netprefix: Optional[str] = None,
+        ndi_multicast_netmask: Optional[str] = None,
         ndi_multicast_ttl: Optional[int] = None,
     ):
         """Start the pipeline with a configurable output delay.
@@ -651,29 +706,29 @@ class GstNDIBridge(GstPipelineBase):
 
         enable_probe_i = bool(cfg.get("enable_bitrate_probe", False)) if enable_bitrate_probe is None else bool(enable_bitrate_probe)
 
-        runtime_settings = write_ndi_runtime_config(cfg, ndi_groups=ndi_groups)
+        runtime_settings = write_ndi_runtime_config(
+            cfg,
+            ndi_groups=ndi_groups,
+            ndi_multicast_enabled=ndi_multicast_enabled,
+            ndi_multicast_netprefix=ndi_multicast_netprefix,
+            ndi_multicast_netmask=ndi_multicast_netmask,
+            ndi_multicast_ttl=ndi_multicast_ttl,
+        )
         ndi_groups_i = runtime_settings["ndi_groups"]
         discovery_servers_i = runtime_settings["ndi_discovery_server"]
-        self._push_log(
-            f"NDI runtime config: groups={ndi_groups_i or 'default'}; discovery={discovery_servers_i or 'off'}"
+        multicast_enabled_i = runtime_settings["ndi_multicast_enabled"]
+        multicast_netprefix_i = runtime_settings["ndi_multicast_netprefix"]
+        multicast_netmask_i = runtime_settings["ndi_multicast_netmask"]
+        multicast_ttl_i = runtime_settings["ndi_multicast_ttl"]
+        multicast_label = (
+            f"{multicast_netprefix_i}/{multicast_netmask_i} ttl={multicast_ttl_i}"
+            if multicast_enabled_i
+            else "off"
         )
-
-        # NDI multicast per-stream overrides (best-effort; depends on ndisink implementation)
-        multicast_enabled_default = bool(cfg.get("ndi_multicast_enabled", False))
-        multicast_enabled_i = multicast_enabled_default if ndi_multicast_enabled is None else bool(ndi_multicast_enabled)
-
-        multicast_ttl_default = int(cfg.get("ndi_multicast_ttl", 1))
-        try:
-            multicast_ttl_i = int(multicast_ttl_default if ndi_multicast_ttl is None else ndi_multicast_ttl)
-        except Exception:
-            multicast_ttl_i = multicast_ttl_default
-        multicast_ttl_i = max(0, min(255, multicast_ttl_i))
-
-        multicast_addr_default = str(cfg.get("ndi_multicast_addr", ""))  # optional
-        multicast_addr_i = multicast_addr_default if ndi_multicast_addr is None else str(ndi_multicast_addr or "")
-
-        if multicast_enabled_i and not multicast_addr_i.strip():
-            raise ValueError("NDI multicast is enabled but no multicast address was provided")
+        self._push_log(
+            f"NDI runtime config: groups={ndi_groups_i or 'default'}; "
+            f"discovery={discovery_servers_i or 'off'}; multicast={multicast_label}"
+        )
 
 
         # Persist UI-facing metadata for /api/status.
@@ -687,7 +742,8 @@ class GstNDIBridge(GstPipelineBase):
             self._ndi_groups = ndi_groups_i or None
             self._ndi_discovery_server = discovery_servers_i or None
             self._ndi_multicast_enabled = bool(multicast_enabled_i)
-            self._ndi_multicast_addr = multicast_addr_i.strip() if multicast_enabled_i else None
+            self._ndi_multicast_netprefix = multicast_netprefix_i if multicast_enabled_i else None
+            self._ndi_multicast_netmask = multicast_netmask_i if multicast_enabled_i else None
             self._ndi_multicast_ttl = int(multicast_ttl_i) if multicast_enabled_i else None
             self._ndi_rendered = 0
             self._ndi_dropped = 0
@@ -864,55 +920,6 @@ class GstNDIBridge(GstPipelineBase):
         self._push_log(f"NDI pipeline: {pipeline_desc}")
         self._start_pipeline(pipeline_desc=pipeline_desc, poll_cb=self._poll_stats)
 
-        # Apply multicast settings after pipeline creation (thread-safe).
-        # We intentionally do this as a best-effort operation so that older/other ndisink builds
-        # without multicast support still work.
-        def _apply_mcast():
-            with self._lock:
-                pipeline = self._pipeline
-            if pipeline is None:
-                return
-            sink = pipeline.get_by_name("ndisink0")
-            if sink is None:
-                return
-            try_props = []
-            if multicast_enabled_i:
-                # Common property name candidates across NDI sinks.
-                try_props = [
-                    ("multicast", True),
-                    ("multicast-enabled", True),
-                    ("enable-multicast", True),
-                ]
-                for prop, val in try_props:
-                    try:
-                        sink.set_property(prop, val)
-                        break
-                    except Exception:
-                        pass
-                # Address
-                for prop in ("multicast-address", "multicast-addr", "multicast_addr"):
-                    try:
-                        sink.set_property(prop, multicast_addr_i.strip())
-                        break
-                    except Exception:
-                        pass
-                # TTL
-                for prop in ("multicast-ttl", "multicast_ttl", "ttl-mc", "ttl_mc"):
-                    try:
-                        sink.set_property(prop, int(multicast_ttl_i))
-                        break
-                    except Exception:
-                        pass
-            else:
-                for prop in ("multicast", "multicast-enabled", "enable-multicast"):
-                    try:
-                        sink.set_property(prop, False)
-                        break
-                    except Exception:
-                        pass
-
-        self._call_in_gst_context(_apply_mcast)
-
 
     def stop(self):
         # Stop line output first (if active)
@@ -931,7 +938,8 @@ class GstNDIBridge(GstPipelineBase):
             self._ndi_groups = None
             self._ndi_discovery_server = None
             self._ndi_multicast_enabled = False
-            self._ndi_multicast_addr = None
+            self._ndi_multicast_netprefix = None
+            self._ndi_multicast_netmask = None
             self._ndi_multicast_ttl = None
             self._bitrate_bps_est = None
             self._bitrate_probe_hooked = False

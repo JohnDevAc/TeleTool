@@ -58,6 +58,8 @@ require(
     "self._lineout_pipeline._start_pipeline(pipeline_desc)",
     "self._lineout_pipeline._wait_until_playing",
     "self._lineout_pipeline.stop()",
+    "self._inferno_clock_status(force=True)",
+    "raise ValueError(error) from e",
 )
 
 stop = method_source("gst_ndi.py", "GstNDIBridge", "lineout_stop")

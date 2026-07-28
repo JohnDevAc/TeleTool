@@ -4,6 +4,7 @@ set -eu
 runtime_dir="/run/teletool-inferno"
 config_path="$runtime_dir/statime.toml"
 clock_path="$runtime_dir/usrvclock.sock"
+observation_path="$runtime_dir/observe.sock"
 interface="${TELETOOL_INFERNO_INTERFACE:-}"
 loglevel="${TELETOOL_INFERNO_LOGLEVEL:-warn}"
 hardware_clock="${TELETOOL_INFERNO_HARDWARE_CLOCK:-auto}"
@@ -58,10 +59,15 @@ loglevel = "$loglevel"
 sdo-id = 0
 domain = 0
 priority1 = 251
+slave-only = true
 virtual-system-clock = true
 virtual-system-clock-base = "monotonic_raw"
 usrvclock-export = true
 usrvclock-path = "$clock_path"
+
+[observability]
+observation-path = "$observation_path"
+observation-permissions = 438
 
 [[port]]
 interface = "$interface"

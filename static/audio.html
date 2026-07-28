@@ -270,7 +270,9 @@ async function refreshStatus(){
     lastStatusKey = nextKey;
   }
 
+  const selectedDevice = devices.find(d => d.id === deviceSel.value);
   if (st.last_error) setAlertBadge("bad", st.last_error);
+  else if (selectedUnavailable) setAlertBadge("warn", selectedDevice?.details || "Selected audio output is unavailable");
   else if (!ndiRunning) setAlertBadge("warn", "Start an NDI stream first");
   else if (audioRunning) setAlertBadge("good", "Audio running");
   else setAlertBadge("", "");

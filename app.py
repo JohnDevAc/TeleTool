@@ -1298,6 +1298,61 @@ def _dvbt2_muxes_with_services(muxes: List[Dict[str, Any]]) -> int:
     return count
 
 
+_DVB_BROADCAST_SERVICE_TYPES = {
+    0x01,  # SD TV
+    0x02,  # Radio
+    0x11,  # HD TV
+    0x16,
+    0x17,
+    0x18,
+    0x19,
+    0x1A,
+    0x1B,
+    0x1C,
+    0x1D,
+    0x1E,
+    0x1F,  # UHD TV
+    0x80,
+    0x91,
+    0x96,
+    0xA0,
+    0xA4,
+    0xA6,
+    0xA8,
+    0xD3,
+}
+
+
+def _is_broadcast_av_service(service: Dict[str, Any]) -> bool:
+    try:
+        service_type = int(str(service.get("dvb_servicetype") or "0"), 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(service.get("enabled", True)) and service_type in _DVB_BROADCAST_SERVICE_TYPES
+
+
+def _component_retry_targets(
+    discovered_services: List[Dict[str, Any]],
+    verified_services: List[Dict[str, Any]],
+) -> Dict[str, List[str]]:
+    verified_uuids = {
+        str(service.get("uuid") or "")
+        for service in verified_services
+        if service.get("uuid")
+    }
+    targets: Dict[str, List[str]] = {}
+    for service in discovered_services:
+        service_uuid = str(service.get("uuid") or "").strip()
+        mux_uuid = str(service.get("multiplex_uuid") or "").strip()
+        if not service_uuid or service_uuid in verified_uuids or not mux_uuid:
+            continue
+        if not _is_broadcast_av_service(service):
+            continue
+        name = str(service.get("svcname") or service.get("name") or service_uuid).strip()
+        targets.setdefault(mux_uuid, []).append(name)
+    return targets
+
+
 def _scan_setup_percent(summary: Dict[str, int], start: float = 20, end: float = 80) -> float:
     total = max(0, summary.get("muxes", 0))
     complete = max(0, min(total, summary.get("complete", 0)))
@@ -1471,6 +1526,44 @@ def _wait_for_scan(
     _log_mux_diagnostics(muxes, prefix="Mux at timeout")
     return muxes, False, note, measurements
 
+
+def _wait_for_component_retries(
+    network_uuid: str,
+    target_mux_uuids: List[str],
+    baseline_scan_last: Dict[str, Any],
+    measurements: Dict[str, Dict[str, Any]],
+    timeout_s: int,
+) -> Tuple[List[Dict[str, Any]], bool]:
+    targets = set(target_mux_uuids)
+    seen_active = set()
+    last_progress: Optional[Tuple[int, int]] = None
+    last_muxes: List[Dict[str, Any]] = []
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        muxes = tvh.list_muxes_for_network(network_uuid)
+        last_muxes = muxes
+        _capture_scan_rf_measurements(muxes, measurements)
+        complete = set()
+        for mux in muxes:
+            mux_uuid = str(mux.get("uuid") or "")
+            if mux_uuid not in targets:
+                continue
+            if _mux_is_active(mux):
+                seen_active.add(mux_uuid)
+                continue
+            scan_last_changed = mux.get("scan_last") != baseline_scan_last.get(mux_uuid)
+            if mux_uuid in seen_active or scan_last_changed:
+                complete.add(mux_uuid)
+        progress = (len(complete), len(targets))
+        if progress != last_progress:
+            _tv_setup_log(f"Service acquisition retry: {progress[0]}/{progress[1]} mux(es) complete.")
+            last_progress = progress
+        if targets and complete == targets:
+            return muxes, True
+        time.sleep(2)
+    return last_muxes or tvh.list_muxes_for_network(network_uuid), False
+
+
 def _mapper_counts(status: Dict[str, Any]) -> Tuple[int, int, int, int, int]:
     total = _coerce_int(status.get("total")) or 0
     ok = _coerce_int(status.get("ok")) or 0
@@ -1601,6 +1694,24 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
             raise RuntimeError("Resolved DVB-T network is missing a uuid")
         _tv_setup_log(f"Using DVB-T network: {network_name} ({network_uuid})")
 
+        scan_grace_s = _config_int("tvh_scan_grace_s", 20, min_value=10, max_value=60)
+        try:
+            grace_results = tvh.ensure_dvbt_scan_grace(scan_grace_s)
+            if not grace_results:
+                _tv_setup_log("No compatible DVB-T/T2 tuner grace setting was exposed by TV.")
+            for result in grace_results:
+                if result.get("changed"):
+                    _tv_setup_log(
+                        f"Increased scan grace for {result.get('name')} from "
+                        f"{result.get('previous')} to {result.get('current')} seconds."
+                    )
+                else:
+                    _tv_setup_log(
+                        f"Scan grace for {result.get('name')} is {result.get('current')} seconds."
+                    )
+        except Exception as grace_exc:
+            _tv_setup_log(f"Could not verify DVB-T/T2 tuner scan grace: {grace_exc}")
+
         if scanfile_key:
             _tv_setup_set(percent=18, step="Applying selected predefined muxes…")
             mux_result = tvh.replace_muxes_from_scanfile(network_uuid, scanfile_key)
@@ -1685,6 +1796,76 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
 
         if not scan_complete:
             _tv_setup_log("Continuing with partial setup because discovered services are available to map.")
+
+        verified_services = tvh.list_verified_services()
+        retry_targets = _component_retry_targets(scanned_services, verified_services)
+        if retry_targets:
+            mux_by_uuid = {str(mux.get("uuid") or ""): mux for mux in muxes}
+            ordered_targets = sorted(
+                retry_targets,
+                key=lambda mux_uuid: (
+                    0 if re.sub(
+                        r"[^A-Z0-9]",
+                        "",
+                        str(
+                            mux_by_uuid.get(mux_uuid, {}).get("delsys")
+                            or mux_by_uuid.get(mux_uuid, {}).get("delivery_system")
+                            or ""
+                        ).upper(),
+                    ) == "DVBT2" else 1,
+                    _coerce_int(
+                        mux_by_uuid.get(mux_uuid, {}).get("frequency")
+                        or mux_by_uuid.get(mux_uuid, {}).get("freq")
+                    ) or 0,
+                ),
+            )
+            retry_limit = _config_int("tvh_scan_component_retry_muxes", 8, min_value=1, max_value=32)
+            ordered_targets = ordered_targets[:retry_limit]
+            unverified_count = sum(len(retry_targets[uuid]) for uuid in ordered_targets)
+            _tv_setup_set(percent=85, step="Completing TV service information…")
+            _tv_setup_log(
+                f"{unverified_count} broadcast service(s) need more component data; "
+                f"retrying {len(ordered_targets)} affected mux(es) once."
+            )
+            for mux_uuid in ordered_targets:
+                label = _mux_label(mux_by_uuid.get(mux_uuid, {"uuid": mux_uuid}))
+                preview = ", ".join(retry_targets[mux_uuid][:5])
+                suffix = "…" if len(retry_targets[mux_uuid]) > 5 else ""
+                _tv_setup_log(f"Service acquisition retry: {label} ({preview}{suffix})")
+            baseline_scan_last = {
+                mux_uuid: mux_by_uuid.get(mux_uuid, {}).get("scan_last")
+                for mux_uuid in ordered_targets
+            }
+            tvh.scan_muxes(ordered_targets)
+            retry_timeout_s = max(60, min(600, len(ordered_targets) * (scan_grace_s + 15)))
+            muxes, retries_complete = _wait_for_component_retries(
+                network_uuid,
+                ordered_targets,
+                baseline_scan_last,
+                scan_measurements,
+                retry_timeout_s,
+            )
+            report_muxes = muxes
+            if not retries_complete:
+                retry_note = f"Service acquisition retry timed out after {retry_timeout_s} seconds."
+                _tv_setup_log(retry_note)
+                scan_complete = False
+                scan_note = f"{scan_note} {retry_note}".strip() if scan_note else retry_note
+            scanned_services = tvh.list_services(hidemode="none")
+            service_uuids = [s.get("uuid") for s in scanned_services if s.get("uuid")]
+            services_found = len(service_uuids)
+            verified_services = tvh.list_verified_services()
+            remaining_targets = _component_retry_targets(scanned_services, verified_services)
+            remaining_count = sum(len(names) for names in remaining_targets.values())
+            broadcast_count = sum(1 for service in scanned_services if _is_broadcast_av_service(service))
+            _tv_setup_log(
+                f"Service readiness after retry: {broadcast_count - remaining_count}/"
+                f"{broadcast_count} broadcast service(s) verified; "
+                f"{remaining_count} currently unavailable."
+            )
+            _tv_setup_set(services_found=services_found)
+        else:
+            _tv_setup_log("All discovered broadcast services are ready for mapping.")
 
         _tv_setup_set(percent=90, step="Mapping services to channels…")
         tvh.map_services(service_uuids)

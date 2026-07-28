@@ -3,6 +3,7 @@
 
 import ast
 import collections
+import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -93,6 +94,63 @@ assert dvbt2_muxes_with_services([
     {"delivery_system": "DVBT2", "num_svc": 0},
 ]) == 1
 
+is_broadcast_av_service = load_function(
+    ROOT / "app.py",
+    "_is_broadcast_av_service",
+    {
+        "Any": Any,
+        "Dict": Dict,
+        "_DVB_BROADCAST_SERVICE_TYPES": {
+            0x01, 0x02, 0x11, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B,
+            0x1C, 0x1D, 0x1E, 0x1F, 0x80, 0x91, 0x96, 0xA0, 0xA4,
+            0xA6, 0xA8, 0xD3,
+        },
+    },
+)
+component_retry_targets = load_function(
+    ROOT / "app.py",
+    "_component_retry_targets",
+    {
+        "Any": Any,
+        "Dict": Dict,
+        "List": List,
+        "_is_broadcast_av_service": is_broadcast_av_service,
+    },
+)
+discovered = [
+    {
+        "uuid": "verified-tv",
+        "multiplex_uuid": "mux-sd",
+        "svcname": "Ready TV",
+        "dvb_servicetype": 1,
+        "enabled": True,
+    },
+    {
+        "uuid": "unverified-hd",
+        "multiplex_uuid": "mux-hd",
+        "svcname": "BBC ONE HD",
+        "dvb_servicetype": 25,
+        "enabled": True,
+    },
+    {
+        "uuid": "data",
+        "multiplex_uuid": "mux-data",
+        "svcname": "Portal",
+        "dvb_servicetype": 12,
+        "enabled": True,
+    },
+    {
+        "uuid": "disabled",
+        "multiplex_uuid": "mux-hd",
+        "svcname": "Disabled HD",
+        "dvb_servicetype": 25,
+        "enabled": False,
+    },
+]
+assert component_retry_targets(discovered, [{"uuid": "verified-tv"}]) == {
+    "mux-hd": ["BBC ONE HD"],
+}
+
 preferred_scanfile = load_function(
     ROOT / "app.py",
     "_preferred_dvbt_scanfile",
@@ -131,6 +189,74 @@ merge_values = [
 ]
 assert merge_values == [True], "TV service mapping must merge duplicate channel names"
 
+scan_muxes = load_function(
+    ROOT / "tvh.py",
+    "scan_muxes",
+    {"List": List, "json": json},
+)
+
+
+class FakeTvh:
+    def __init__(self):
+        self.calls = []
+
+    def _post_jsonish(self, path, *, data=None):
+        self.calls.append((path, data))
+        return {}
+
+
+fake_tvh = FakeTvh()
+scan_muxes(fake_tvh, ["mux-a", "mux-a", "", "mux-b"])
+assert [json.loads(data["node"]) for _path, data in fake_tvh.calls] == [
+    {"uuid": "mux-a", "scan_state": 3},
+    {"uuid": "mux-b", "scan_state": 3},
+]
+
+ensure_scan_grace = load_function(
+    ROOT / "tvh.py",
+    "ensure_dvbt_scan_grace",
+    {"List": List, "Dict": Dict, "json": json},
+)
+
+
+class FakeGraceTvh(FakeTvh):
+    def list_linux_dvbt_frontends(self):
+        return [
+            {
+                "uuid": "short",
+                "text": "Short grace tuner",
+                "params": [{"id": "grace_period", "value": 5}],
+            },
+            {
+                "uuid": "custom",
+                "text": "Custom grace tuner",
+                "params": [{"id": "grace_period", "value": 30}],
+            },
+        ]
+
+
+fake_grace_tvh = FakeGraceTvh()
+grace_results = ensure_scan_grace(fake_grace_tvh, 20)
+assert grace_results == [
+    {
+        "uuid": "short",
+        "name": "Short grace tuner",
+        "previous": 5,
+        "current": 20,
+        "changed": True,
+    },
+    {
+        "uuid": "custom",
+        "name": "Custom grace tuner",
+        "previous": 30,
+        "current": 30,
+        "changed": False,
+    },
+]
+assert [json.loads(data["node"]) for _path, data in fake_grace_tvh.calls] == [
+    {"uuid": "short", "grace_period": 20},
+]
+
 index_html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 common_js = (ROOT / "static" / "common.js").read_text(encoding="utf-8")
 assert "Generic Auto Legacy (DVB-T only)" in index_html
@@ -157,5 +283,11 @@ assert 'services_found=summary["services"]' in app_source
 assert "No DVB-T2 multiplex locked" in app_source
 assert '"cnr_db": cnr_db' in app_source
 assert '"cnr_label": cnr_label' in app_source
+assert "ensure_dvbt_scan_grace(scan_grace_s)" in app_source
+assert "_wait_for_component_retries(" in app_source
+assert "Service readiness after retry:" in app_source
+
+configure_source = (ROOT / "packaging" / "debian" / "configure-tvheadend").read_text(encoding="utf-8")
+assert 'frontend["grace_period"] = 20' in configure_source
 
 print("UK DVB-T/T2 tuning profile checks passed.")

@@ -162,6 +162,12 @@ if adapter_dir.exists():
             frontend["ota_epg"] = True
             frontend["initscan"] = True
             frontend["idlescan"] = True
+            try:
+                scan_grace = int(frontend.get("grace_period") or 0)
+            except (TypeError, ValueError):
+                scan_grace = 0
+            if scan_grace < 20:
+                frontend["grace_period"] = 20
             changed = True
         if changed:
             write_json(path, data)

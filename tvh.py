@@ -637,6 +637,15 @@ class TvheadendClient:
         data = r.json()
         return data.get("entries", [])
 
+    def list_verified_services(self) -> List[Dict]:
+        """Return enabled services whose stream components were verified."""
+        r = self._get(
+            f"{self.base_url}/api/mpegts/service/grid",
+            params={"start": 0, "limit": 100000},
+        )
+        data = r.json()
+        return data.get("entries", [])
+
     def list_muxes_for_network(self, network_uuid: str) -> List[Dict]:
         flt = json.dumps([{"field": "network_uuid", "type": "string", "value": network_uuid}])
         r = self._get(
@@ -661,6 +670,69 @@ class TvheadendClient:
 
     def scan_network(self, network_uuid: str) -> None:
         self._post_jsonish("/api/mpegts/network/scan", data={"uuid": network_uuid})
+
+    def scan_muxes(self, mux_uuids: List[str]) -> None:
+        """Queue selected multiplexes for a user-requested scan."""
+        for mux_uuid in dict.fromkeys(str(uuid or "").strip() for uuid in mux_uuids):
+            if not mux_uuid:
+                continue
+            self._post_jsonish(
+                "/api/idnode/save",
+                data={"node": json.dumps({"uuid": mux_uuid, "scan_state": 3})},
+            )
+
+    def list_linux_dvbt_frontends(self) -> List[Dict]:
+        adapters = self._get(
+            f"{self.base_url}/api/hardware/tree",
+            params={"uuid": "root", "root": "linuxdvb"},
+        ).json()
+        frontends: List[Dict] = []
+        for adapter in adapters if isinstance(adapters, list) else []:
+            adapter_uuid = str(adapter.get("id") or adapter.get("uuid") or "").strip()
+            if not adapter_uuid:
+                continue
+            details = self._get(
+                f"{self.base_url}/api/hardware/tree",
+                params={"uuid": adapter_uuid},
+            ).json()
+            for frontend in details if isinstance(details, list) else []:
+                if str(frontend.get("class") or "") == "linuxdvb_frontend_dvbt":
+                    frontends.append(frontend)
+        return frontends
+
+    def ensure_dvbt_scan_grace(self, minimum_seconds: int = 20) -> List[Dict]:
+        """Raise short DVB-T/T2 scan grace periods without lowering user values."""
+        minimum = max(5, min(60, int(minimum_seconds)))
+        results: List[Dict] = []
+        for frontend in self.list_linux_dvbt_frontends():
+            frontend_uuid = str(frontend.get("uuid") or frontend.get("id") or "").strip()
+            if not frontend_uuid:
+                continue
+            params = frontend.get("params") if isinstance(frontend.get("params"), list) else []
+            grace_param = next(
+                (param for param in params if str(param.get("id") or "") == "grace_period"),
+                None,
+            )
+            if grace_param is None:
+                continue
+            try:
+                previous = int(grace_param.get("value") or 0)
+            except (TypeError, ValueError):
+                previous = 0
+            changed = previous < minimum
+            if changed:
+                self._post_jsonish(
+                    "/api/idnode/save",
+                    data={"node": json.dumps({"uuid": frontend_uuid, "grace_period": minimum})},
+                )
+            results.append({
+                "uuid": frontend_uuid,
+                "name": str(frontend.get("text") or frontend_uuid),
+                "previous": previous,
+                "current": minimum if changed else previous,
+                "changed": changed,
+            })
+        return results
 
     def mapper_status(self) -> Dict:
         r = self._get(f"{self.base_url}/api/service/mapper/status")

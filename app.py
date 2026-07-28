@@ -1469,11 +1469,279 @@ def _create_tv_scan_report(
     _tv_setup_log("TV scan report is ready to download.")
 
 
+def _mux_signature(value: Dict[str, Any]) -> Tuple[str, int]:
+    delivery = re.sub(
+        r"[^A-Z0-9]",
+        "",
+        str(value.get("delsys") or value.get("delivery_system") or "").upper(),
+    )
+    frequency = _coerce_int(value.get("frequency") or value.get("freq")) or 0
+    return delivery, frequency
+
+
+def _mux_uuids_for_configs(
+    muxes: List[Dict[str, Any]],
+    configs: List[Dict[str, Any]],
+) -> List[str]:
+    signatures = {_mux_signature(config) for config in configs}
+    return [
+        str(mux.get("uuid") or "")
+        for mux in muxes
+        if mux.get("uuid") and _mux_signature(mux) in signatures
+    ]
+
+
+def _active_mux_uuids(muxes: List[Dict[str, Any]]) -> List[str]:
+    return [
+        str(mux.get("uuid") or "")
+        for mux in muxes
+        if mux.get("uuid") and _mux_is_active(mux)
+    ]
+
+
+def _merge_scan_measurements(
+    target: Dict[str, Dict[str, Any]],
+    source: Dict[str, Dict[str, Any]],
+) -> None:
+    for key, values in source.items():
+        bucket = target.setdefault(
+            key,
+            {"samples": 0, "dbm_values": [], "cnr_values": []},
+        )
+        bucket["samples"] = int(bucket.get("samples") or 0) + int(values.get("samples") or 0)
+        bucket["dbm_values"].extend(values.get("dbm_values") or [])
+        bucket["cnr_values"].extend(values.get("cnr_values") or [])
+
+
+def _append_scan_note(current: Optional[str], note: Optional[str]) -> Optional[str]:
+    text = str(note or "").strip()
+    if not text:
+        return current
+    return f"{current} {text}".strip() if current else text
+
+
+def _cancel_pending_scan_queue(network_uuid: str, reason: str) -> List[Dict[str, Any]]:
+    muxes = tvh.list_muxes_for_network(network_uuid)
+    active_uuids = _active_mux_uuids(muxes)
+    if active_uuids:
+        cancelled = tvh.cancel_scan_muxes(active_uuids)
+        _tv_setup_log(f"Cancelled {cancelled} queued mux scan(s) {reason}.")
+        time.sleep(1)
+        muxes = tvh.list_muxes_for_network(network_uuid)
+    return muxes
+
+
+def _run_staged_uk_auto_scan(
+    network_uuid: str,
+    scan_grace_s: int,
+) -> Tuple[
+    List[Dict[str, Any]],
+    bool,
+    Optional[str],
+    Dict[str, Dict[str, Any]],
+    int,
+]:
+    fast_grace_s = _config_int("tvh_auto_fast_scan_grace_s", 5, min_value=5, max_value=10)
+    stage_stall_s = _config_int(
+        "tvh_auto_stage_stall_timeout_s",
+        60,
+        min_value=30,
+        max_value=300,
+    )
+    measurements: Dict[str, Dict[str, Any]] = {}
+    scan_note: Optional[str] = None
+    original_grace: Dict[str, int] = {}
+    grace_restored = False
+
+    try:
+        grace_results = tvh.set_dvbt_scan_grace(fast_grace_s)
+        original_grace = {
+            str(result.get("uuid") or ""): int(result.get("previous") or scan_grace_s)
+            for result in grace_results
+            if result.get("uuid")
+        }
+        if grace_results:
+            _tv_setup_log(
+                f"Using {fast_grace_s}-second tuner grace for the staged UK frequency sweep."
+            )
+        else:
+            _tv_setup_log(
+                "No compatible tuner grace control was exposed; continuing with the current setting."
+            )
+
+        nominal_configs = tvh.uk_auto_nominal_muxes()
+        nominal_result = tvh.create_muxes(
+            network_uuid,
+            nominal_configs,
+            delete_existing=True,
+        )
+        _tv_setup_log(
+            f"UK Auto nominal stage: deleted {nominal_result.get('deleted', 0)} existing mux(es), "
+            f"created {nominal_result.get('created', 0)} nominal DVB-T/T2 candidate(s)."
+        )
+        for error in nominal_result.get("errors", []):
+            _tv_setup_log(f"Nominal mux create warning: {error}")
+
+        muxes = tvh.list_muxes_for_network(network_uuid)
+        nominal_targets = _mux_uuids_for_configs(muxes, nominal_configs)
+        if not nominal_targets:
+            raise RuntimeError("UK Auto nominal stage did not create any scannable muxes")
+        tvh.scan_muxes(nominal_targets)
+        nominal_timeout_default = max(
+            180,
+            min(900, len(nominal_targets) * (fast_grace_s + 2) + 60),
+        )
+        nominal_timeout_s = _config_int(
+            "tvh_auto_nominal_timeout_s",
+            nominal_timeout_default,
+            min_value=60,
+            max_value=1200,
+        )
+        muxes, nominal_complete, nominal_note, stage_measurements = _wait_for_scan(
+            network_uuid,
+            timeout_s=nominal_timeout_s,
+            stall_timeout_s=stage_stall_s,
+            target_mux_uuids=nominal_targets,
+            step="UK Auto: scanning nominal frequencies…",
+            percent_start=20,
+            percent_end=50,
+        )
+        _merge_scan_measurements(measurements, stage_measurements)
+        if not nominal_complete:
+            scan_note = _append_scan_note(scan_note, f"Nominal stage: {nominal_note}")
+        muxes = _cancel_pending_scan_queue(network_uuid, "after the nominal stage")
+
+        nominal_target_set = set(nominal_targets)
+        successful_centres = sorted({
+            _coerce_int(mux.get("frequency") or mux.get("freq")) or 0
+            for mux in muxes
+            if str(mux.get("uuid") or "") in nominal_target_set
+            and (_coerce_int(mux.get("num_svc")) or 0) > 0
+        })
+        offset_configs = tvh.uk_auto_offset_muxes(successful_centres)
+        _tv_setup_log(
+            f"UK Auto nominal stage found services on {len(successful_centres)} centre "
+            f"frequency/frequencies; creating {len(offset_configs)} DVB-T2 offset candidate(s)."
+        )
+
+        offset_complete = True
+        if offset_configs:
+            offset_result = tvh.create_muxes(network_uuid, offset_configs)
+            if offset_result.get("skipped"):
+                _tv_setup_log(
+                    f"Reused {offset_result.get('skipped')} offset mux candidate(s) "
+                    "already discovered from broadcast network data."
+                )
+            for error in offset_result.get("errors", []):
+                _tv_setup_log(f"Offset mux create warning: {error}")
+            muxes = tvh.list_muxes_for_network(network_uuid)
+            offset_targets = _mux_uuids_for_configs(muxes, offset_configs)
+            if not offset_targets:
+                raise RuntimeError("UK Auto offset stage did not create any scannable muxes")
+            tvh.scan_muxes(offset_targets)
+            offset_timeout_default = max(
+                120,
+                min(900, len(offset_targets) * (fast_grace_s + 2) + 60),
+            )
+            offset_timeout_s = _config_int(
+                "tvh_auto_offset_timeout_s",
+                offset_timeout_default,
+                min_value=60,
+                max_value=1200,
+            )
+            muxes, offset_complete, offset_note, stage_measurements = _wait_for_scan(
+                network_uuid,
+                timeout_s=offset_timeout_s,
+                stall_timeout_s=stage_stall_s,
+                target_mux_uuids=offset_targets,
+                step="UK Auto: checking DVB-T2 offsets…",
+                percent_start=50,
+                percent_end=72,
+            )
+            _merge_scan_measurements(measurements, stage_measurements)
+            if not offset_complete:
+                scan_note = _append_scan_note(scan_note, f"Offset stage: {offset_note}")
+            muxes = _cancel_pending_scan_queue(network_uuid, "after the offset stage")
+
+        if original_grace:
+            tvh.set_dvbt_scan_grace_values(original_grace)
+            restored_grace = max(original_grace.values())
+            _tv_setup_log(
+                f"Restored tuner scan grace before completing detected muxes "
+                f"(up to {restored_grace} seconds)."
+            )
+        else:
+            tvh.ensure_dvbt_scan_grace(scan_grace_s)
+        grace_restored = True
+
+        muxes = tvh.list_muxes_for_network(network_uuid)
+        detected_targets = [
+            str(mux.get("uuid") or "")
+            for mux in muxes
+            if mux.get("uuid") and (_coerce_int(mux.get("num_svc")) or 0) > 0
+        ]
+        refinement_complete = True
+        if detected_targets:
+            _tv_setup_set(percent=74, step="UK Auto: completing detected multiplexes…")
+            _tv_setup_log(
+                f"Giving {len(detected_targets)} detected mux(es) a full metadata acquisition pass."
+            )
+            baseline_scan_last = {
+                str(mux.get("uuid") or ""): mux.get("scan_last")
+                for mux in muxes
+                if str(mux.get("uuid") or "") in set(detected_targets)
+            }
+            tvh.scan_muxes(detected_targets)
+            refinement_grace_s = max(
+                [scan_grace_s, *original_grace.values()]
+                if original_grace
+                else [scan_grace_s]
+            )
+            refinement_timeout_s = max(
+                60,
+                min(600, len(detected_targets) * (refinement_grace_s + 15)),
+            )
+            muxes, refinement_complete = _wait_for_component_retries(
+                network_uuid,
+                detected_targets,
+                baseline_scan_last,
+                measurements,
+                refinement_timeout_s,
+                progress_label="Detected mux refinement",
+            )
+            if not refinement_complete:
+                note = f"Detected mux refinement timed out after {refinement_timeout_s} seconds."
+                _tv_setup_log(note)
+                scan_note = _append_scan_note(scan_note, note)
+                muxes = _cancel_pending_scan_queue(network_uuid, "after detected mux refinement")
+
+        muxes = tvh.list_muxes_for_network(network_uuid)
+        scan_complete = nominal_complete and offset_complete and refinement_complete
+        return muxes, scan_complete, scan_note, measurements, len(muxes)
+    finally:
+        if original_grace and not grace_restored:
+            try:
+                tvh.set_dvbt_scan_grace_values(original_grace)
+                _tv_setup_log("Restored tuner scan grace after interrupted UK Auto setup.")
+            except Exception as restore_exc:
+                _tv_setup_log(f"Could not restore tuner scan grace: {restore_exc}")
+
+
 def _wait_for_scan(
     network_uuid: str,
     timeout_s: int = 600,
     stall_timeout_s: int = 120,
+    *,
+    target_mux_uuids: Optional[List[str]] = None,
+    step: str = "Scanning muxes and discovering services…",
+    percent_start: float = 20,
+    percent_end: float = 80,
 ) -> Tuple[List[Dict[str, Any]], bool, Optional[str], Dict[str, Dict[str, Any]]]:
+    targets = {
+        str(mux_uuid or "").strip()
+        for mux_uuid in (target_mux_uuids or [])
+        if str(mux_uuid or "").strip()
+    }
     deadline = time.time() + timeout_s
     stable = 0
     last_progress_key = None
@@ -1485,29 +1753,34 @@ def _wait_for_scan(
         now = time.time()
         muxes = tvh.list_muxes_for_network(network_uuid)
         last_muxes = muxes
-        summary = _scan_mux_summary(muxes)
+        observed_muxes = [
+            mux
+            for mux in muxes
+            if not targets or str(mux.get("uuid") or "") in targets
+        ]
+        summary = _scan_mux_summary(observed_muxes)
+        network_summary = _scan_mux_summary(muxes)
         _capture_scan_rf_measurements(muxes, measurements)
-        scan_step = "Scanning muxes and discovering services…"
         _tv_setup_set(
-            percent=_scan_setup_percent(summary),
-            step=scan_step,
+            percent=_scan_setup_percent(summary, percent_start, percent_end),
+            step=step,
             muxes_scanned=summary["complete"],
             muxes_total=summary["muxes"],
-            services_found=summary["services"],
+            services_found=network_summary["services"],
         )
-        progress_key = _scan_progress_key(muxes)
+        progress_key = _scan_progress_key(observed_muxes)
         if progress_key != last_progress_key:
             _tv_setup_log(
                 f"Scan progress: muxes={summary['muxes']} active={summary['active']} "
-                f"complete={summary['complete']} services={summary['services']}"
+                f"complete={summary['complete']} services={network_summary['services']}"
             )
             last_progress_key = progress_key
             last_progress_at = now
             diag_every += 1
-            if diag_every >= 3 or (muxes and summary["active"] == 0):
-                _log_mux_diagnostics(muxes, prefix="Mux status")
+            if diag_every >= 3 or (observed_muxes and summary["active"] == 0):
+                _log_mux_diagnostics(observed_muxes, prefix="Mux status")
                 diag_every = 0
-        if muxes and summary["active"] == 0:
+        if observed_muxes and summary["active"] == 0:
             stable += 1
             if stable >= 3:
                 return muxes, True, None, measurements
@@ -1515,24 +1788,30 @@ def _wait_for_scan(
             stable = 0
 
         idle_s = now - last_progress_at
-        if muxes and summary["active"] > 0 and idle_s >= stall_timeout_s:
+        if observed_muxes and summary["active"] > 0 and idle_s >= stall_timeout_s:
             note = (
                 f"Scan stalled after {int(idle_s)} seconds without mux progress "
-                f"({summary['active']} active mux(es), {summary['services']} service(s) found)."
+                f"({summary['active']} active mux(es), {network_summary['services']} service(s) found)."
             )
             _tv_setup_log(note)
-            _log_mux_diagnostics(muxes, prefix="Mux at stall")
+            _log_mux_diagnostics(observed_muxes, prefix="Mux at stall")
             return muxes, False, note, measurements
 
         time.sleep(3)
     muxes = last_muxes or tvh.list_muxes_for_network(network_uuid)
-    summary = _scan_mux_summary(muxes)
+    observed_muxes = [
+        mux
+        for mux in muxes
+        if not targets or str(mux.get("uuid") or "") in targets
+    ]
+    summary = _scan_mux_summary(observed_muxes)
+    network_summary = _scan_mux_summary(muxes)
     note = (
         f"Scan timed out after {timeout_s} seconds "
-        f"({summary['active']} active mux(es), {summary['services']} service(s) found)."
+        f"({summary['active']} active mux(es), {network_summary['services']} service(s) found)."
     )
     _tv_setup_log(note)
-    _log_mux_diagnostics(muxes, prefix="Mux at timeout")
+    _log_mux_diagnostics(observed_muxes, prefix="Mux at timeout")
     return muxes, False, note, measurements
 
 
@@ -1542,6 +1821,8 @@ def _wait_for_component_retries(
     baseline_scan_last: Dict[str, Any],
     measurements: Dict[str, Dict[str, Any]],
     timeout_s: int,
+    *,
+    progress_label: str = "Service acquisition retry",
 ) -> Tuple[List[Dict[str, Any]], bool]:
     targets = set(target_mux_uuids)
     seen_active = set()
@@ -1565,7 +1846,7 @@ def _wait_for_component_retries(
                 complete.add(mux_uuid)
         progress = (len(complete), len(targets))
         if progress != last_progress:
-            _tv_setup_log(f"Service acquisition retry: {progress[0]}/{progress[1]} mux(es) complete.")
+            _tv_setup_log(f"{progress_label}: {progress[0]}/{progress[1]} mux(es) complete.")
             last_progress = progress
         if targets and complete == targets:
             return muxes, True
@@ -1703,6 +1984,7 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
             raise RuntimeError("Resolved DVB-T network is missing a uuid")
         _tv_setup_log(f"Using DVB-T network: {network_name} ({network_uuid})")
 
+        is_uk_auto = scanfile_key == TELETOOL_UK_AUTO_SCANFILE
         scan_grace_s = _config_int("tvh_scan_grace_s", 20, min_value=10, max_value=60)
         try:
             grace_results = tvh.ensure_dvbt_scan_grace(scan_grace_s)
@@ -1721,7 +2003,22 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
         except Exception as grace_exc:
             _tv_setup_log(f"Could not verify DVB-T/T2 tuner scan grace: {grace_exc}")
 
-        if scanfile_key:
+        if is_uk_auto:
+            _tv_setup_set(percent=18, step="Preparing staged UK Auto scan...")
+            _tv_setup_log(
+                "UK Auto will sweep nominal frequencies first, check offsets only where "
+                "needed, then complete metadata acquisition on detected muxes."
+            )
+            (
+                muxes,
+                scan_complete,
+                scan_note,
+                scan_measurements,
+                expected_muxes,
+            ) = _run_staged_uk_auto_scan(network_uuid, scan_grace_s)
+            report_muxes = muxes
+            _update_config({"tvh_dvbt_scanfile": scanfile_key})
+        elif scanfile_key:
             _tv_setup_set(percent=18, step="Applying selected predefined muxes…")
             mux_result = tvh.replace_muxes_from_scanfile(network_uuid, scanfile_key)
             expected_muxes = _coerce_int(mux_result.get("created")) or 0
@@ -1740,25 +2037,35 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
         else:
             _tv_setup_log("No predefined mux region selected; scanning the existing mux list.")
 
-        _tv_setup_set(percent=19, step="Starting DVB-T scan…")
-        tvh.scan_network(network_uuid)
-        _tv_setup_log("Requested DVB-T network scan.")
+        if not is_uk_auto:
+            _tv_setup_set(percent=19, step="Starting DVB-T scan…")
+            tvh.scan_network(network_uuid)
+            _tv_setup_log("Requested DVB-T network scan.")
 
-        _tv_setup_set(percent=20, step="Scanning muxes and discovering services…")
-        scan_timeout_default = max(600, min(3600, (expected_muxes * 7) + 120))
-        scan_timeout_s = _config_int(
-            "tvh_scan_timeout_s",
-            scan_timeout_default,
-            min_value=60,
-            max_value=3600,
-        )
-        scan_stall_s = _config_int("tvh_scan_stall_timeout_s", 120, min_value=30, max_value=900)
-        muxes, scan_complete, scan_note, scan_measurements = _wait_for_scan(
-            network_uuid,
-            timeout_s=scan_timeout_s,
-            stall_timeout_s=scan_stall_s,
-        )
-        report_muxes = muxes
+        if not is_uk_auto:
+            _tv_setup_set(percent=20, step="Scanning muxes and discovering services…")
+            scan_timeout_default = max(600, min(3600, (expected_muxes * 7) + 120))
+            scan_timeout_s = _config_int(
+                "tvh_scan_timeout_s",
+                scan_timeout_default,
+                min_value=60,
+                max_value=3600,
+            )
+            scan_stall_s = _config_int(
+                "tvh_scan_stall_timeout_s",
+                120,
+                min_value=30,
+                max_value=900,
+            )
+            muxes, scan_complete, scan_note, scan_measurements = _wait_for_scan(
+                network_uuid,
+                timeout_s=scan_timeout_s,
+                stall_timeout_s=scan_stall_s,
+            )
+            report_muxes = muxes
+            if not scan_complete:
+                muxes = _cancel_pending_scan_queue(network_uuid, "after the scan stopped")
+                report_muxes = muxes
         scan_summary = _scan_mux_summary(muxes)
         _tv_setup_set(
             muxes_scanned=scan_summary["complete"],
@@ -1860,6 +2167,11 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
                 _tv_setup_log(retry_note)
                 scan_complete = False
                 scan_note = f"{scan_note} {retry_note}".strip() if scan_note else retry_note
+                muxes = _cancel_pending_scan_queue(
+                    network_uuid,
+                    "after the service acquisition retry",
+                )
+                report_muxes = muxes
             scanned_services = tvh.list_services(hidemode="none")
             service_uuids = [s.get("uuid") for s in scanned_services if s.get("uuid")]
             services_found = len(service_uuids)
@@ -1942,11 +2254,18 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
     except Exception as e:
         _tv_setup_log(f"ERROR: {e}")
         finished_at = int(time.time())
-        if network_uuid and not report_muxes:
+        if network_uuid:
             try:
-                report_muxes = tvh.list_muxes_for_network(network_uuid)
+                report_muxes = _cancel_pending_scan_queue(
+                    network_uuid,
+                    "after TV Setup failed",
+                )
             except Exception:
-                report_muxes = []
+                if not report_muxes:
+                    try:
+                        report_muxes = tvh.list_muxes_for_network(network_uuid)
+                    except Exception:
+                        report_muxes = []
         try:
             _create_tv_scan_report(
                 result="Failed",

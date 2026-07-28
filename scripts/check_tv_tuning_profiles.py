@@ -46,6 +46,47 @@ assert {
     if mux["delsys"] == "DVB-T2" and 545_000_000 <= mux["frequency"] <= 547_000_000
 } == {545_833_000, 546_000_000, 546_167_000}
 
+centre_frequencies = load_function(
+    ROOT / "tvh.py",
+    "uk_auto_centre_frequencies",
+    {"List": List},
+)
+nominal_muxes = load_function(
+    ROOT / "tvh.py",
+    "uk_auto_nominal_muxes",
+    {"Any": Any, "Dict": Dict, "List": List},
+)
+offset_muxes = load_function(
+    ROOT / "tvh.py",
+    "uk_auto_offset_muxes",
+    {"Any": Any, "Dict": Dict, "List": List},
+)
+
+
+class FakeAutoProfile:
+    def uk_auto_centre_frequencies(self):
+        return centre_frequencies()
+
+    def _load_uk_auto_dvbt2_muxes(self):
+        return muxes
+
+
+fake_auto_profile = FakeAutoProfile()
+nominal = nominal_muxes(fake_auto_profile)
+assert len(nominal) == 56
+assert collections.Counter(mux["delsys"] for mux in nominal) == {
+    "DVB-T": 28,
+    "DVB-T2": 28,
+}
+offsets = offset_muxes(fake_auto_profile, [546_000_000])
+assert len(offsets) == 54
+assert all(mux["delsys"] == "DVB-T2" for mux in offsets)
+assert not {
+    mux["frequency"]
+    for mux in offsets
+    if 545_000_000 <= mux["frequency"] <= 547_000_000
+}
+
 coerce_int = load_function(
     ROOT / "app.py",
     "_coerce_int",
@@ -223,6 +264,60 @@ assert [json.loads(data["node"]) for _path, data in fake_tvh.calls] == [
     {"uuid": "mux-b", "scan_state": 3},
 ]
 
+cancel_scan_muxes = load_function(
+    ROOT / "tvh.py",
+    "cancel_scan_muxes",
+    {"List": List, "json": json},
+)
+fake_tvh.calls.clear()
+assert cancel_scan_muxes(fake_tvh, ["mux-a", "mux-a", "", "mux-b"]) == 2
+assert [json.loads(data["node"]) for _path, data in fake_tvh.calls] == [
+    {"uuid": "mux-a", "scan_state": 0},
+    {"uuid": "mux-b", "scan_state": 0},
+]
+
+create_muxes = load_function(
+    ROOT / "tvh.py",
+    "create_muxes",
+    {"Any": Any, "Dict": Dict, "List": List},
+)
+
+
+class FakeMuxCreator:
+    def __init__(self):
+        self.created = []
+
+    def list_muxes_for_network(self, _network_uuid):
+        return [{"uuid": "existing", "delsys": "DVB-T2", "frequency": 546_167_000}]
+
+    def delete_muxes(self, _uuids):
+        raise AssertionError("Incremental mux creation must not delete existing muxes")
+
+    def create_mux(self, _network_uuid, conf):
+        self.created.append(conf)
+        return {}
+
+
+fake_mux_creator = FakeMuxCreator()
+create_result = create_muxes(
+    fake_mux_creator,
+    "network",
+    [
+        {"delsys": "DVB-T2", "frequency": 546_167_000},
+        {"delsys": "DVB-T2", "frequency": 545_833_000},
+        {"delsys": "DVB-T2", "frequency": 545_833_000},
+    ],
+)
+assert create_result == {
+    "deleted": 0,
+    "created": 1,
+    "skipped": 2,
+    "errors": [],
+}
+assert fake_mux_creator.created == [
+    {"delsys": "DVB-T2", "frequency": 545_833_000},
+]
+
 ensure_scan_grace = load_function(
     ROOT / "tvh.py",
     "ensure_dvbt_scan_grace",
@@ -268,6 +363,30 @@ assert [json.loads(data["node"]) for _path, data in fake_grace_tvh.calls] == [
     {"uuid": "short", "grace_period": 20},
 ]
 
+set_scan_grace = load_function(
+    ROOT / "tvh.py",
+    "set_dvbt_scan_grace",
+    {"List": List, "Dict": Dict, "json": json},
+)
+restore_scan_grace = load_function(
+    ROOT / "tvh.py",
+    "set_dvbt_scan_grace_values",
+    {"Dict": Dict, "json": json},
+)
+fake_grace_tvh.calls.clear()
+exact_grace_results = set_scan_grace(fake_grace_tvh, 5)
+assert [result["previous"] for result in exact_grace_results] == [5, 30]
+assert [result["current"] for result in exact_grace_results] == [5, 5]
+assert [json.loads(data["node"]) for _path, data in fake_grace_tvh.calls] == [
+    {"uuid": "custom", "grace_period": 5},
+]
+fake_grace_tvh.calls.clear()
+assert restore_scan_grace(fake_grace_tvh, {"short": 5, "custom": 30}) == 2
+assert [json.loads(data["node"]) for _path, data in fake_grace_tvh.calls] == [
+    {"uuid": "short", "grace_period": 5},
+    {"uuid": "custom", "grace_period": 30},
+]
+
 index_html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 common_js = (ROOT / "static" / "common.js").read_text(encoding="utf-8")
 assert "Generic Auto Legacy (DVB-T only)" in index_html
@@ -290,13 +409,20 @@ assert "| C/N ${rfCnrLabel(rf)}" in common_js
 app_source = (ROOT / "app.py").read_text(encoding="utf-8")
 assert 'muxes_scanned=summary["complete"]' in app_source
 assert 'muxes_total=summary["muxes"]' in app_source
-assert 'services_found=summary["services"]' in app_source
+assert 'services_found=network_summary["services"]' in app_source
+assert 'services_found=scan_summary["services"]' in app_source
 assert "No DVB-T2 multiplex locked" in app_source
 assert '"cnr_db": cnr_db' in app_source
 assert '"cnr_label": cnr_label' in app_source
 assert "ensure_dvbt_scan_grace(scan_grace_s)" in app_source
 assert "_wait_for_component_retries(" in app_source
 assert "Service readiness after retry:" in app_source
+assert "_run_staged_uk_auto_scan(network_uuid, scan_grace_s)" in app_source
+assert "tvh.uk_auto_nominal_muxes()" in app_source
+assert "tvh.uk_auto_offset_muxes(successful_centres)" in app_source
+assert "tvh.cancel_scan_muxes(active_uuids)" in app_source
+assert '"after the service acquisition retry"' in app_source
+assert '"after TV Setup failed"' in app_source
 
 configure_source = (ROOT / "packaging" / "debian" / "configure-tvheadend").read_text(encoding="utf-8")
 assert 'frontend["grace_period"] = 20' in configure_source

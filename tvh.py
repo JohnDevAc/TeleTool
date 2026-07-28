@@ -599,6 +599,35 @@ class TvheadendClient:
                 })
         return muxes
 
+    @staticmethod
+    def uk_auto_centre_frequencies() -> List[int]:
+        return [474_000_000 + ((channel - 21) * 8_000_000) for channel in range(21, 49)]
+
+    def uk_auto_nominal_muxes(self) -> List[Dict[str, Any]]:
+        """Return the nominal DVB-T and DVB-T2 candidates for the UK UHF band."""
+        centres = set(self.uk_auto_centre_frequencies())
+        return [
+            mux
+            for mux in self._load_uk_auto_dvbt2_muxes()
+            if int(mux.get("frequency") or 0) in centres
+        ]
+
+    def uk_auto_offset_muxes(self, successful_centres: List[int]) -> List[Dict[str, Any]]:
+        """Return DVB-T2 offset candidates where nominal tuning found no services."""
+        successful = {int(frequency) for frequency in successful_centres}
+        centres = self.uk_auto_centre_frequencies()
+        wanted = {
+            centre + offset
+            for centre in centres
+            if centre not in successful
+            for offset in (-167_000, 167_000)
+        }
+        return [
+            mux
+            for mux in self._load_uk_auto_dvbt2_muxes()
+            if int(mux.get("frequency") or 0) in wanted
+        ]
+
     def delete_muxes(self, uuids: List[str]) -> None:
         if not uuids:
             return
@@ -608,21 +637,54 @@ class TvheadendClient:
     def create_mux(self, network_uuid: str, conf: Dict[str, Any]) -> Dict:
         return self._post_jsonish("/api/mpegts/network/mux_create", data={"uuid": network_uuid, "conf": json.dumps(conf)})
 
-    def replace_muxes_from_scanfile(self, network_uuid: str, scanfile_key: str) -> Dict[str, Any]:
+    def create_muxes(
+        self,
+        network_uuid: str,
+        muxes: List[Dict[str, Any]],
+        *,
+        delete_existing: bool = False,
+    ) -> Dict[str, Any]:
         existing = self.list_muxes_for_network(network_uuid)
-        self.delete_muxes([m.get("uuid") for m in existing if m.get("uuid")])
-        muxes = self.load_scanfile_muxes(scanfile_key)
+        if delete_existing:
+            self.delete_muxes([mux.get("uuid") for mux in existing if mux.get("uuid")])
+        existing_signatures = set() if delete_existing else {
+            (
+                str(mux.get("delsys") or mux.get("delivery_system") or "").upper(),
+                int(mux.get("frequency") or mux.get("freq") or 0),
+            )
+            for mux in existing
+        }
         created = 0
+        skipped = 0
         errors: List[str] = []
         for conf in muxes:
+            signature = (
+                str(conf.get("delsys") or conf.get("delivery_system") or "").upper(),
+                int(conf.get("frequency") or conf.get("freq") or 0),
+            )
+            if signature in existing_signatures:
+                skipped += 1
+                continue
             try:
                 self.create_mux(network_uuid, conf)
                 created += 1
-            except Exception as e:
-                errors.append(f"{conf.get('frequency')}: {e}")
+                existing_signatures.add(signature)
+            except Exception as exc:
+                errors.append(f"{conf.get('frequency')}: {exc}")
         if errors and created == 0:
-            raise RuntimeError("Failed to create muxes from selected scanfile: " + "; ".join(errors[:5]))
-        return {"deleted": len(existing), "created": created, "errors": errors[:10], "scanfile": scanfile_key}
+            raise RuntimeError("Failed to create muxes: " + "; ".join(errors[:5]))
+        return {
+            "deleted": len(existing) if delete_existing else 0,
+            "created": created,
+            "skipped": skipped,
+            "errors": errors[:10],
+        }
+
+    def replace_muxes_from_scanfile(self, network_uuid: str, scanfile_key: str) -> Dict[str, Any]:
+        muxes = self.load_scanfile_muxes(scanfile_key)
+        result = self.create_muxes(network_uuid, muxes, delete_existing=True)
+        result["scanfile"] = scanfile_key
+        return result
 
     def list_networks(self) -> List[Dict]:
         r = self._get(f"{self.base_url}/api/mpegts/network/grid", params={"start": 0, "limit": 1000})
@@ -681,6 +743,19 @@ class TvheadendClient:
                 data={"node": json.dumps({"uuid": mux_uuid, "scan_state": 3})},
             )
 
+    def cancel_scan_muxes(self, mux_uuids: List[str]) -> int:
+        """Cancel queued or active multiplex scans by returning them to IDLE."""
+        cancelled = 0
+        for mux_uuid in dict.fromkeys(str(uuid or "").strip() for uuid in mux_uuids):
+            if not mux_uuid:
+                continue
+            self._post_jsonish(
+                "/api/idnode/save",
+                data={"node": json.dumps({"uuid": mux_uuid, "scan_state": 0})},
+            )
+            cancelled += 1
+        return cancelled
+
     def list_linux_dvbt_frontends(self) -> List[Dict]:
         adapters = self._get(
             f"{self.base_url}/api/hardware/tree",
@@ -733,6 +808,55 @@ class TvheadendClient:
                 "changed": changed,
             })
         return results
+
+    def set_dvbt_scan_grace(self, seconds: int) -> List[Dict]:
+        """Set an exact temporary DVB-T/T2 scan grace and report prior values."""
+        target = max(5, min(60, int(seconds)))
+        results: List[Dict] = []
+        for frontend in self.list_linux_dvbt_frontends():
+            frontend_uuid = str(frontend.get("uuid") or frontend.get("id") or "").strip()
+            if not frontend_uuid:
+                continue
+            params = frontend.get("params") if isinstance(frontend.get("params"), list) else []
+            grace_param = next(
+                (param for param in params if str(param.get("id") or "") == "grace_period"),
+                None,
+            )
+            if grace_param is None:
+                continue
+            try:
+                previous = int(grace_param.get("value") or 0)
+            except (TypeError, ValueError):
+                previous = 0
+            changed = previous != target
+            if changed:
+                self._post_jsonish(
+                    "/api/idnode/save",
+                    data={"node": json.dumps({"uuid": frontend_uuid, "grace_period": target})},
+                )
+            results.append({
+                "uuid": frontend_uuid,
+                "name": str(frontend.get("text") or frontend_uuid),
+                "previous": previous,
+                "current": target,
+                "changed": changed,
+            })
+        return results
+
+    def set_dvbt_scan_grace_values(self, values: Dict[str, int]) -> int:
+        """Restore exact frontend grace values captured before a staged scan."""
+        restored = 0
+        for frontend_uuid, seconds in values.items():
+            uuid = str(frontend_uuid or "").strip()
+            if not uuid:
+                continue
+            target = max(5, min(60, int(seconds)))
+            self._post_jsonish(
+                "/api/idnode/save",
+                data={"node": json.dumps({"uuid": uuid, "grace_period": target})},
+            )
+            restored += 1
+        return restored
 
     def mapper_status(self) -> Dict:
         r = self._get(f"{self.base_url}/api/service/mapper/status")

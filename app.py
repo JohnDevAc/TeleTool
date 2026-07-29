@@ -2412,7 +2412,7 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
         _tv_setup_log(f"Using DVB-T network: {network_name} ({network_uuid})")
 
         is_uk_auto = scanfile_key == TELETOOL_UK_AUTO_SCANFILE
-        scan_grace_s = _config_int("tvh_scan_grace_s", 20, min_value=10, max_value=60)
+        scan_grace_s = _config_int("tvh_scan_grace_s", 30, min_value=10, max_value=60)
         try:
             grace_results = tvh.ensure_dvbt_scan_grace(scan_grace_s)
             if not grace_results:

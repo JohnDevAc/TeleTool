@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-NETWORK_UUID="54e1e700000000000000000000000010"
+DEFAULT_NETWORK_UUID="54e1e700000000000000000000000010"
 NETWORK_NAME="DVB-T Network"
 PROVIDER_NETWORK_NAME="United Kingdom"
 ACCESS_PREFIX="127.0.0.1/32,::1/128"
@@ -34,13 +34,13 @@ systemctl stop tvheadend.service 2>/dev/null || true
 mkdir -p \
   "$tvh_dir/accesscontrol" \
   "$tvh_dir/passwd" \
-  "$tvh_dir/input/dvb/networks/$NETWORK_UUID"
+  "$tvh_dir/input/dvb/networks"
 
 TVH_DIR="$tvh_dir" \
 TVH_USER="$tvh_user" \
 TVH_GROUP="$tvh_group" \
 TVH_ACCESS_PREFIX="$ACCESS_PREFIX" \
-TVH_NETWORK_UUID="$NETWORK_UUID" \
+TVH_DEFAULT_NETWORK_UUID="$DEFAULT_NETWORK_UUID" \
 TVH_NETWORK_NAME="$NETWORK_NAME" \
 TVH_PROVIDER_NETWORK_NAME="$PROVIDER_NETWORK_NAME" \
 python3 - <<'PY'
@@ -53,7 +53,7 @@ tvh_dir = Path(os.environ["TVH_DIR"])
 tvh_user = os.environ["TVH_USER"]
 tvh_group = os.environ["TVH_GROUP"]
 prefix = os.environ["TVH_ACCESS_PREFIX"]
-network_uuid = os.environ["TVH_NETWORK_UUID"]
+default_network_uuid = os.environ["TVH_DEFAULT_NETWORK_UUID"]
 network_name = os.environ["TVH_NETWORK_NAME"]
 provider_network_name = os.environ["TVH_PROVIDER_NETWORK_NAME"]
 
@@ -63,6 +63,43 @@ def write_json(path: Path, data: dict, mode: int = 0o600) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
     os.chmod(path, mode)
     shutil.chown(path, user=tvh_user, group=tvh_group)
+
+
+# Reuse an existing DVB-T/T2 network during upgrades. Only a genuinely
+# unconfigured installation gets TeleTool's stable fallback network UUID.
+networks_dir = tvh_dir / "input" / "dvb" / "networks"
+network_uuid = ""
+for config_path in sorted(networks_dir.glob("*/config")):
+    try:
+        network_config = json.loads(config_path.read_text() or "{}")
+    except Exception:
+        continue
+    network_class = str(network_config.get("class") or "").lower()
+    if network_class == "dvb_network_dvbt":
+        network_uuid = config_path.parent.name
+        break
+
+if not network_uuid:
+    network_uuid = default_network_uuid
+    write_json(
+        networks_dir / network_uuid / "config",
+        {
+            "enabled": True,
+            "networkname": network_name,
+            "pnetworkname": provider_network_name,
+            "nid": 0,
+            "autodiscovery": 1,
+            "bouquet": False,
+            "skipinitscan": True,
+            "idlescan": False,
+            "sid_chnum": False,
+            "ignore_chnum": False,
+            "satip_source": 0,
+            "localtime": 0,
+            "wizard": True,
+            "class": "dvb_network_dvbt",
+        },
+    )
 
 
 write_json(
@@ -110,26 +147,6 @@ write_json(
     tvh_dir / "passwd" / "54e1e700000000000000000000000002",
     {"enabled": True, "username": "", "password": ""},
 )
-write_json(
-    tvh_dir / "input" / "dvb" / "networks" / network_uuid / "config",
-    {
-        "enabled": True,
-        "networkname": network_name,
-        "pnetworkname": provider_network_name,
-        "nid": 0,
-        "autodiscovery": 1,
-        "bouquet": False,
-        "skipinitscan": True,
-        "idlescan": False,
-        "sid_chnum": False,
-        "ignore_chnum": False,
-        "satip_source": 0,
-        "localtime": 0,
-        "wizard": True,
-        "class": "dvb_network_dvbt",
-    },
-)
-
 # Bind any DVB-T/T2 frontends Tvheadend has already discovered. If the tuner is
 # connected later, TeleTool's TV Setup page can bind it at that point.
 adapter_dir = tvh_dir / "input" / "linuxdvb" / "adapters"
@@ -166,8 +183,8 @@ if adapter_dir.exists():
                 scan_grace = int(frontend.get("grace_period") or 0)
             except (TypeError, ValueError):
                 scan_grace = 0
-            if scan_grace < 20:
-                frontend["grace_period"] = 20
+            if scan_grace < 30:
+                frontend["grace_period"] = 30
             changed = True
         if changed:
             write_json(path, data)

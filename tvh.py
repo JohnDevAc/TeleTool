@@ -444,6 +444,19 @@ class TvheadendClient:
             return "DVB-T2"
         return "DVB-T"
 
+    @staticmethod
+    def _prefer_terrestrial_autodetect(conf: Dict[str, Any]) -> Dict[str, Any]:
+        """Keep carrier identity while letting the tuner detect RF details."""
+        out = dict(conf)
+        out.update({
+            "fec_hi": "AUTO",
+            "constellation": "QAM/AUTO",
+            "transmission_mode": "AUTO",
+            "guard_interval": "AUTO",
+            "plp_id": -1,
+        })
+        return out
+
     def _parse_dvbv5_scanfile(self, text: str) -> List[Dict[str, Any]]:
         muxes: List[Dict[str, Any]] = []
         current: Dict[str, str] = {}
@@ -483,7 +496,7 @@ class TvheadendClient:
                     conf["plp_id"] = int(stream_id) if stream_id not in (None, "", "AUTO") else -1
                 except Exception:
                     conf["plp_id"] = -1
-                muxes.append(conf)
+                muxes.append(self._prefer_terrestrial_autodetect(conf))
             current = {}
 
         for raw in text.splitlines():
@@ -519,7 +532,7 @@ class TvheadendClient:
                 freq_i = int(parts[0])
             except Exception:
                 continue
-            muxes.append({
+            muxes.append(self._prefer_terrestrial_autodetect({
                 "enabled": 1,
                 "epg": 1,
                 "delsys": "DVB-T2" if prefix == "T2" else "DVB-T",
@@ -538,7 +551,7 @@ class TvheadendClient:
                 "eit_tsid_nocheck": False,
                 "sid_filter": 0,
                 "charset": "AUTO",
-            })
+            }))
         return muxes
 
     def load_scanfile_muxes(self, scanfile_key: str) -> List[Dict[str, Any]]:

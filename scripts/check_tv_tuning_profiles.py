@@ -326,6 +326,35 @@ assert mux_tuning_specificity({
     "fec_hi": "AUTO",
 }) == 0
 
+prefer_terrestrial_autodetect = load_function(
+    ROOT / "tvh.py",
+    "_prefer_terrestrial_autodetect",
+    {"Any": Any, "Dict": Dict},
+)
+assert prefer_terrestrial_autodetect({
+    "delsys": "DVB-T2",
+    "frequency": 545_833_000,
+    "bandwidth": "8MHz",
+    "fec_hi": "2/3",
+    "fec_lo": "NONE",
+    "constellation": "QAM/256",
+    "transmission_mode": "32k",
+    "guard_interval": "1/128",
+    "hierarchy": "NONE",
+    "plp_id": 0,
+}) == {
+    "delsys": "DVB-T2",
+    "frequency": 545_833_000,
+    "bandwidth": "8MHz",
+    "fec_hi": "AUTO",
+    "fec_lo": "NONE",
+    "constellation": "QAM/AUTO",
+    "transmission_mode": "AUTO",
+    "guard_interval": "AUTO",
+    "hierarchy": "NONE",
+    "plp_id": -1,
+}
+
 is_broadcast_av_service = load_function(
     ROOT / "app.py",
     "_is_broadcast_av_service",
@@ -641,6 +670,7 @@ assert "No DVB-T2 multiplex locked" in app_source
 assert '"cnr_db": cnr_db' in app_source
 assert '"cnr_label": cnr_label' in app_source
 assert "ensure_dvbt_scan_grace(scan_grace_s)" in app_source
+assert '_config_int("tvh_scan_grace_s", 30' in app_source
 assert "_wait_for_component_retries(" in app_source
 assert "Service readiness after retry:" in app_source
 assert "_run_staged_uk_auto_scan(network_uuid, scan_grace_s)" in app_source
@@ -668,6 +698,7 @@ assert '"after the service acquisition retry"' in app_source
 assert '"after TV Setup failed"' in app_source
 
 configure_source = (ROOT / "packaging" / "debian" / "configure-tvheadend").read_text(encoding="utf-8")
-assert 'frontend["grace_period"] = 20' in configure_source
+assert 'frontend["grace_period"] = 30' in configure_source
+assert "existing DVB-T/T2 network" in configure_source
 
 print("UK DVB-T/T2 tuning profile checks passed.")

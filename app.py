@@ -1626,6 +1626,148 @@ def _uk_auto_rf_candidate_centres(
     return sorted(candidates)
 
 
+def _uk_auto_order_mux_targets_by_rf(
+    muxes: List[Dict[str, Any]],
+    target_mux_uuids: List[str],
+    measurements: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    target_set = {str(uuid or "").strip() for uuid in target_mux_uuids if str(uuid or "").strip()}
+    target_muxes = [
+        mux
+        for mux in muxes
+        if str(mux.get("uuid") or "").strip() in target_set
+    ]
+    centre_quality: Dict[int, Tuple[float, float]] = {}
+    for mux in muxes:
+        centre = _uk_auto_centre_for_frequency(mux.get("frequency") or mux.get("freq"))
+        if centre is None:
+            continue
+        measurement = measurements.get(mux_report_key(mux), {})
+        dbm_values = [
+            float(value)
+            for value in measurement.get("dbm_values") or []
+            if value is not None
+        ]
+        cnr_values = [
+            float(value)
+            for value in measurement.get("cnr_values") or []
+            if value is not None
+        ]
+        dbm = max(dbm_values) if dbm_values else -200.0
+        cnr = max(cnr_values) if cnr_values else -1.0
+        previous = centre_quality.get(centre, (-200.0, -1.0))
+        centre_quality[centre] = (max(previous[0], dbm), max(previous[1], cnr))
+
+    centres = {
+        centre
+        for mux in target_muxes
+        for centre in [_uk_auto_centre_for_frequency(mux.get("frequency") or mux.get("freq"))]
+        if centre is not None
+    }
+    centre_order = {
+        centre: index
+        for index, centre in enumerate(
+            sorted(
+                centres,
+                key=lambda value: (
+                    -centre_quality.get(value, (-200.0, -1.0))[0],
+                    -centre_quality.get(value, (-200.0, -1.0))[1],
+                    value,
+                ),
+            )
+        )
+    }
+
+    def sort_key(mux: Dict[str, Any]) -> Tuple[int, int, int, int]:
+        frequency = _coerce_int(mux.get("frequency") or mux.get("freq")) or 0
+        centre = _uk_auto_centre_for_frequency(frequency)
+        delivery = re.sub(
+            r"[^A-Z0-9]",
+            "",
+            str(mux.get("delsys") or mux.get("delivery_system") or "").upper(),
+        )
+        return (
+            centre_order.get(centre or 0, len(centre_order)),
+            abs(frequency - (centre or frequency)),
+            0 if delivery == "DVBT" else 1,
+            frequency,
+        )
+
+    ordered = [
+        str(mux.get("uuid") or "").strip()
+        for mux in sorted(target_muxes, key=sort_key)
+    ]
+    return ordered + sorted(target_set - set(ordered))
+
+
+def _scan_uk_auto_muxes_individually(
+    network_uuid: str,
+    target_mux_uuids: List[str],
+    measurements: Dict[str, Dict[str, Any]],
+    *,
+    timeout_s: int,
+    progress_label: str,
+    skip_ready_centres: bool = True,
+    percent_start: Optional[float] = None,
+    percent_end: Optional[float] = None,
+) -> Tuple[List[Dict[str, Any]], bool, int]:
+    targets = list(dict.fromkeys(str(uuid or "").strip() for uuid in target_mux_uuids))
+    targets = [uuid for uuid in targets if uuid]
+    muxes = tvh.list_muxes_for_network(network_uuid)
+    targets = _uk_auto_order_mux_targets_by_rf(muxes, targets, measurements)
+    all_complete = True
+    timed_out = 0
+
+    for index, target_uuid in enumerate(targets, start=1):
+        if percent_start is not None and percent_end is not None and targets:
+            fraction = (index - 1) / len(targets)
+            _tv_setup_set(
+                percent=percent_start + ((percent_end - percent_start) * fraction)
+            )
+        muxes = tvh.list_muxes_for_network(network_uuid)
+        target_mux = next(
+            (mux for mux in muxes if str(mux.get("uuid") or "") == target_uuid),
+            None,
+        )
+        if target_mux is None:
+            continue
+        centre = _uk_auto_centre_for_frequency(
+            target_mux.get("frequency") or target_mux.get("freq")
+        )
+        if (
+            skip_ready_centres
+            and centre is not None
+            and centre in set(_uk_auto_ready_centres(muxes))
+        ):
+            continue
+
+        baseline_scan_last = {target_uuid: target_mux.get("scan_last")}
+        label = f"{progress_label} {index}/{len(targets)}"
+        _tv_setup_log(f"{label}: scanning {_mux_label(target_mux)}.")
+        tvh.scan_muxes([target_uuid])
+        muxes, complete = _wait_for_component_retries(
+            network_uuid,
+            [target_uuid],
+            baseline_scan_last,
+            measurements,
+            timeout_s,
+            progress_label=label,
+        )
+        if complete:
+            continue
+
+        all_complete = False
+        timed_out += 1
+        tvh.cancel_scan_muxes([target_uuid])
+        _tv_setup_log(
+            f"{label}: no completed lock after {timeout_s} seconds; "
+            "cancelled this mux and continued."
+        )
+        time.sleep(1)
+
+    return tvh.list_muxes_for_network(network_uuid), all_complete, timed_out
+
+
 def _mux_tuning_specificity(mux: Dict[str, Any]) -> int:
     score = 0
     for key in ("constellation", "transmission_mode", "guard_interval", "fec_hi"):
@@ -1832,11 +1974,6 @@ def _run_staged_uk_auto_scan(
                 recovery_targets = _mux_uuids_for_configs(muxes, recovery_configs)
                 if not recovery_targets:
                     raise RuntimeError("UK Auto RF candidate recovery found no scannable muxes")
-                baseline_scan_last = {
-                    str(mux.get("uuid") or ""): mux.get("scan_last")
-                    for mux in muxes
-                    if str(mux.get("uuid") or "") in set(recovery_targets)
-                }
                 _tv_setup_set(
                     percent=44 + recovery_pass,
                     step=(
@@ -1848,152 +1985,33 @@ def _run_staged_uk_auto_scan(
                     f"Strong RF candidate recovery pass {recovery_pass}/"
                     f"{max_recovery_passes}: retrying {len(recovery_centres)} centre(s)."
                 )
-                tvh.scan_muxes(recovery_targets)
-                recovery_timeout_default = max(
-                    120,
-                    min(900, len(recovery_targets) * (recovery_grace_s + 15)),
+                recovery_mux_timeout_s = _config_int(
+                    "tvh_auto_recovery_mux_timeout_s",
+                    max(30, recovery_grace_s + 10),
+                    min_value=20,
+                    max_value=90,
                 )
-                recovery_timeout_s = _config_int(
-                    "tvh_auto_recovery_timeout_s",
-                    recovery_timeout_default,
-                    min_value=60,
-                    max_value=1200,
-                )
-                muxes, pass_complete = _wait_for_component_retries(
+                muxes, pass_complete, timed_out = _scan_uk_auto_muxes_individually(
                     network_uuid,
                     recovery_targets,
-                    baseline_scan_last,
                     measurements,
-                    recovery_timeout_s,
+                    timeout_s=recovery_mux_timeout_s,
                     progress_label=f"Strong RF recovery pass {recovery_pass}",
+                    percent_start=44,
+                    percent_end=52,
                 )
                 recovery_complete = recovery_complete and pass_complete
                 if not pass_complete:
                     note = (
-                        f"Strong RF recovery pass {recovery_pass} timed out "
-                        f"after {recovery_timeout_s} seconds."
+                        f"Strong RF recovery pass {recovery_pass} skipped "
+                        f"{timed_out} stalled mux attempt(s)."
                     )
                     _tv_setup_log(note)
                     scan_note = _append_scan_note(scan_note, note)
-                    muxes = _cancel_pending_scan_queue(
-                        network_uuid,
-                        f"after strong RF recovery pass {recovery_pass}",
-                    )
                 muxes = _deduplicate_transport_muxes(network_uuid, muxes, measurements)
                 _tv_setup_log(
                     f"Strong RF recovery pass {recovery_pass} completed with "
                     f"{len(_uk_auto_ready_centres(muxes))} ready centre(s)."
-                )
-
-            explicit_variants = (
-                (
-                    "DVB-T 64-QAM 2/3",
-                    "DVB-T",
-                    {
-                        "constellation": "QAM/64",
-                        "fec_hi": "2/3",
-                        "fec_lo": "NONE",
-                        "transmission_mode": "8k",
-                        "guard_interval": "1/32",
-                        "hierarchy": "NONE",
-                    },
-                ),
-                (
-                    "DVB-T 64-QAM 3/4",
-                    "DVB-T",
-                    {
-                        "constellation": "QAM/64",
-                        "fec_hi": "3/4",
-                        "fec_lo": "NONE",
-                        "transmission_mode": "8k",
-                        "guard_interval": "1/32",
-                        "hierarchy": "NONE",
-                    },
-                ),
-                (
-                    "DVB-T QPSK 3/4",
-                    "DVB-T",
-                    {
-                        "constellation": "QPSK",
-                        "fec_hi": "3/4",
-                        "fec_lo": "NONE",
-                        "transmission_mode": "8k",
-                        "guard_interval": "1/32",
-                        "hierarchy": "NONE",
-                    },
-                ),
-                (
-                    "DVB-T2 256-QAM 2/3",
-                    "DVB-T2",
-                    {
-                        "constellation": "QAM/256",
-                        "fec_hi": "2/3",
-                        "fec_lo": "NONE",
-                        "transmission_mode": "32k",
-                        "guard_interval": "1/128",
-                        "hierarchy": "NONE",
-                        "plp_id": -1,
-                    },
-                ),
-            )
-            for variant_index, (variant_label, delivery_system, tuning) in enumerate(
-                explicit_variants,
-                start=1,
-            ):
-                service_centres = _uk_auto_service_centres(muxes)
-                unresolved_centres = sorted(
-                    set(rf_candidate_centres) - set(service_centres)
-                )
-                if not unresolved_centres:
-                    break
-                muxes = tvh.list_muxes_for_network(network_uuid)
-                explicit_targets = _uk_auto_mux_uuids_for_centres(
-                    muxes,
-                    unresolved_centres,
-                    delivery_system,
-                )
-                if not explicit_targets:
-                    continue
-                baseline_scan_last = {
-                    str(mux.get("uuid") or ""): mux.get("scan_last")
-                    for mux in muxes
-                    if str(mux.get("uuid") or "") in set(explicit_targets)
-                }
-                tvh.set_mux_tuning(explicit_targets, tuning)
-                _tv_setup_set(
-                    percent=min(51, 47 + variant_index),
-                    step=f"UK Auto: trying {variant_label}…",
-                )
-                _tv_setup_log(
-                    f"Explicit UK tuning fallback {variant_label}: "
-                    f"checking {len(unresolved_centres)} RF centre(s)."
-                )
-                tvh.scan_muxes(explicit_targets)
-                explicit_timeout_s = max(
-                    60,
-                    min(900, len(explicit_targets) * (recovery_grace_s + 15)),
-                )
-                muxes, variant_complete = _wait_for_component_retries(
-                    network_uuid,
-                    explicit_targets,
-                    baseline_scan_last,
-                    measurements,
-                    explicit_timeout_s,
-                    progress_label=f"{variant_label} fallback",
-                )
-                recovery_complete = recovery_complete and variant_complete
-                if not variant_complete:
-                    note = f"{variant_label} fallback timed out after {explicit_timeout_s} seconds."
-                    _tv_setup_log(note)
-                    scan_note = _append_scan_note(scan_note, note)
-                    muxes = _cancel_pending_scan_queue(
-                        network_uuid,
-                        f"after the {variant_label} fallback",
-                    )
-                muxes = _deduplicate_transport_muxes(network_uuid, muxes, measurements)
-                _tv_setup_log(
-                    f"{variant_label} fallback completed with services on "
-                    f"{len(_uk_auto_service_centres(muxes))} centre(s)."
                 )
 
         successful_centres = _uk_auto_service_centres(muxes)
@@ -2011,23 +2029,27 @@ def _run_staged_uk_auto_scan(
         )
         for offset_hz, offset_label, percent_start, percent_end in offset_stages:
             successful_centres = _uk_auto_service_centres(muxes)
+            unresolved_rf_centres = sorted(
+                set(rf_candidate_centres) - set(successful_centres)
+            )
             offset_configs = tvh.uk_auto_offset_muxes(
                 successful_centres,
                 offsets=[offset_hz],
             )
+            offset_configs = [
+                config
+                for config in offset_configs
+                if _uk_auto_centre_for_frequency(
+                    config.get("frequency") or config.get("freq")
+                )
+                in set(unresolved_rf_centres)
+            ]
             _tv_setup_log(
                 f"UK Auto {offset_label} offset stage: {len(offset_configs)} "
-                "remaining DVB-T2 candidate(s)."
+                "above-noise DVB-T2 candidate(s)."
             )
             if not offset_configs:
                 continue
-
-            if grace_restored:
-                tvh.set_dvbt_scan_grace(fast_grace_s)
-                grace_restored = False
-                _tv_setup_log(
-                    f"Using {fast_grace_s}-second tuner grace for the DVB-T2 offset sweep."
-                )
 
             offset_result = tvh.create_muxes(network_uuid, offset_configs)
             if offset_result.get("skipped"):
@@ -2041,37 +2063,32 @@ def _run_staged_uk_auto_scan(
             offset_targets = _mux_uuids_for_configs(muxes, offset_configs)
             if not offset_targets:
                 raise RuntimeError("UK Auto offset stage did not create any scannable muxes")
-            tvh.scan_muxes(offset_targets)
-            offset_timeout_default = max(
-                120,
-                min(900, len(offset_targets) * (fast_grace_s + 2) + 60),
-            )
-            offset_timeout_s = _config_int(
-                "tvh_auto_offset_timeout_s",
-                offset_timeout_default,
-                min_value=60,
-                max_value=1200,
-            )
-            muxes, stage_complete, offset_note, stage_measurements = _wait_for_scan(
-                network_uuid,
-                timeout_s=offset_timeout_s,
-                stall_timeout_s=stage_stall_s,
-                target_mux_uuids=offset_targets,
+            _tv_setup_set(
+                percent=percent_start,
                 step=f"UK Auto: checking {offset_label} DVB-T2 offsets…",
+            )
+            offset_mux_timeout_s = _config_int(
+                "tvh_auto_offset_mux_timeout_s",
+                max(30, recovery_grace_s + 10),
+                min_value=20,
+                max_value=90,
+            )
+            muxes, stage_complete, timed_out = _scan_uk_auto_muxes_individually(
+                network_uuid,
+                offset_targets,
+                measurements,
+                timeout_s=offset_mux_timeout_s,
+                progress_label=f"{offset_label.title()} DVB-T2 offset",
                 percent_start=percent_start,
                 percent_end=percent_end,
             )
-            _merge_scan_measurements(measurements, stage_measurements)
             offset_complete = offset_complete and stage_complete
             if not stage_complete:
                 scan_note = _append_scan_note(
                     scan_note,
-                    f"{offset_label.title()} offset stage: {offset_note}",
+                    f"{offset_label.title()} offset stage skipped "
+                    f"{timed_out} stalled mux attempt(s).",
                 )
-            muxes = _cancel_pending_scan_queue(
-                network_uuid,
-                f"after the {offset_label} offset stage",
-            )
             muxes = _deduplicate_transport_muxes(network_uuid, muxes, measurements)
 
         restore_full_grace("Restored tuner scan grace before completing detected muxes")
@@ -2364,6 +2381,7 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
             _tv_setup_log("Confirmed NDI pipeline is stopped before TV Setup.")
         _tv_setup_set(percent=4, step="Loading current TV data…")
         expected_muxes = 0
+        bounded_predefined_targets: List[str] = []
         if scanfile_key:
             _tv_setup_log(f"Selected predefined DVB-T/T2 mux region: {scanfile_key}")
         channels = tvh.list_channels(force_refresh=True)
@@ -2442,16 +2460,101 @@ def _run_tv_setup_worker(scanfile_key: Optional[str] = None) -> None:
             )
             for err in mux_result.get("errors", []):
                 _tv_setup_log(f"Mux create warning: {err}")
+            predefined_muxes = tvh.list_muxes_for_network(network_uuid)
+            profile_mux_limit = _config_int(
+                "tvh_bounded_profile_max_muxes",
+                16,
+                min_value=1,
+                max_value=64,
+            )
+            if 0 < len(predefined_muxes) <= profile_mux_limit:
+                bounded_predefined_targets = [
+                    str(mux.get("uuid") or "")
+                    for mux in predefined_muxes
+                    if mux.get("uuid")
+                ]
+                _tv_setup_log(
+                    f"Using bounded per-mux scanning for this "
+                    f"{len(bounded_predefined_targets)}-mux transmitter profile."
+                )
             _update_config({"tvh_dvbt_scanfile": scanfile_key})
         else:
             _tv_setup_log("No predefined mux region selected; scanning the existing mux list.")
 
-        if not is_uk_auto:
+        if not is_uk_auto and not bounded_predefined_targets:
             _tv_setup_set(percent=19, step="Starting DVB-T scan…")
             tvh.scan_network(network_uuid)
             _tv_setup_log("Requested DVB-T network scan.")
 
-        if not is_uk_auto:
+        if not is_uk_auto and bounded_predefined_targets:
+            _tv_setup_set(percent=20, step="Scanning transmitter multiplexes…")
+            profile_mux_timeout_s = _config_int(
+                "tvh_profile_mux_timeout_s",
+                max(30, scan_grace_s + 10),
+                min_value=20,
+                max_value=90,
+            )
+            muxes, first_pass_complete, timed_out = _scan_uk_auto_muxes_individually(
+                network_uuid,
+                bounded_predefined_targets,
+                scan_measurements,
+                timeout_s=profile_mux_timeout_s,
+                progress_label="Transmitter profile",
+                skip_ready_centres=False,
+                percent_start=20,
+                percent_end=70,
+            )
+            scan_complete = first_pass_complete
+            if timed_out:
+                scan_note = _append_scan_note(
+                    scan_note,
+                    f"Initial transmitter scan skipped {timed_out} stalled mux attempt(s).",
+                )
+
+            rf_candidate_centres = _uk_auto_rf_candidate_centres(
+                muxes,
+                scan_measurements,
+            )
+            ready_centres = _uk_auto_ready_centres(muxes)
+            retry_centres = sorted(
+                set(rf_candidate_centres) - set(ready_centres)
+            )
+            retry_targets = [
+                str(mux.get("uuid") or "")
+                for mux in muxes
+                if mux.get("uuid")
+                and _uk_auto_centre_for_frequency(
+                    mux.get("frequency") or mux.get("freq")
+                )
+                in set(retry_centres)
+            ]
+            if retry_targets:
+                _tv_setup_set(
+                    percent=70,
+                    step="Retrying unresolved RF multiplexes…",
+                )
+                _tv_setup_log(
+                    f"Retrying {len(retry_centres)} above-noise unresolved "
+                    "transmitter frequency/frequencies."
+                )
+                muxes, retry_complete, retry_timeouts = _scan_uk_auto_muxes_individually(
+                    network_uuid,
+                    retry_targets,
+                    scan_measurements,
+                    timeout_s=profile_mux_timeout_s,
+                    progress_label="Transmitter RF retry",
+                    percent_start=70,
+                    percent_end=80,
+                )
+                scan_complete = scan_complete and retry_complete
+                if retry_timeouts:
+                    scan_note = _append_scan_note(
+                        scan_note,
+                        f"Transmitter RF retry skipped "
+                        f"{retry_timeouts} stalled mux attempt(s).",
+                    )
+            report_muxes = muxes
+        elif not is_uk_auto:
             _tv_setup_set(percent=20, step="Scanning muxes and discovering services…")
             scan_timeout_default = max(600, min(3600, (expected_muxes * 7) + 120))
             scan_timeout_s = _config_int(

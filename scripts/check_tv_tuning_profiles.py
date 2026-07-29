@@ -7,7 +7,7 @@ import json
 import re
 from statistics import median
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -206,6 +206,35 @@ assert uk_auto_mux_uuids_for_centres(
 ) == ["dvbt-nominal"]
 
 measurement_key = lambda mux: str(mux.get("frequency") or mux.get("freq") or "")
+uk_auto_order_mux_targets_by_rf = load_function(
+    ROOT / "app.py",
+    "_uk_auto_order_mux_targets_by_rf",
+    {
+        "Any": Any,
+        "Dict": Dict,
+        "List": List,
+        "Tuple": Tuple,
+        "_coerce_int": coerce_int,
+        "_uk_auto_centre_for_frequency": uk_auto_centre_for_frequency,
+        "mux_report_key": measurement_key,
+        "re": re,
+    },
+)
+rf_order_muxes = [
+    {"uuid": "weak-t", "frequency": 482_000_000, "delsys": "DVB-T"},
+    {"uuid": "strong-t2", "frequency": 506_000_000, "delsys": "DVB-T2"},
+    {"uuid": "strong-t", "frequency": 506_000_000, "delsys": "DVB-T"},
+    {"uuid": "weak-t2", "frequency": 481_833_000, "delsys": "DVB-T2"},
+]
+assert uk_auto_order_mux_targets_by_rf(
+    rf_order_muxes,
+    [mux["uuid"] for mux in rf_order_muxes],
+    {
+        "482000000": {"dbm_values": [-48.0], "cnr_values": [12.0]},
+        "506000000": {"dbm_values": [-39.0], "cnr_values": [18.0]},
+    },
+) == ["strong-t", "strong-t2", "weak-t", "weak-t2"]
+
 rf_candidate_logs = []
 rf_candidate_config_calls = []
 
@@ -618,11 +647,18 @@ assert "_run_staged_uk_auto_scan(network_uuid, scan_grace_s)" in app_source
 assert "tvh.uk_auto_nominal_muxes()" in app_source
 assert "_uk_auto_rf_candidate_centres(muxes, measurements)" in app_source
 assert "_uk_auto_ready_centres(muxes)" in app_source
+assert "_uk_auto_order_mux_targets_by_rf(" in app_source
+assert "_scan_uk_auto_muxes_individually(" in app_source
 assert '"tvh_auto_recovery_passes"' in app_source
 assert "for recovery_pass in range(1, max_recovery_passes + 1)" in app_source
-assert '"DVB-T QPSK 3/4"' in app_source
-assert '"DVB-T2 256-QAM 2/3"' in app_source
-assert "tvh.set_mux_tuning(explicit_targets, tuning)" in app_source
+assert '"tvh_auto_recovery_mux_timeout_s"' in app_source
+assert '"tvh_auto_offset_mux_timeout_s"' in app_source
+assert '"tvh_bounded_profile_max_muxes"' in app_source
+assert '"tvh_profile_mux_timeout_s"' in app_source
+assert "Using bounded per-mux scanning for this" in app_source
+assert "Retrying unresolved RF multiplexes" in app_source
+assert "above-noise DVB-T2 candidate(s)" in app_source
+assert "cancelled this mux and continued" in app_source
 assert "_deduplicate_transport_muxes(network_uuid, muxes, measurements)" in app_source
 assert "offsets=[offset_hz]" in app_source
 assert '(-167_000, "negative", 52, 62)' in app_source

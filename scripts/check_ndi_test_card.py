@@ -38,20 +38,53 @@ def main() -> None:
         bridge_start,
         "test-card pipeline",
         'source_mode_i not in {"tv", "test_card"}',
-        'videotestsrc is-live=true do-timestamp=true pattern=smpte',
-        'audiotestsrc is-live=true do-timestamp=true wave=silence',
+        'cfg.get("ndi_test_card_fps", 60)',
+        'compositor name=testcardcompositor background=black max-threads=2',
+        'rsvgdec ! imagefreeze is-live=true',
+        '_write_test_card_marker()',
+        'sink_1::width={marker_size}',
+        'audiotestsrc is-live=true do-timestamp=true wave=ticks',
+        'freq={tone_hz}',
+        'tick-interval={tone_interval_ms * 1_000_000}',
         'audio/x-raw,format=F32LE',
+        'interaudiosink channel=teletool-test-card',
         'source_mode_i == "test_card"',
         "combiner.video",
         "combiner.audio",
     )
 
-    lineout_start = source_for_function("gst_ndi.py", "lineout_start", "GstNDIBridge")
+    motion_setup = source_for_function("gst_ndi.py", "_setup_test_card_motion", "GstNDIBridge")
     require(
-        lineout_start,
-        "test-card audio guard",
-        'source_mode != "tv"',
-        "Audio output is unavailable while the NDI test card is running",
+        motion_setup,
+        "test-card motion controller",
+        'GstController.LFOControlSource()',
+        'GstController.LFOWaveform.SINE',
+        'source.set_property("frequency", 1.0)',
+        '("ypos", 250_000_000, center_y - position_offset)',
+        'DirectControlBinding.new',
+        'pad.add_control_binding(binding)',
+    )
+
+    card_source = source_for_function("gst_ndi.py", "_test_card_background_svg")
+    require(
+        card_source,
+        "test-card identity and timing reference",
+        'class="host">{ip_address_i}</text>',
+        'stroke="#ffd400" stroke-width="4"',
+        '>MOTION REFERENCE</text>',
+        '>{hostname_i}</text>',
+    )
+    for removed_label in ("NDI SOURCE", "TELETOOL CANDIDATE"):
+        if removed_label in card_source:
+            raise SystemExit(f"test-card background still contains removed label: {removed_label}")
+
+    lineout_pipeline = source_for_function("gst_ndi.py", "_build_lineout_pipeline_desc", "GstNDIBridge")
+    require(
+        lineout_pipeline,
+        "test-card ALSA route",
+        'source_mode == "test_card"',
+        'interaudiosrc channel=teletool-test-card',
+        'alsasink name=lineoutsink',
     )
 
     app_source = (ROOT / "app.py").read_text(encoding="utf-8")
@@ -92,7 +125,8 @@ def main() -> None:
         "Audio page test-card state",
         "st.ndi_source_mode",
         'ndiSourceMode === "test_card"',
-        "Audio is unavailable while the test card is running",
+        "1 kHz alignment pulse ready",
+        "1 kHz alignment pulse running",
     )
 
     print("NDI test card lifecycle checks passed")

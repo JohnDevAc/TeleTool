@@ -1,3 +1,7 @@
+import base64
+import html
+import socket
+import tempfile
 import time
 from collections import deque
 from dataclasses import dataclass, asdict
@@ -36,12 +40,193 @@ def _gst_quote(value: Any) -> str:
     return f'"{text}"'
 
 
+def _test_card_motion_geometry(width: int, height: int) -> tuple[int, int, int]:
+    scale = min(width / 1920.0, height / 1080.0)
+    size = max(220, int(round(440 * scale)))
+    x = max(0, int(round((width - size) / 2)))
+    y = max(0, int(round(210 * height / 1080.0)))
+    return x, y, size
+
+
+def _primary_ipv4_address() -> str:
+    """Return the primary non-loopback IPv4 address without sending network traffic."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 9))
+            address = str(probe.getsockname()[0] or "").strip()
+            if address and not address.startswith("127."):
+                return address
+    except OSError:
+        pass
+
+    try:
+        for address in socket.gethostbyname_ex(socket.gethostname())[2]:
+            address = str(address or "").strip()
+            if address and not address.startswith("127."):
+                return address
+    except OSError:
+        pass
+    return "IP unavailable"
+
+
+def _test_card_background_svg(
+    width: int,
+    height: int,
+    hostname: str,
+    ip_address: str,
+    logo_path: Path,
+    fps: int = 60,
+    tone_hz: int = 1000,
+    tone_interval_ms: int = 1000,
+    tone_duration_ms: int = 100,
+) -> str:
+    """Build the static part of the test card; imagefreeze reuses this frame at 60p."""
+    try:
+        logo_data = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+    except Exception:
+        logo_data = ""
+    logo = (
+        '<image x="42" y="17" width="158" height="100" preserveAspectRatio="xMidYMid meet" '
+        f'href="data:image/png;base64,{logo_data}"/>'
+        if logo_data
+        else ""
+    )
+
+    bar_colors = ("#bfbfbf", "#bfbf00", "#00bfbf", "#00bf00", "#bf00bf", "#bf0000", "#0000bf")
+    bar_width = 1840.0 / len(bar_colors)
+    bars = "".join(
+        f'<rect x="{40 + index * bar_width:.2f}" y="132" width="{bar_width + 0.5:.2f}" height="558" fill="{color}"/>'
+        for index, color in enumerate(bar_colors)
+    )
+    reverse_bars = "".join(
+        f'<rect x="{40 + index * bar_width:.2f}" y="690" width="{bar_width + 0.5:.2f}" height="78" fill="{color}"/>'
+        for index, color in enumerate(reversed(bar_colors))
+    )
+    grey_values = (16, 32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 240)
+    grey_width = 720.0 / len(grey_values)
+    greys = "".join(
+        f'<rect x="600" y="816" width="{grey_width + 0.5:.2f}" height="92" '
+        f'fill="rgb({value},{value},{value})" transform="translate({index * grey_width:.2f},0)"/>'
+        for index, value in enumerate(grey_values)
+    )
+    ticks = "".join(
+        f'<line x1="960" y1="236" x2="960" y2="{252 if index % 3 else 266}" '
+        f'transform="rotate({index * 30} 960 430)" class="clockTick"/>'
+        for index in range(12)
+    )
+
+    hostname_i = html.escape(str(hostname or "TeleTool"), quote=True)
+    ip_address_i = html.escape(str(ip_address or "IP unavailable"), quote=True)
+    format_i = f"{height}p{fps}" if width * 9 == height * 16 else f"{width} x {height}p{fps}"
+    interval_label = "EVERY SECOND" if tone_interval_ms == 1000 else f"EVERY {tone_interval_ms} ms"
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 1920 1080">
+  <style>
+    text {{ font-family: "DejaVu Sans", sans-serif; fill: #f5f7fa; }}
+    .eyebrow {{ font-size: 18px; font-weight: 700; fill: #9fb7cc; letter-spacing: 2px; }}
+    .title {{ font-size: 36px; font-weight: 700; }}
+    .host {{ font-size: 25px; font-weight: 600; fill: #ffd400; }}
+    .small {{ font-size: 17px; font-weight: 600; }}
+    .tiny {{ font-size: 14px; font-weight: 700; fill: #b8c5d0; letter-spacing: 1px; }}
+    .clockTick {{ stroke: #dce5ec; stroke-width: 5; stroke-linecap: round; }}
+  </style>
+  <rect width="1920" height="1080" fill="#080c10"/>
+  <rect x="0" y="0" width="1920" height="132" fill="#101820"/>
+  {logo}
+  <text x="960" y="54" text-anchor="middle" class="eyebrow">TELETOOL TEST SIGNAL</text>
+  <text x="960" y="96" text-anchor="middle" class="host">{ip_address_i}</text>
+  <text x="1868" y="65" text-anchor="end" class="title">{format_i}</text>
+  <text x="1868" y="101" text-anchor="end" class="small">PROGRESSIVE | NDI</text>
+  {bars}
+  {reverse_bars}
+  <rect x="40" y="786" width="520" height="156" fill="#101820" stroke="#506170" stroke-width="2"/>
+  <text x="66" y="816" class="tiny">PLUGE / BLACK LEVEL</text>
+  <rect x="66" y="842" width="130" height="72" fill="#050505"/>
+  <rect x="196" y="842" width="130" height="72" fill="#101010"/>
+  <rect x="326" y="842" width="130" height="72" fill="#1b1b1b"/>
+  <text x="131" y="932" text-anchor="middle" class="tiny">-2%</text>
+  <text x="261" y="932" text-anchor="middle" class="tiny">0%</text>
+  <text x="391" y="932" text-anchor="middle" class="tiny">+2%</text>
+  <rect x="580" y="786" width="760" height="156" fill="#101820" stroke="#506170" stroke-width="2"/>
+  <text x="600" y="816" class="tiny">LUMINANCE RAMP</text>
+  {greys}
+  <rect x="1360" y="786" width="520" height="156" fill="#101820" stroke="#506170" stroke-width="2"/>
+  <text x="1384" y="816" class="tiny">ALIGNMENT PULSE</text>
+  <text x="1384" y="868" class="title">{tone_hz / 1000:g} kHz</text>
+  <text x="1384" y="906" class="small">{tone_duration_ms} ms {interval_label}</text>
+  <rect x="740" y="210" width="440" height="440" rx="8" fill="#0b1117" fill-opacity="0.96" stroke="#dce5ec" stroke-width="3"/>
+  <circle cx="960" cy="430" r="194" fill="none" stroke="#526473" stroke-width="2"/>
+  <circle cx="960" cy="430" r="150" fill="none" stroke="#293743" stroke-width="2"/>
+  {ticks}
+  <line x1="960" y1="236" x2="960" y2="430" stroke="#ffd400" stroke-width="4"/>
+  <line x1="960" y1="430" x2="960" y2="584" stroke="#293743" stroke-width="2"/>
+  <line x1="806" y1="430" x2="1114" y2="430" stroke="#293743" stroke-width="2"/>
+  <circle cx="960" cy="430" r="8" fill="#ffd400"/>
+  <text x="960" y="510" text-anchor="middle" class="tiny">MOTION REFERENCE</text>
+  <text x="960" y="552" text-anchor="middle" class="small">1 REVOLUTION / SECOND</text>
+  <rect x="0" y="960" width="1920" height="120" fill="#101820"/>
+  <text x="960" y="1021" text-anchor="middle" class="title">{hostname_i}</text>
+  <text x="1880" y="1002" text-anchor="end" class="tiny">AUDIO / MOTION SYNC</text>
+  <text x="1880" y="1042" text-anchor="end" class="small">1 SECOND CADENCE</text>
+  <rect x="25" y="25" width="1870" height="1030" fill="none" stroke="#e8eef3" stroke-width="2" stroke-dasharray="12 12" opacity="0.42"/>
+</svg>'''
+
+
+def _write_test_card_background(
+    width: int,
+    height: int,
+    hostname: str,
+    ip_address: str,
+    fps: int,
+    tone_hz: int,
+    tone_interval_ms: int,
+    tone_duration_ms: int,
+) -> Path:
+    logo_path = Path(__file__).resolve().parent / "static" / "teletool-logo.png"
+    svg = _test_card_background_svg(
+        width,
+        height,
+        hostname,
+        ip_address,
+        logo_path,
+        fps=fps,
+        tone_hz=tone_hz,
+        tone_interval_ms=tone_interval_ms,
+        tone_duration_ms=tone_duration_ms,
+    )
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        prefix="teletool-test-card-",
+        suffix=".svg",
+        delete=False,
+    ) as stream:
+        stream.write(svg)
+        return Path(stream.name)
+
+
+def _write_test_card_marker() -> Path:
+    svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <circle cx="24" cy="24" r="18" fill="#ffd400" stroke="#ffffff" stroke-width="3"/>
+  <circle cx="24" cy="24" r="6" fill="#101820"/>
+</svg>'''
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        prefix="teletool-test-card-marker-",
+        suffix=".svg",
+        delete=False,
+    ) as stream:
+        stream.write(svg)
+        return Path(stream.name)
+
+
 from gst_base import GstPipelineBase
 
 import gi
 
 gi.require_version("Gst", "1.0")
-from gi.repository import Gst  # type: ignore
+gi.require_version("GstController", "1.0")
+from gi.repository import Gst, GstController  # type: ignore
 
 
 @dataclass
@@ -167,6 +352,9 @@ class GstNDIBridge(GstPipelineBase):
         self._lineout_log_full: Deque[str] = deque(maxlen=300)
         # Tail log used for frequent UI polling.
         self._lineout_log_tail: Deque[str] = deque(maxlen=120)
+        self._test_card_background_path: Optional[Path] = None
+        self._test_card_marker_path: Optional[Path] = None
+        self._test_card_controls: List[Any] = []
 
         # Cached pipeline elements/pads used by the 1 Hz stats poller.
         self._stats_cache_valid: bool = False
@@ -187,6 +375,48 @@ class GstNDIBridge(GstPipelineBase):
             line = f"{time.strftime('%H:%M:%S')} {msg}"
             self._lineout_log_full.append(line)
             self._lineout_log_tail.append(line)
+
+    def _setup_test_card_motion(
+        self,
+        center_x: int,
+        center_y: int,
+        radius: int,
+        marker_size: int,
+    ) -> None:
+        with self._lock:
+            pipeline = self._pipeline
+        if pipeline is None:
+            raise RuntimeError("Test-card pipeline is not available")
+        compositor = pipeline.get_by_name("testcardcompositor")
+        pad = compositor.get_static_pad("sink_1") if compositor is not None else None
+        if pad is None:
+            raise RuntimeError("Test-card motion pad is unavailable")
+
+        controls: List[Any] = []
+        position_offset = marker_size // 2
+        for property_name, timeshift, offset in (
+            ("xpos", 0, center_x - position_offset),
+            ("ypos", 250_000_000, center_y - position_offset),
+        ):
+            property_spec = pad.find_property(property_name)
+            if property_spec is None:
+                raise RuntimeError(f"Test-card motion property {property_name} is unavailable")
+            property_range = float(property_spec.maximum - property_spec.minimum)
+            normalized_amplitude = float(radius) / property_range
+            normalized_offset = float(offset - property_spec.minimum) / property_range
+            source = GstController.LFOControlSource()
+            source.set_property("waveform", GstController.LFOWaveform.SINE)
+            source.set_property("frequency", 1.0)
+            source.set_property("timeshift", timeshift)
+            source.set_property("amplitude", normalized_amplitude)
+            source.set_property("offset", normalized_offset)
+            binding = GstController.DirectControlBinding.new(pad, property_name, source)
+            if binding is None or not pad.add_control_binding(binding):
+                raise RuntimeError(f"Could not animate test-card {property_name}")
+            controls.extend((source, binding))
+
+        with self._lock:
+            self._test_card_controls = controls
 
     @staticmethod
     def _safe_run(argv: List[str], timeout_s: float = 2.0) -> Dict[str, Any]:
@@ -495,6 +725,7 @@ class GstNDIBridge(GstPipelineBase):
         selected: Dict[str, Any],
         volume: float,
         sink_sync: bool,
+        source_mode: str = "tv",
     ) -> str:
         sink_factory = str(selected.get("sink") or "")
         selected_kind = str(selected.get("kind") or "")
@@ -531,30 +762,42 @@ class GstNDIBridge(GstPipelineBase):
             if selected_kind == "inferno"
             else f"audio/x-raw,rate={rate_hz},channels={channels},layout=interleaved"
         )
-        decoder = "uridecodebin3" if Gst.ElementFactory.find("uridecodebin3") is not None else "uridecodebin"
-        decoder_props = (
-            f"{decoder} uri={_gst_quote(input_url)} name=lineoutdecode caps=audio/x-raw"
-        )
-        if decoder == "uridecodebin":
-            decoder_props += " expose-all-streams=false"
+        if source_mode == "test_card":
+            if Gst.ElementFactory.find("interaudiosrc") is None:
+                raise RuntimeError("Test-card alignment tone routing is unavailable")
+            source = (
+                "interaudiosrc channel=teletool-test-card buffer-time=100000000 "
+                "latency-time=50000000 period-time=10000000 "
+                f"! queue max-size-buffers=0 max-size-bytes=0 max-size-time={queue_time_ns} "
+            )
+        else:
+            decoder = "uridecodebin3" if Gst.ElementFactory.find("uridecodebin3") is not None else "uridecodebin"
+            decoder_props = (
+                f"{decoder} uri={_gst_quote(input_url)} name=lineoutdecode caps=audio/x-raw"
+            )
+            if decoder == "uridecodebin":
+                decoder_props += " expose-all-streams=false"
+            source = (
+                f"{decoder_props} lineoutdecode. ! queue max-size-buffers=0 "
+                f"max-size-bytes=0 max-size-time={queue_time_ns} "
+            )
         return (
-            f"{decoder_props} "
-            f"lineoutdecode. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time={queue_time_ns} "
+            f"{source}"
             f"! audioconvert ! audioresample "
             f"! capsfilter caps={_gst_quote(output_caps)} "
             f"! volume volume={volume:.3f} ! {sink}"
         )
 
     def lineout_start(self, device_id: Optional[str] = None, volume: Optional[float] = None):
-        """Start an isolated audio-only pipeline for the active TV channel."""
+        """Start an isolated audio pipeline for TV audio or the test-card pulse."""
         with self._lock:
             self._lineout_last_error = None
             source_mode = self._source_mode
         base = self._base_status_fields(include_log=False)
         if not base.get("running"):
             raise RuntimeError("NDI pipeline must be running before line output can be started")
-        if source_mode != "tv":
-            raise RuntimeError("Audio output is unavailable while the NDI test card is running")
+        if source_mode not in {"tv", "test_card"}:
+            raise RuntimeError("The active NDI source does not provide audio output")
 
         try:
             selected = self._resolve_audio_output_device(device_id or self._cfg.get("lineout_default_device"))
@@ -580,7 +823,7 @@ class GstNDIBridge(GstPipelineBase):
         sink_sync = bool(self._cfg.get("lineout_sink_sync", True))
         with self._lock:
             input_url = str(self._input_url or "")
-        if not input_url:
+        if source_mode == "tv" and not input_url:
             raise RuntimeError("Active TV stream URL is not available")
 
         try:
@@ -589,6 +832,7 @@ class GstNDIBridge(GstPipelineBase):
                 selected=selected,
                 volume=volume_i,
                 sink_sync=sink_sync,
+                source_mode=str(source_mode),
             )
             self._lineout_pipeline._start_pipeline(pipeline_desc)
             self._lineout_pipeline._wait_until_playing(
@@ -621,7 +865,10 @@ class GstNDIBridge(GstPipelineBase):
             self._lineout_sink_sync = sink_sync
             self._lineout_started_at = time.time()
             self._lineout_last_error = None
-        self._lineout_log_push(f"Line output enabled: {self._lineout_device_label} volume={volume_i:.2f}")
+        content = "test-card alignment pulse" if source_mode == "test_card" else "TV audio"
+        self._lineout_log_push(
+            f"Line output enabled: {self._lineout_device_label} source={content} volume={volume_i:.2f}"
+        )
 
     def lineout_stop(self):
         """Stop the isolated audio pipeline without touching NDI."""
@@ -871,23 +1118,51 @@ class GstNDIBridge(GstPipelineBase):
         if source_mode_i == "test_card":
             width = max(640, min(1920, int(cfg.get("ndi_test_card_width", 1920))))
             height = max(360, min(1080, int(cfg.get("ndi_test_card_height", 1080))))
-            fps = max(1, min(60, int(cfg.get("ndi_test_card_fps", 25))))
-            overlay = ""
-            if Gst.ElementFactory.find("textoverlay") is not None:
-                overlay_text = f"TeleTool Test Card - {ndi_name}"
-                overlay = (
-                    f'! textoverlay text={_gst_quote(overlay_text)} '
-                    'valignment=bottom halignment=center shaded-background=true '
-                )
+            fps = max(1, min(60, int(cfg.get("ndi_test_card_fps", 60))))
+            tone_hz = max(100, min(4000, int(cfg.get("ndi_test_card_tone_hz", 1000))))
+            tone_interval_ms = max(250, min(5000, int(cfg.get("ndi_test_card_tone_interval_ms", 1000))))
+            tone_duration_ms = max(10, min(tone_interval_ms // 2, int(cfg.get("ndi_test_card_tone_duration_ms", 100))))
+            tone_volume = max(0.01, min(1.0, float(cfg.get("ndi_test_card_tone_volume", 0.35))))
+            sine_periods = max(1, int(round(tone_hz * tone_duration_ms / 1000.0)))
+            motion_x, motion_y, motion_size = _test_card_motion_geometry(width, height)
+            motion_center_x = motion_x + (motion_size // 2)
+            motion_center_y = motion_y + (motion_size // 2)
+            motion_radius = max(70, int(round(motion_size * 0.39)))
+            marker_size = max(24, int(round(motion_size * 0.085)))
+            background_path = _write_test_card_background(
+                width=width,
+                height=height,
+                hostname=socket.gethostname(),
+                ip_address=_primary_ipv4_address(),
+                fps=fps,
+                tone_hz=tone_hz,
+                tone_interval_ms=tone_interval_ms,
+                tone_duration_ms=tone_duration_ms,
+            )
+            marker_path = _write_test_card_marker()
+            with self._lock:
+                self._test_card_background_path = background_path
+                self._test_card_marker_path = marker_path
             pipeline_desc = (
-                f'videotestsrc is-live=true do-timestamp=true pattern=smpte '
-                f'! video/x-raw,width={width},height={height},framerate={fps}/1 '
-                f'{overlay}'
-                f'! videoconvert ! video/x-raw,format={ndi_video_format},interlace-mode=progressive '
+                f'compositor name=testcardcompositor background=black max-threads=2 '
+                f'sink_0::zorder=0 sink_1::xpos={motion_x} sink_1::ypos={motion_y} '
+                f'sink_1::width={marker_size} sink_1::height={marker_size} sink_1::zorder=1 '
+                f'! video/x-raw,format=BGRA,width={width},height={height},framerate={fps}/1,interlace-mode=progressive '
                 f'! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! combiner.video '
-                f'audiotestsrc is-live=true do-timestamp=true wave=silence '
+                f'filesrc location={_gst_quote(background_path)} ! rsvgdec ! imagefreeze is-live=true '
+                f'! video/x-raw,format=BGRA,width={width},height={height},framerate={fps}/1 '
+                f'! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! testcardcompositor.sink_0 '
+                f'filesrc location={_gst_quote(marker_path)} ! rsvgdec ! imagefreeze is-live=true '
+                f'! video/x-raw,format=BGRA,width={marker_size},height={marker_size},framerate={fps}/1 '
+                f'! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! testcardcompositor.sink_1 '
+                f'audiotestsrc is-live=true do-timestamp=true wave=ticks freq={tone_hz} '
+                f'volume={tone_volume:.3f} tick-interval={tone_interval_ms * 1_000_000} '
+                f'sine-periods-per-tick={sine_periods} apply-tick-ramp=true samplesperbuffer=480 '
                 f'! audio/x-raw,format=F32LE,rate={rate_hz},channels={channels},layout=interleaved '
-                f'! queue max-size-buffers=8 max-size-bytes=0 max-size-time=0 ! combiner.audio '
+                f'! tee name=testcardtone '
+                f'testcardtone. ! queue max-size-buffers=8 max-size-bytes=0 max-size-time=0 ! combiner.audio '
+                f'testcardtone. ! queue max-size-buffers=16 max-size-bytes=0 max-size-time=0 '
+                f'! interaudiosink channel=teletool-test-card sync=true async=false '
                 f'ndisinkcombiner name=combiner {probe_clause}'
                 f'ndisink name=ndisink0 qos={"true" if ndi_qos_i else "false"} ndi-name={_gst_quote(ndi_name)}'
             )
@@ -959,6 +1234,20 @@ class GstNDIBridge(GstPipelineBase):
         self._push_log(f"NDI pipeline mode: {pipeline_mode}; delay={delay_ms_i}ms; deinterlace={deinterlace_i}")
         self._push_log(f"NDI pipeline: {pipeline_desc}")
         self._start_pipeline(pipeline_desc=pipeline_desc, poll_cb=self._poll_stats)
+        if source_mode_i == "test_card":
+            try:
+                self._wait_until_playing(timeout_s=8.0)
+                self._call_in_gst_context_sync(
+                    lambda: self._setup_test_card_motion(
+                        motion_center_x,
+                        motion_center_y,
+                        motion_radius,
+                        marker_size,
+                    )
+                )
+            except Exception:
+                self.stop()
+                raise
 
 
     def stop(self):
@@ -969,6 +1258,20 @@ class GstNDIBridge(GstPipelineBase):
             pass
 
         super().stop()
+        with self._lock:
+            asset_paths = (
+                self._test_card_background_path,
+                self._test_card_marker_path,
+            )
+            self._test_card_background_path = None
+            self._test_card_marker_path = None
+            self._test_card_controls = []
+        for asset_path in asset_paths:
+            if asset_path is not None:
+                try:
+                    asset_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
         with self._lock:
             self._ndi_name = None
             self._channel_uuid = None

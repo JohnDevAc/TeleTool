@@ -12,7 +12,7 @@
 <div class="wrap">
   <header>
     <div class="title">
-      <h1 class="srOnly">TV Line Audio Output</h1>
+      <h1 class="srOnly">Audio Output</h1>
     </div>
     <div class="rightTop">
       <nav class="pageNav" aria-label="TeleTool pages">
@@ -239,7 +239,7 @@ async function refreshStatus(){
 
   const ndiRunning = !!st.ndi_running;
   const ndiSourceMode = st.ndi_source_mode || null;
-  const ndiSupportsAudio = ndiRunning && ndiSourceMode === "tv";
+  const ndiSupportsAudio = ndiRunning && (ndiSourceMode === "tv" || ndiSourceMode === "test_card");
   const audioRunning = !!st.running;
   setRunningUI(audioRunning);
 
@@ -276,9 +276,10 @@ async function refreshStatus(){
   const selectedDevice = devices.find(d => d.id === deviceSel.value);
   if (st.last_error) setAlertBadge("bad", st.last_error);
   else if (selectedUnavailable) setAlertBadge("warn", selectedDevice?.details || "Selected audio output is unavailable");
-  else if (ndiRunning && ndiSourceMode === "test_card") setAlertBadge("warn", "Audio is unavailable while the test card is running");
   else if (!ndiRunning) setAlertBadge("warn", "Start an NDI stream first");
+  else if (audioRunning && ndiSourceMode === "test_card") setAlertBadge("good", "1 kHz alignment pulse running");
   else if (audioRunning) setAlertBadge("good", "Audio running");
+  else if (ndiSourceMode === "test_card") setAlertBadge("good", "1 kHz alignment pulse ready");
   else setAlertBadge("", "");
 
   scheduleStatusPoll(audioRunning ? 2000 : (ndiRunning ? 5000 : 8000));

@@ -3685,8 +3685,6 @@ def api_audio_start(req: LineOutStartReq):
     ndi_st = ndi_bridge.status_lite()
     if not ndi_st.get("running"):
         raise HTTPException(400, "NDI stream must be running before audio output can be started.")
-    if ndi_st.get("source_mode") != "tv":
-        raise HTTPException(409, "Audio output is unavailable while the NDI test card is running.")
 
     try:
         ndi_bridge.lineout_start(device_id=req.device_id, volume=req.volume)

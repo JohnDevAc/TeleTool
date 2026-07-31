@@ -70,10 +70,20 @@ def main() -> None:
         index_html,
         "NDI test-card controls",
         'id="testCardEnabled"',
+        'class="testCardSwitch"',
         'jpost("/api/test-card/start"',
         'jpost("/api/test-card/stop"',
         'ndiSourceMode === "test_card"',
         'sourceMode === "test_card" ? "TEST CARD"',
+    )
+
+    common_css = (ROOT / "static" / "common.css").read_text(encoding="utf-8")
+    require(
+        common_css,
+        "NDI test-card switch styling",
+        ".testCardSwitch::after",
+        ".testCardToggle input:checked + .testCardSwitch",
+        ".testCardToggle input:focus-visible + .testCardSwitch",
     )
 
     audio_html = (ROOT / "static" / "audio.html").read_text(encoding="utf-8")

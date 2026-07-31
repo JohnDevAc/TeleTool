@@ -2,6 +2,8 @@
 """Validate the generated NDI test-card lifecycle and UI contract."""
 
 import ast
+import base64
+import html
 from pathlib import Path
 
 
@@ -46,6 +48,7 @@ def main() -> None:
         'audiotestsrc is-live=true do-timestamp=true wave=ticks',
         'freq={tone_hz}',
         'tick-interval={tone_interval_ms * 1_000_000}',
+        'multicast_enabled=bool(multicast_enabled_i)',
         'audio/x-raw,format=F32LE',
         'interaudiosink channel=teletool-test-card',
         'source_mode_i == "test_card"',
@@ -80,8 +83,19 @@ def main() -> None:
         '(778, 332, "-10")',
         'x="0.5" y="0.5" width="1919" height="1079"',
         'stroke="#ffffff" stroke-width="1" shape-rendering="crispEdges"',
+        'if multicast_enabled',
+        'aria-label="Multicast Send"',
+        '<title>Multicast Send</title>',
+        'fill="#39e58c"',
         '>MOTION REFERENCE</text>',
         '>{hostname_i}</text>',
+    )
+    card_writer_source = source_for_function("gst_ndi.py", "_write_test_card_background")
+    require(
+        card_writer_source,
+        "test-card multicast indicator wiring",
+        "multicast_enabled: bool",
+        "multicast_enabled=multicast_enabled",
     )
     for removed_label in ("NDI SOURCE", "TELETOOL CANDIDATE"):
         if removed_label in card_source:
@@ -91,6 +105,28 @@ def main() -> None:
             raise SystemExit(f"test-card clock still contains split frame label: {split_frame_label}")
     if 'for frame in range(5, 60, 5)' in card_source:
         raise SystemExit("test-card clock still contains full-length five-frame spokes")
+    if "multicastLabel" in card_source:
+        raise SystemExit("test-card multicast indicator still contains a visible text label")
+
+    gst_source = (ROOT / "gst_ndi.py").read_text(encoding="utf-8")
+    gst_tree = ast.parse(gst_source, filename="gst_ndi.py")
+    card_node = next(
+        node
+        for node in gst_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_test_card_background_svg"
+    )
+    namespace = {"base64": base64, "html": html, "Path": Path}
+    card_module = ast.fix_missing_locations(ast.Module(body=[card_node], type_ignores=[]))
+    exec(compile(card_module, "gst_ndi.py", "exec"), namespace)
+    render_card = namespace["_test_card_background_svg"]
+    render_args = (1920, 1080, "test-host", "192.0.2.10", ROOT / "missing-logo.png")
+    multicast_card = render_card(*render_args, multicast_enabled=True)
+    unicast_card = render_card(*render_args, multicast_enabled=False)
+    for marker in ('aria-label="Multicast Send"', "<title>Multicast Send</title>", "#39e58c"):
+        if marker not in multicast_card:
+            raise SystemExit(f"multicast test card is missing indicator marker: {marker}")
+        if marker in unicast_card:
+            raise SystemExit(f"unicast test card unexpectedly contains indicator marker: {marker}")
 
     lineout_pipeline = source_for_function("gst_ndi.py", "_build_lineout_pipeline_desc", "GstNDIBridge")
     require(

@@ -79,6 +79,7 @@ def _test_card_background_svg(
     tone_hz: int = 1000,
     tone_interval_ms: int = 1000,
     tone_duration_ms: int = 100,
+    multicast_enabled: bool = False,
 ) -> str:
     """Build the static part of the test card; imagefreeze reuses this frame at 60p."""
     try:
@@ -130,6 +131,17 @@ def _test_card_background_svg(
             (778, 538, "-20"),
             (778, 332, "-10"),
         )
+    )
+    multicast_indicator = (
+        '''<g aria-label="Multicast Send">
+    <title>Multicast Send</title>
+    <path d="M58 1008 Q46 1020 58 1032 M48 998 Q30 1020 48 1042
+             M82 1008 Q94 1020 82 1032 M92 998 Q110 1020 92 1042"
+          fill="none" stroke="#39e58c" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="70" cy="1020" r="7" fill="#39e58c"/>
+  </g>'''
+        if multicast_enabled
+        else ""
     )
 
     hostname_i = html.escape(str(hostname or "TeleTool"), quote=True)
@@ -184,6 +196,7 @@ def _test_card_background_svg(
   <text x="960" y="510" text-anchor="middle" class="tiny">MOTION REFERENCE</text>
   <text x="960" y="552" text-anchor="middle" class="small">1 REVOLUTION / SECOND</text>
   <rect x="0" y="960" width="1920" height="120" fill="#101820"/>
+  {multicast_indicator}
   <text x="960" y="1021" text-anchor="middle" class="title">{hostname_i}</text>
   <text x="1880" y="1002" text-anchor="end" class="tiny">AUDIO / MOTION SYNC</text>
   <text x="1880" y="1042" text-anchor="end" class="small">1 SECOND CADENCE</text>
@@ -201,6 +214,7 @@ def _write_test_card_background(
     tone_hz: int,
     tone_interval_ms: int,
     tone_duration_ms: int,
+    multicast_enabled: bool,
 ) -> Path:
     logo_path = Path(__file__).resolve().parent / "static" / "teletool-logo.png"
     svg = _test_card_background_svg(
@@ -213,6 +227,7 @@ def _write_test_card_background(
         tone_hz=tone_hz,
         tone_interval_ms=tone_interval_ms,
         tone_duration_ms=tone_duration_ms,
+        multicast_enabled=multicast_enabled,
     )
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -1159,6 +1174,7 @@ class GstNDIBridge(GstPipelineBase):
                 tone_hz=tone_hz,
                 tone_interval_ms=tone_interval_ms,
                 tone_duration_ms=tone_duration_ms,
+                multicast_enabled=bool(multicast_enabled_i),
             )
             marker_path = _write_test_card_marker()
             with self._lock:

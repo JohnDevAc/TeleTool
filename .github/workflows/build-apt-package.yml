@@ -74,6 +74,9 @@ jobs:
       - name: Validate NDI multicast configuration
         run: python3 scripts/check_ndi_multicast_config.py
 
+      - name: Validate NDI test card lifecycle
+        run: python3 scripts/check_ndi_test_card.py
+
       - name: Validate UK DVB-T/T2 tuning profiles
         run: python3 scripts/check_tv_tuning_profiles.py
 

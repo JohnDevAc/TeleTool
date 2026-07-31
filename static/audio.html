@@ -238,6 +238,8 @@ async function refreshStatus(){
   }
 
   const ndiRunning = !!st.ndi_running;
+  const ndiSourceMode = st.ndi_source_mode || null;
+  const ndiSupportsAudio = ndiRunning && ndiSourceMode === "tv";
   const audioRunning = !!st.running;
   setRunningUI(audioRunning);
 
@@ -246,13 +248,14 @@ async function refreshStatus(){
   const deviceSel = document.getElementById("device");
   const volumeInput = document.getElementById("volume");
   const selectedUnavailable = !!deviceSel.selectedOptions[0]?.disabled;
-  if (startBtn) startBtn.disabled = audioBusy || !ndiRunning || audioRunning || !deviceSel.value || selectedUnavailable;
+  if (startBtn) startBtn.disabled = audioBusy || !ndiSupportsAudio || audioRunning || !deviceSel.value || selectedUnavailable;
   if (stopBtn) stopBtn.disabled = audioBusy || !audioRunning;
   if (deviceSel) deviceSel.disabled = audioBusy || audioRunning;
   if (volumeInput) volumeInput.disabled = audioBusy || audioRunning;
 
   const nextKey = JSON.stringify({
     ndiRunning,
+    ndiSourceMode,
     audioRunning,
     pipeline_state: st.pipeline_state || (audioRunning ? "PLAYING" : "NULL"),
     device: st.device_label || st.device_id || "",
@@ -262,7 +265,7 @@ async function refreshStatus(){
   });
 
   if (nextKey !== lastStatusKey){
-    document.getElementById("st_ndi").textContent = ndiRunning ? "RUNNING" : "STOPPED";
+    document.getElementById("st_ndi").textContent = ndiRunning ? (ndiSourceMode === "test_card" ? "TEST CARD" : "RUNNING") : "STOPPED";
     document.getElementById("st_state").textContent = st.pipeline_state || (audioRunning ? "PLAYING" : "NULL");
     document.getElementById("st_device").textContent = audioRunning ? (st.device_label || selectedDeviceLabel(st.device_id)) : "-";
     document.getElementById("st_volume").textContent = audioRunning && Number.isFinite(Number(st.volume)) ? formatVolume(st.volume) : "-";
@@ -273,6 +276,7 @@ async function refreshStatus(){
   const selectedDevice = devices.find(d => d.id === deviceSel.value);
   if (st.last_error) setAlertBadge("bad", st.last_error);
   else if (selectedUnavailable) setAlertBadge("warn", selectedDevice?.details || "Selected audio output is unavailable");
+  else if (ndiRunning && ndiSourceMode === "test_card") setAlertBadge("warn", "Audio is unavailable while the test card is running");
   else if (!ndiRunning) setAlertBadge("warn", "Start an NDI stream first");
   else if (audioRunning) setAlertBadge("good", "Audio running");
   else setAlertBadge("", "");

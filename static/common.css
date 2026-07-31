@@ -1103,6 +1103,9 @@ input[type="range"]::-moz-range-thumb{
   color:var(--muted);
   cursor:default;
 }
+.testCardToggle{
+  padding:0 4px;
+}
 .ndiMulticastFields{
   display:grid;
   grid-template-columns:repeat(3, minmax(0, 1fr));

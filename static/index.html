@@ -79,6 +79,10 @@
       <div class="actions">
         <button id="start" class="primary">Start NDI</button>
         <button id="stop" class="danger">Stop</button>
+        <label class="ndiToggle testCardToggle" for="testCardEnabled">
+          <input id="testCardEnabled" type="checkbox" />
+          <span>Test card</span>
+        </label>
         <a class="inlineLink small" href="https://ndi.video/" target="_blank" rel="noopener">About NDI®</a>
         <span id="toast" class="toast"></span>
       </div>
@@ -158,6 +162,8 @@
 <script>
 let uiConfig = {};
 let ndiStreamRunning = false;
+let ndiSourceMode = null;
+let testCardBusy = false;
 let tvSetupRunning = false;
 let tvSetupRegionsLoading = false;
 
@@ -173,6 +179,8 @@ function updateMulticastControls(){
 
 function updateNdiControls(){
   const busyWithSetup = !!tvSetupRunning;
+  const testCardActive = !!ndiStreamRunning && ndiSourceMode === "test_card";
+  const tvStreamActive = !!ndiStreamRunning && !testCardActive;
   for (const id of ["channel","ndiname","ndigroups"]){
     const el = document.getElementById(id);
     if (el) el.disabled = !!ndiStreamRunning || busyWithSetup;
@@ -181,6 +189,11 @@ function updateNdiControls(){
   const stopBtn = document.getElementById("stop");
   if (startBtn) startBtn.disabled = !!ndiStreamRunning || busyWithSetup;
   if (stopBtn) stopBtn.disabled = !ndiStreamRunning || busyWithSetup;
+  const testCard = document.getElementById("testCardEnabled");
+  if (testCard) {
+    if (!testCardBusy) testCard.checked = testCardActive;
+    testCard.disabled = testCardBusy || busyWithSetup || tvStreamActive;
+  }
   updateMulticastControls();
 }
 
@@ -196,15 +209,16 @@ function updateTvSetupControls(){
   if (runBtn) runBtn.disabled = disabledByNdi || disabledBySetup || disabledByLoading || !(regionSel && regionSel.value);
 }
 
-function setRunningUI(running){
+function setRunningUI(running, sourceMode){
   const dot = document.getElementById("dot");
   const statusText = document.getElementById("statusText");
   dot.classList.toggle("ok", !!running);
-  statusText.textContent = running ? "RUNNING" : "STOPPED";
+  statusText.textContent = running ? (sourceMode === "test_card" ? "TEST CARD" : "RUNNING") : "STOPPED";
 }
 
-function setFormDisabled(disabled){
-  ndiStreamRunning = !!disabled;
+function setFormDisabled(running, sourceMode){
+  ndiStreamRunning = !!running;
+  ndiSourceMode = ndiStreamRunning ? (sourceMode || "tv") : null;
   updateNdiControls();
   updateTvSetupControls();
 }
@@ -398,6 +412,44 @@ async function loadTvSetupRegions(){
   }
 }
 
+function readNdiOutputSettings(){
+  const ndiName = document.getElementById("ndiname").value.trim();
+  const groups = document.getElementById("ndigroups").value.trim();
+  const multicastEnabled = document.getElementById("ndiMulticastEnabled").checked;
+  const multicastNetprefix = document.getElementById("ndiMulticastNetprefix").value.trim();
+  const multicastNetmask = document.getElementById("ndiMulticastNetmask").value.trim();
+  const multicastTtl = Number(document.getElementById("ndiMulticastTtl").value);
+  if (!ndiName){
+    toast("Please enter an NDI name.", "bad");
+    return null;
+  }
+  if (multicastEnabled && (!multicastNetprefix || !multicastNetmask)) {
+    toast("Enter the multicast address prefix and network mask.", "bad");
+    return null;
+  }
+  if (!Number.isInteger(multicastTtl) || multicastTtl < 1 || multicastTtl > 255) {
+    toast("Multicast TTL must be a whole number from 1 to 255.", "bad");
+    return null;
+  }
+  return {
+    ndi_name: ndiName,
+    ndi_groups: groups,
+    ndi_multicast_enabled: multicastEnabled,
+    ndi_multicast_netprefix: multicastNetprefix,
+    ndi_multicast_netmask: multicastNetmask,
+    ndi_multicast_ttl: multicastTtl,
+  };
+}
+
+function rememberNdiOutputSettings(settings){
+  uiConfig.ndi_default_name = settings.ndi_name;
+  uiConfig.ndi_groups = settings.ndi_groups;
+  uiConfig.ndi_multicast_enabled = settings.ndi_multicast_enabled;
+  uiConfig.ndi_multicast_netprefix = settings.ndi_multicast_netprefix;
+  uiConfig.ndi_multicast_netmask = settings.ndi_multicast_netmask;
+  uiConfig.ndi_multicast_ttl = settings.ndi_multicast_ttl;
+}
+
 let tvSetupPollTimer = null;
 let lastTvSetupRefreshFinishedAt = null;
 
@@ -528,12 +580,14 @@ async function refreshStatus() {
   const st = await jget("/api/status?lite=1&rf=0");
   const rf = latestRfStatus;
   const running = !!st.running;
-  setRunningUI(running);
-  setFormDisabled(running);
+  const sourceMode = running ? (st.source_mode || "tv") : null;
+  setRunningUI(running, sourceMode);
+  setFormDisabled(running, sourceMode);
   if (running) populateFormFromStatus(st);
 
   const nextKey = JSON.stringify({
     running,
+    source_mode: sourceMode,
     pipeline_state: st.pipeline_state || (running ? "PLAYING" : "NULL"),
     ndi_name: running ? (st.ndi_name || "—") : "—",
     rf_label: rfSignalStatsLabel(rf),
@@ -559,6 +613,7 @@ async function refreshStatus() {
 
   if (st.last_error) setAlertBadge("bad", st.last_error);
   else if (st.last_warning) setAlertBadge("warn", st.last_warning);
+  else if (running && sourceMode === "test_card") setAlertBadge("good", "Test card running");
   else setAlertBadge("", "");
 
   scheduleStatusPoll(STATUS_POLL_MS);
@@ -579,24 +634,8 @@ async function refreshRfStatus(){
 
 document.getElementById("start").addEventListener("click", async () => {
   const uuid = document.getElementById("channel").value;
-  const ndi = document.getElementById("ndiname").value.trim();
-  const groups = document.getElementById("ndigroups").value.trim();
-  const multicastEnabled = document.getElementById("ndiMulticastEnabled").checked;
-  const multicastNetprefix = document.getElementById("ndiMulticastNetprefix").value.trim();
-  const multicastNetmask = document.getElementById("ndiMulticastNetmask").value.trim();
-  const multicastTtl = Number(document.getElementById("ndiMulticastTtl").value);
-  if (!ndi){
-    toast("Please enter an NDI name.", "bad");
-    return;
-  }
-  if (multicastEnabled && (!multicastNetprefix || !multicastNetmask)) {
-    toast("Enter the multicast address prefix and network mask.", "bad");
-    return;
-  }
-  if (!Number.isInteger(multicastTtl) || multicastTtl < 1 || multicastTtl > 255) {
-    toast("Multicast TTL must be a whole number from 1 to 255.", "bad");
-    return;
-  }
+  const settings = readNdiOutputSettings();
+  if (!settings) return;
   if (tvSetupRunning) {
     toast("TV setup is running. NDI controls are disabled until setup finishes.", "warn", 4000);
     await refreshTvSetupStatus();
@@ -613,23 +652,13 @@ document.getElementById("start").addEventListener("click", async () => {
   try {
     const result = await jpost("/api/start", {
       channel_uuid: uuid,
-      ndi_name: ndi,
-      ndi_groups: groups,
+      ...settings,
       profile: uiConfig.tvh_stream_profile || "pass",
-      ndi_multicast_enabled: multicastEnabled,
-      ndi_multicast_netprefix: multicastNetprefix,
-      ndi_multicast_netmask: multicastNetmask,
-      ndi_multicast_ttl: multicastTtl,
       deinterlace: !!uiConfig.ndi_deinterlace,
       buffer_extra_ms: Number(uiConfig.ndi_buffer_extra_ms || 0),
       ndi_qos: !!uiConfig.ndi_qos,
     });
-    uiConfig.ndi_default_name = ndi;
-    uiConfig.ndi_groups = groups;
-    uiConfig.ndi_multicast_enabled = multicastEnabled;
-    uiConfig.ndi_multicast_netprefix = multicastNetprefix;
-    uiConfig.ndi_multicast_netmask = multicastNetmask;
-    uiConfig.ndi_multicast_ttl = multicastTtl;
+    rememberNdiOutputSettings(settings);
     if (result && result.restart_required) {
       restartRequested = true;
       toast("Applying NDI settings. Program restarting...", "warn", 6000);
@@ -640,6 +669,70 @@ document.getElementById("start").addEventListener("click", async () => {
   } catch (e) {
     toast("Start failed: " + e, "bad");
   } finally {
+    updateNdiControls();
+  }
+  if (!restartRequested) {
+    try { await refreshStatus(); } catch(e) {}
+  }
+});
+
+document.getElementById("testCardEnabled").addEventListener("change", async event => {
+  if (testCardBusy) return;
+  const toggle = event.currentTarget;
+  const enable = !!toggle.checked;
+  if (tvSetupRunning) {
+    toast("TV setup is running. NDI controls are disabled until setup finishes.", "warn", 4000);
+    updateNdiControls();
+    return;
+  }
+  if (enable && ndiStreamRunning) {
+    toast("Stop the active NDI stream before starting the test card.", "warn", 4000);
+    updateNdiControls();
+    return;
+  }
+  if (!enable && (!ndiStreamRunning || ndiSourceMode !== "test_card")) {
+    updateNdiControls();
+    return;
+  }
+
+  const settings = enable ? readNdiOutputSettings() : null;
+  if (enable && !settings) {
+    toggle.checked = false;
+    return;
+  }
+
+  testCardBusy = true;
+  updateNdiControls();
+  let restartRequested = false;
+  try {
+    if (enable) {
+      toast("Starting test card...");
+      const result = await jpost("/api/test-card/start", {
+        ...settings,
+        profile: uiConfig.tvh_stream_profile || "pass",
+        deinterlace: false,
+        buffer_extra_ms: 0,
+        ndi_qos: !!uiConfig.ndi_qos,
+      });
+      rememberNdiOutputSettings(settings);
+      ndiStreamRunning = true;
+      ndiSourceMode = "test_card";
+      if (result && result.restart_required) {
+        restartRequested = true;
+        toast("Applying NDI settings. Program restarting...", "warn", 6000);
+        setTimeout(() => refreshStatus().catch(() => {}), 9000);
+      } else toast("Test card started.");
+    } else {
+      toast("Stopping test card...");
+      await jpost("/api/test-card/stop", {});
+      ndiStreamRunning = false;
+      ndiSourceMode = null;
+      toast("Test card stopped.");
+    }
+  } catch (e) {
+    toast(`Test card ${enable ? "start" : "stop"} failed: ${e}`, "bad", 5000);
+  } finally {
+    testCardBusy = false;
     updateNdiControls();
   }
   if (!restartRequested) {

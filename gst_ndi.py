@@ -51,6 +51,7 @@ class RunState:
     channel_uuid: Optional[str]
     ndi_name: Optional[str]
     input_url: Optional[str]
+    source_mode: Optional[str]
     started_at: Optional[float]
     last_log: List[str]
 
@@ -120,6 +121,7 @@ class GstNDIBridge(GstPipelineBase):
         self._ndi_name: Optional[str] = None
         self._channel_uuid: Optional[str] = None
         self._input_url: Optional[str] = None
+        self._source_mode: Optional[str] = None
         self._started_at: Optional[float] = None
 
         self._video_caps: Optional[str] = None
@@ -376,6 +378,7 @@ class GstNDIBridge(GstPipelineBase):
                 channel_uuid=self._channel_uuid if base["running"] else None,
                 ndi_name=self._ndi_name if base["running"] else None,
                 input_url=self._input_url if base["running"] else None,
+                source_mode=self._source_mode if base["running"] else None,
                 started_at=self._started_at if base["running"] else None,
                 last_log=base["last_log"],
                 pipeline_state=base["pipeline_state"],
@@ -419,6 +422,7 @@ class GstNDIBridge(GstPipelineBase):
                 "channel_uuid": self._channel_uuid if running else None,
                 "ndi_name": self._ndi_name if running else None,
                 "input_url": self._input_url if running else None,
+                "source_mode": self._source_mode if running else None,
                 "started_at": self._started_at if running else None,
                 "ndi_groups": self._ndi_groups if running else None,
                 "ndi_discovery_server": self._ndi_discovery_server if running else None,
@@ -482,6 +486,7 @@ class GstNDIBridge(GstPipelineBase):
             )
             d = asdict(st)
             d["ndi_running"] = bool(ndi_base["running"])
+            d["ndi_source_mode"] = self._source_mode if ndi_base["running"] else None
             return d
 
     def _build_lineout_pipeline_desc(
@@ -544,9 +549,12 @@ class GstNDIBridge(GstPipelineBase):
         """Start an isolated audio-only pipeline for the active TV channel."""
         with self._lock:
             self._lineout_last_error = None
+            source_mode = self._source_mode
         base = self._base_status_fields(include_log=False)
         if not base.get("running"):
             raise RuntimeError("NDI pipeline must be running before line output can be started")
+        if source_mode != "tv":
+            raise RuntimeError("Audio output is unavailable while the NDI test card is running")
 
         try:
             selected = self._resolve_audio_output_device(device_id or self._cfg.get("lineout_default_device"))
@@ -657,6 +665,7 @@ class GstNDIBridge(GstPipelineBase):
         ndi_multicast_netprefix: Optional[str] = None,
         ndi_multicast_netmask: Optional[str] = None,
         ndi_multicast_ttl: Optional[int] = None,
+        source_mode: str = "tv",
     ):
         """Start the pipeline with a configurable output delay.
 
@@ -681,6 +690,9 @@ class GstNDIBridge(GstPipelineBase):
             self._lineout_log_tail.clear()
 
         cfg = self._cfg
+        source_mode_i = str(source_mode or "tv").strip().lower()
+        if source_mode_i not in {"tv", "test_card"}:
+            raise ValueError("Unsupported NDI source mode")
 
         # Resolve per-start overrides against config.json defaults.
         delay_min = int(cfg.get("ndi_delay_min_ms", 20))
@@ -737,6 +749,7 @@ class GstNDIBridge(GstPipelineBase):
             self._ndi_name = str(ndi_name)
             self._channel_uuid = channel_uuid
             self._input_url = str(input_url)
+            self._source_mode = source_mode_i
             self._started_at = time.time()
             self._ndi_delay_ms = int(delay_ms_i)
             self._ndi_groups = ndi_groups_i or None
@@ -834,7 +847,11 @@ class GstNDIBridge(GstPipelineBase):
         # lets GStreamer choose the right demuxer/parser/decoder per service.
         # The explicit live_ts_* modes remain available via config.json for sites
         # that need to force a known broadcast codec pair.
-        pipeline_mode = str(cfg.get("tvh_pipeline_mode", "uridecodebin3")).lower().strip()
+        pipeline_mode = (
+            "test_card"
+            if source_mode_i == "test_card"
+            else str(cfg.get("tvh_pipeline_mode", "uridecodebin3")).lower().strip()
+        )
         auto_decode_modes = {"auto", "mixed", "mixed_codec", "uridecodebin3", "uridecodebin"}
         use_live_ts = pipeline_mode not in auto_decode_modes and str(input_url).lower().startswith(("http://", "https://"))
 
@@ -851,7 +868,30 @@ class GstNDIBridge(GstPipelineBase):
                 f'ndisinkcombiner name=combiner {probe_clause}ndisink name=ndisink0 qos={"true" if ndi_qos_i else "false"} ndi-name={_gst_quote(ndi_name)}'
             )
 
-        if use_live_ts:
+        if source_mode_i == "test_card":
+            width = max(640, min(1920, int(cfg.get("ndi_test_card_width", 1920))))
+            height = max(360, min(1080, int(cfg.get("ndi_test_card_height", 1080))))
+            fps = max(1, min(60, int(cfg.get("ndi_test_card_fps", 25))))
+            overlay = ""
+            if Gst.ElementFactory.find("textoverlay") is not None:
+                overlay_text = f"TeleTool Test Card - {ndi_name}"
+                overlay = (
+                    f'! textoverlay text={_gst_quote(overlay_text)} '
+                    'valignment=bottom halignment=center shaded-background=true '
+                )
+            pipeline_desc = (
+                f'videotestsrc is-live=true do-timestamp=true pattern=smpte '
+                f'! video/x-raw,width={width},height={height},framerate={fps}/1 '
+                f'{overlay}'
+                f'! videoconvert ! video/x-raw,format={ndi_video_format},interlace-mode=progressive '
+                f'! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! combiner.video '
+                f'audiotestsrc is-live=true do-timestamp=true wave=silence '
+                f'! audio/x-raw,format=S16LE,rate={rate_hz},channels={channels},layout=interleaved '
+                f'! queue max-size-buffers=8 max-size-bytes=0 max-size-time=0 ! combiner.audio '
+                f'ndisinkcombiner name=combiner {probe_clause}'
+                f'ndisink name=ndisink0 qos={"true" if ndi_qos_i else "false"} ndi-name={_gst_quote(ndi_name)}'
+            )
+        elif use_live_ts:
             # Explicit modes avoid parse-launch's ambiguous demux. ! decodebin linking when
             # services carry multiple audio tracks, teletext, subtitles, or mixed metadata.
             if pipeline_mode in {"live_ts_hevc_aac", "live_ts_h265_aac", "live_ts_dvbt2", "live_ts_explicit"}:
@@ -933,6 +973,7 @@ class GstNDIBridge(GstPipelineBase):
             self._ndi_name = None
             self._channel_uuid = None
             self._input_url = None
+            self._source_mode = None
             self._started_at = None
             self._ndi_delay_ms = None
             self._ndi_groups = None

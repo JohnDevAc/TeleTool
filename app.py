@@ -358,7 +358,9 @@ def _ndi_runtime_restart_required(req_d: Dict[str, Any]) -> bool:
     return desired != NDI_RUNTIME_CONFIG_AT_START
 
 
-def _schedule_pending_ndi_start_after_restart(req_d: Dict[str, Any]) -> None:
+def _schedule_pending_ndi_start_after_restart(req_d: Dict[str, Any], *, source_mode: str = "tv") -> None:
+    pending = deepcopy(req_d)
+    pending["source_mode"] = source_mode
     patch = {
         "ndi_default_name": req_d["ndi_name"],
         "ndi_groups": req_d["ndi_groups"],
@@ -366,10 +368,11 @@ def _schedule_pending_ndi_start_after_restart(req_d: Dict[str, Any]) -> None:
         "ndi_multicast_netprefix": req_d["ndi_multicast_netprefix"],
         "ndi_multicast_netmask": req_d["ndi_multicast_netmask"],
         "ndi_multicast_ttl": req_d["ndi_multicast_ttl"],
-        "tvh_stream_profile": req_d["profile"],
-        "ndi_last_start_request": deepcopy(req_d),
-        "ndi_pending_start_request": deepcopy(req_d),
+        "ndi_pending_start_request": pending,
     }
+    if source_mode == "tv":
+        patch["tvh_stream_profile"] = req_d["profile"]
+        patch["ndi_last_start_request"] = deepcopy(req_d)
     updated = _update_config(patch)
     try:
         write_ndi_runtime_config(updated)
@@ -383,7 +386,23 @@ def _start_pending_ndi_after_restart() -> None:
     if not isinstance(pending, dict):
         return
     req_d = deepcopy(pending)
+    source_mode = str(req_d.pop("source_mode", "tv") or "tv").strip().lower()
     try:
+        if source_mode == "test_card":
+            with NDI_SUPERVISOR_LOCK:
+                NDI_SUPERVISOR_STATE.update({
+                    "desired": False,
+                    "request": None,
+                    "was_running": False,
+                    "last_restart_reason": "test card settings restart",
+                    "last_error": None,
+                    "pipeline_status": "starting test card",
+                })
+            _start_test_card_pipeline_from_dict(req_d)
+            with NDI_SUPERVISOR_LOCK:
+                NDI_SUPERVISOR_STATE["pipeline_status"] = "test card running"
+            _update_config({"ndi_pending_start_request": None})
+            return
         with NDI_SUPERVISOR_LOCK:
             NDI_SUPERVISOR_STATE.update({
                 "desired": True,
@@ -926,6 +945,26 @@ def _start_ndi_pipeline_from_dict(req_d: Dict[str, Any], *, reason: str, force_r
         ndi_multicast_ttl=req_d["ndi_multicast_ttl"],
     )
     return stream_url
+
+
+def _start_test_card_pipeline_from_dict(req_d: Dict[str, Any]) -> None:
+    """Start the generated NDI test card without creating a TV stream."""
+    _normalise_ndi_request_dict(req_d)
+    ndi_bridge.start_with_delay(
+        input_url="test-card://local",
+        ndi_name=req_d["ndi_name"],
+        channel_uuid=None,
+        delay_ms=0,
+        deinterlace=False,
+        buffer_extra_ms=0,
+        ndi_qos=req_d["ndi_qos"],
+        ndi_groups=req_d["ndi_groups"],
+        ndi_multicast_enabled=req_d["ndi_multicast_enabled"],
+        ndi_multicast_netprefix=req_d["ndi_multicast_netprefix"],
+        ndi_multicast_netmask=req_d["ndi_multicast_netmask"],
+        ndi_multicast_ttl=req_d["ndi_multicast_ttl"],
+        source_mode="test_card",
+    )
 
 
 def _restart_ndi_pipeline(reason: str) -> None:
@@ -3077,12 +3116,16 @@ def api_status(
     # Backwards-compat for the existing UI: expose active_channel_uuid.
     st["active_channel_uuid"] = st.get("channel_uuid")
     st["active_profile"] = _active_profile
+    source_mode = str(st.get("source_mode") or "")
     with NDI_SUPERVISOR_LOCK:
         sup = deepcopy(NDI_SUPERVISOR_STATE)
         req_d = sup.get("request") or {}
     last_req = cfg.get("ndi_last_start_request") if isinstance(cfg.get("ndi_last_start_request"), dict) else None
     st["auto_reconnect_enabled"] = _ndi_supervisor_config()["enabled"]
-    if st.get("running"):
+    if st.get("running") and source_mode == "test_card":
+        st["active_channel_name"] = "Test Card"
+        st["active_channel_number"] = None
+    elif st.get("running"):
         st["active_channel_name"] = req_d.get("channel_name")
         st["active_channel_number"] = req_d.get("channel_number")
     else:
@@ -3111,6 +3154,7 @@ def api_status(
         "desired_channel_number": req_d.get("channel_number"),
         "desired_profile": req_d.get("profile"),
         "desired_ndi_name": req_d.get("ndi_name"),
+        "source_mode": source_mode or None,
         "last_start_request": deepcopy(last_req) if last_req else None,
     }
     return st
@@ -3300,11 +3344,19 @@ class StartReq(BaseModel):
         description="Deprecated alias for ndi_multicast_netprefix.",
     )
 
+
+class TestCardReq(StartReq):
+    channel_uuid: Optional[str] = None
+
+
 @app.post("/api/start")
 def api_start(req: StartReq):
     global _active_profile
     if _tv_setup_snapshot().get("running"):
         raise HTTPException(409, "TV Setup is running; NDI cannot be started until setup finishes")
+    current = ndi_bridge.status_lite(include_logs=False, include_stats=False)
+    if current.get("running") and current.get("source_mode") == "test_card":
+        raise HTTPException(409, "Stop the NDI test card before starting the TV stream")
     try:
         try:
             req_d = _ndi_req_to_dict(req)
@@ -3372,6 +3424,96 @@ def api_start(req: StartReq):
         "ndi_groups": req_d["ndi_groups"],
         "auto_reconnect": _ndi_supervisor_config()["enabled"],
     }
+
+
+@app.post("/api/test-card/start")
+def api_test_card_start(req: TestCardReq):
+    if _tv_setup_snapshot().get("running"):
+        raise HTTPException(409, "TV Setup is running; the NDI test card cannot be started until setup finishes")
+    with NDI_SUPERVISOR_LOCK:
+        main_stream_desired = bool(NDI_SUPERVISOR_STATE.get("desired"))
+    current = ndi_bridge.status_lite(include_logs=False, include_stats=False)
+    if main_stream_desired or current.get("running"):
+        raise HTTPException(409, "Stop the active NDI stream before starting the test card")
+
+    try:
+        req_d = _ndi_req_to_dict(req)
+        req_d["channel_uuid"] = None
+        if _ndi_runtime_restart_required(req_d):
+            _schedule_pending_ndi_start_after_restart(req_d, source_mode="test_card")
+            return {
+                "ok": True,
+                "restart_required": True,
+                "message": "NDI settings changed. Program restart requested; the test card will start automatically.",
+                "ndi_name": req.ndi_name,
+                "ndi_groups": req_d["ndi_groups"],
+            }
+
+        updated = _update_config({
+            "ndi_default_name": req.ndi_name,
+            "ndi_groups": req_d["ndi_groups"],
+            "ndi_multicast_enabled": req_d["ndi_multicast_enabled"],
+            "ndi_multicast_netprefix": req_d["ndi_multicast_netprefix"],
+            "ndi_multicast_netmask": req_d["ndi_multicast_netmask"],
+            "ndi_multicast_ttl": req_d["ndi_multicast_ttl"],
+            "ndi_pending_start_request": None,
+        })
+        write_ndi_runtime_config(updated)
+        with NDI_SUPERVISOR_LOCK:
+            NDI_SUPERVISOR_STATE.update({
+                "desired": False,
+                "request": None,
+                "was_running": False,
+                "last_restart_reason": "manual test card start",
+                "last_error": None,
+                "pipeline_status": "starting test card",
+                "lineout_desired": False,
+                "lineout_request": None,
+                "lineout_last_restore_error": None,
+            })
+        _start_test_card_pipeline_from_dict(req_d)
+        with NDI_SUPERVISOR_LOCK:
+            NDI_SUPERVISOR_STATE["pipeline_status"] = "test card running"
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        with NDI_SUPERVISOR_LOCK:
+            NDI_SUPERVISOR_STATE["last_error"] = str(e)
+            NDI_SUPERVISOR_STATE["pipeline_status"] = "test card failed"
+        raise HTTPException(500, f"Failed to start NDI test card: {e}")
+    return {
+        "ok": True,
+        "restart_required": False,
+        "ndi_name": req.ndi_name,
+        "ndi_groups": req_d["ndi_groups"],
+    }
+
+
+@app.post("/api/test-card/stop")
+def api_test_card_stop():
+    current = ndi_bridge.status_lite(include_logs=False, include_stats=False)
+    if current.get("running") and current.get("source_mode") != "test_card":
+        raise HTTPException(409, "The TV-backed NDI stream is active; the test card control cannot stop it")
+    if not current.get("running"):
+        return {"ok": True}
+    with NDI_SUPERVISOR_LOCK:
+        NDI_SUPERVISOR_STATE.update({
+            "desired": False,
+            "request": None,
+            "last_stop_at": time.time(),
+            "was_running": False,
+            "last_restart_reason": "manual test card stop",
+            "pipeline_status": "stopped",
+            "lineout_desired": False,
+            "lineout_request": None,
+            "lineout_last_restore_error": None,
+        })
+    ndi_bridge.stop()
+    return {"ok": True}
+
+
 @app.post("/api/stop")
 def api_stop():
     # Disable the desired stream first so the supervisor does not auto-restart a deliberate stop.
@@ -3543,6 +3685,8 @@ def api_audio_start(req: LineOutStartReq):
     ndi_st = ndi_bridge.status_lite()
     if not ndi_st.get("running"):
         raise HTTPException(400, "NDI stream must be running before audio output can be started.")
+    if ndi_st.get("source_mode") != "tv":
+        raise HTTPException(409, "Audio output is unavailable while the NDI test card is running.")
 
     try:
         ndi_bridge.lineout_start(device_id=req.device_id, volume=req.volume)

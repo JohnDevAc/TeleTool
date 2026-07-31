@@ -31,6 +31,9 @@ PACKAGE_MANAGED = str(os.environ.get("TELETOOL_PACKAGE_MANAGED", "0")).strip().l
 PACKAGE_UPDATE_STATUS_PATH = Path(
     os.environ.get("TELETOOL_PACKAGE_UPDATE_STATUS_PATH", "/var/lib/teletool/update-status.json")
 ).expanduser()
+THERMAL_ROOT = Path(
+    os.environ.get("TELETOOL_THERMAL_ROOT", "/sys/class/thermal")
+).expanduser()
 APP_VERSION_FALLBACK = "V1.8.0"
 
 router = APIRouter()
@@ -53,11 +56,17 @@ DEFAULT_RELEASE_BRANCH = "main"
 UPDATE_START_GRACE_S = 45
 UPDATE_STATUS_RECENT_S = 600
 INFERNO_PACKAGE_CACHE_TTL_S = 30
+SYSTEM_TEMPERATURE_CACHE_TTL_S = 2.0
 UPDATE_LOCK = threading.Lock()
 INFERNO_PACKAGE_CACHE_LOCK = threading.Lock()
+SYSTEM_TEMPERATURE_CACHE_LOCK = threading.Lock()
 INFERNO_PACKAGE_CACHE: Dict[str, Any] = {
     "checked_at": 0.0,
     "data": {"installed": False, "version": None},
+}
+SYSTEM_TEMPERATURE_CACHE: Dict[str, Any] = {
+    "checked_at": 0.0,
+    "data": {"available": False, "temperature_c": None},
 }
 UPDATE_STATE: Dict[str, Any] = {
     "running": False,
@@ -265,6 +274,50 @@ def _app_version() -> str:
     except Exception:
         version = ""
     return version or APP_VERSION_FALLBACK
+
+
+def _read_system_temperature_c(thermal_root: Path) -> Optional[float]:
+    """Read the preferred SoC/CPU thermal zone without spawning a process."""
+    candidates: List[Tuple[int, Path]] = []
+    try:
+        zones = sorted(thermal_root.glob("thermal_zone*"))
+    except OSError:
+        return None
+
+    for zone in zones:
+        try:
+            zone_type = (zone / "type").read_text(errors="ignore").strip().lower()
+        except OSError:
+            zone_type = ""
+        priority = 0 if ("cpu" in zone_type or "soc" in zone_type) else 1
+        candidates.append((priority, zone / "temp"))
+
+    for _, temperature_path in sorted(candidates, key=lambda item: (item[0], str(item[1]))):
+        try:
+            raw = float(temperature_path.read_text(errors="ignore").strip())
+        except (OSError, ValueError):
+            continue
+        celsius = raw / 1000.0 if abs(raw) >= 1000.0 else raw
+        if -50.0 <= celsius <= 200.0:
+            return round(celsius, 1)
+    return None
+
+
+def system_temperature_info() -> Dict[str, Any]:
+    now = time.monotonic()
+    with SYSTEM_TEMPERATURE_CACHE_LOCK:
+        if now - float(SYSTEM_TEMPERATURE_CACHE["checked_at"]) < SYSTEM_TEMPERATURE_CACHE_TTL_S:
+            return deepcopy(SYSTEM_TEMPERATURE_CACHE["data"])
+
+    temperature_c = _read_system_temperature_c(THERMAL_ROOT)
+    data = {
+        "available": temperature_c is not None,
+        "temperature_c": temperature_c,
+    }
+    with SYSTEM_TEMPERATURE_CACHE_LOCK:
+        SYSTEM_TEMPERATURE_CACHE["checked_at"] = now
+        SYSTEM_TEMPERATURE_CACHE["data"] = data
+    return deepcopy(data)
 
 
 def _inferno_package_info() -> Dict[str, Any]:
@@ -782,6 +835,11 @@ def api_system_hostname_get():
 def api_system_network_info():
     net, warnings = _get_network_info_cached()
     return {"network": net, "warnings": warnings}
+
+
+@router.get("/api/system/temperature")
+def api_system_temperature():
+    return system_temperature_info()
 
 
 

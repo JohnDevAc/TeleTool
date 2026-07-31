@@ -3116,6 +3116,7 @@ def api_status(
     # Backwards-compat for the existing UI: expose active_channel_uuid.
     st["active_channel_uuid"] = st.get("channel_uuid")
     st["active_profile"] = _active_profile
+    st["system_temperature_c"] = system_manager.system_temperature_info().get("temperature_c")
     source_mode = str(st.get("source_mode") or "")
     with NDI_SUPERVISOR_LOCK:
         sup = deepcopy(NDI_SUPERVISOR_STATE)

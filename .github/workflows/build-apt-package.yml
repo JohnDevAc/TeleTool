@@ -83,6 +83,9 @@ jobs:
       - name: Validate RF status conversion
         run: python3 scripts/check_rf_status.py
 
+      - name: Validate system temperature API
+        run: python3 scripts/check_system_temperature.py
+
       - name: Validate TV scan PDF report
         run: python3 scripts/check_tv_scan_report.py
 

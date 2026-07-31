@@ -886,7 +886,7 @@ class GstNDIBridge(GstPipelineBase):
                 f'! videoconvert ! video/x-raw,format={ndi_video_format},interlace-mode=progressive '
                 f'! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! combiner.video '
                 f'audiotestsrc is-live=true do-timestamp=true wave=silence '
-                f'! audio/x-raw,format=S16LE,rate={rate_hz},channels={channels},layout=interleaved '
+                f'! audio/x-raw,format=F32LE,rate={rate_hz},channels={channels},layout=interleaved '
                 f'! queue max-size-buffers=8 max-size-bytes=0 max-size-time=0 ! combiner.audio '
                 f'ndisinkcombiner name=combiner {probe_clause}'
                 f'ndisink name=ndisink0 qos={"true" if ndi_qos_i else "false"} ndi-name={_gst_quote(ndi_name)}'

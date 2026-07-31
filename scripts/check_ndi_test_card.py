@@ -40,6 +40,7 @@ def main() -> None:
         'source_mode_i not in {"tv", "test_card"}',
         'videotestsrc is-live=true do-timestamp=true pattern=smpte',
         'audiotestsrc is-live=true do-timestamp=true wave=silence',
+        'audio/x-raw,format=F32LE',
         'source_mode_i == "test_card"',
         "combiner.video",
         "combiner.audio",

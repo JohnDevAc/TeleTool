@@ -117,9 +117,8 @@ def _test_card_background_svg(
     )
     frame_spokes = "".join(
         f'<line x1="960" y1="430" x2="960" y2="236" '
-        f'transform="rotate({frame * 6} 960 430)" '
-        f'class="frameSpoke{" frameSpokeMajor" if frame % 10 == 0 else ""}"/>'
-        for frame in range(5, 60, 5)
+        f'transform="rotate({frame * 6} 960 430)" class="frameSpoke"/>'
+        for frame in range(10, 60, 10)
     )
     frame_labels = "".join(
         f'<text x="{x}" y="{y}" text-anchor="middle" class="frameLabel">{label}</text>'
@@ -147,8 +146,7 @@ def _test_card_background_svg(
     .tiny {{ font-size: 14px; font-weight: 700; fill: #b8c5d0; letter-spacing: 1px; }}
     .clockTick {{ stroke: #dce5ec; stroke-width: 2; stroke-linecap: round; }}
     .clockTickMajor {{ stroke-width: 4; }}
-    .frameSpoke {{ stroke: #3b4b58; stroke-width: 1.5; }}
-    .frameSpokeMajor {{ stroke: #657987; stroke-width: 2.5; }}
+    .frameSpoke {{ stroke: #657987; stroke-width: 2.5; }}
     .frameLabel {{ font-size: 16px; font-weight: 700; paint-order: stroke; stroke: #0b1117; stroke-width: 4; }}
   </style>
   <rect width="1920" height="1080" fill="#080c10"/>

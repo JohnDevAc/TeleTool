@@ -72,8 +72,7 @@ def main() -> None:
         'class="host">{ip_address_i}</text>',
         'stroke="#ffd400" stroke-width="4"',
         'for frame in range(60)',
-        'for frame in range(5, 60, 5)',
-        'frameSpokeMajor" if frame % 10 == 0',
+        'for frame in range(10, 60, 10)',
         '(1142, 332, "+10")',
         '(1142, 538, "+20")',
         '(960, 640, "30")',
@@ -90,6 +89,8 @@ def main() -> None:
     for split_frame_label in ('(995, 640, "+30")', '(925, 640, "-30")'):
         if split_frame_label in card_source:
             raise SystemExit(f"test-card clock still contains split frame label: {split_frame_label}")
+    if 'for frame in range(5, 60, 5)' in card_source:
+        raise SystemExit("test-card clock still contains full-length five-frame spokes")
 
     lineout_pipeline = source_for_function("gst_ndi.py", "_build_lineout_pipeline_desc", "GstNDIBridge")
     require(

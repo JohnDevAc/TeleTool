@@ -76,8 +76,7 @@ def main() -> None:
         'frameSpokeMajor" if frame % 10 == 0',
         '(1142, 332, "+10")',
         '(1142, 538, "+20")',
-        '(995, 640, "+30")',
-        '(925, 640, "-30")',
+        '(960, 640, "30")',
         '(778, 538, "-20")',
         '(778, 332, "-10")',
         'x="0.5" y="0.5" width="1919" height="1079"',
@@ -88,6 +87,9 @@ def main() -> None:
     for removed_label in ("NDI SOURCE", "TELETOOL CANDIDATE"):
         if removed_label in card_source:
             raise SystemExit(f"test-card background still contains removed label: {removed_label}")
+    for split_frame_label in ('(995, 640, "+30")', '(925, 640, "-30")'):
+        if split_frame_label in card_source:
+            raise SystemExit(f"test-card clock still contains split frame label: {split_frame_label}")
 
     lineout_pipeline = source_for_function("gst_ndi.py", "_build_lineout_pipeline_desc", "GstNDIBridge")
     require(

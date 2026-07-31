@@ -109,10 +109,29 @@ def _test_card_background_svg(
         f'fill="rgb({value},{value},{value})" transform="translate({index * grey_width:.2f},0)"/>'
         for index, value in enumerate(grey_values)
     )
-    ticks = "".join(
-        f'<line x1="960" y1="236" x2="960" y2="{252 if index % 3 else 266}" '
-        f'transform="rotate({index * 30} 960 430)" class="clockTick"/>'
-        for index in range(12)
+    frame_ticks = "".join(
+        f'<line x1="960" y1="236" x2="960" y2="{252 if frame % 5 == 0 else 244}" '
+        f'transform="rotate({frame * 6} 960 430)" '
+        f'class="clockTick{" clockTickMajor" if frame % 10 == 0 else ""}"/>'
+        for frame in range(60)
+    )
+    frame_spokes = "".join(
+        f'<line x1="960" y1="430" x2="960" y2="236" '
+        f'transform="rotate({frame * 6} 960 430)" '
+        f'class="frameSpoke{" frameSpokeMajor" if frame % 10 == 0 else ""}"/>'
+        for frame in range(5, 60, 5)
+    )
+    frame_labels = "".join(
+        f'<text x="{x}" y="{y}" text-anchor="middle" class="frameLabel">{label}</text>'
+        for x, y, label in (
+            (960, 230, "0"),
+            (1142, 332, "+10"),
+            (1142, 538, "+20"),
+            (995, 640, "+30"),
+            (925, 640, "-30"),
+            (778, 538, "-20"),
+            (778, 332, "-10"),
+        )
     )
 
     hostname_i = html.escape(str(hostname or "TeleTool"), quote=True)
@@ -127,7 +146,11 @@ def _test_card_background_svg(
     .host {{ font-size: 25px; font-weight: 600; fill: #ffd400; }}
     .small {{ font-size: 17px; font-weight: 600; }}
     .tiny {{ font-size: 14px; font-weight: 700; fill: #b8c5d0; letter-spacing: 1px; }}
-    .clockTick {{ stroke: #dce5ec; stroke-width: 5; stroke-linecap: round; }}
+    .clockTick {{ stroke: #dce5ec; stroke-width: 2; stroke-linecap: round; }}
+    .clockTickMajor {{ stroke-width: 4; }}
+    .frameSpoke {{ stroke: #3b4b58; stroke-width: 1.5; }}
+    .frameSpokeMajor {{ stroke: #657987; stroke-width: 2.5; }}
+    .frameLabel {{ font-size: 16px; font-weight: 700; paint-order: stroke; stroke: #0b1117; stroke-width: 4; }}
   </style>
   <rect width="1920" height="1080" fill="#080c10"/>
   <rect x="0" y="0" width="1920" height="132" fill="#101820"/>
@@ -156,10 +179,10 @@ def _test_card_background_svg(
   <rect x="740" y="210" width="440" height="440" rx="8" fill="#0b1117" fill-opacity="0.96" stroke="#dce5ec" stroke-width="3"/>
   <circle cx="960" cy="430" r="194" fill="none" stroke="#526473" stroke-width="2"/>
   <circle cx="960" cy="430" r="150" fill="none" stroke="#293743" stroke-width="2"/>
-  {ticks}
+  {frame_ticks}
+  {frame_spokes}
   <line x1="960" y1="236" x2="960" y2="430" stroke="#ffd400" stroke-width="4"/>
-  <line x1="960" y1="430" x2="960" y2="584" stroke="#293743" stroke-width="2"/>
-  <line x1="806" y1="430" x2="1114" y2="430" stroke="#293743" stroke-width="2"/>
+  {frame_labels}
   <circle cx="960" cy="430" r="8" fill="#ffd400"/>
   <text x="960" y="510" text-anchor="middle" class="tiny">MOTION REFERENCE</text>
   <text x="960" y="552" text-anchor="middle" class="small">1 REVOLUTION / SECOND</text>
@@ -168,6 +191,7 @@ def _test_card_background_svg(
   <text x="1880" y="1002" text-anchor="end" class="tiny">AUDIO / MOTION SYNC</text>
   <text x="1880" y="1042" text-anchor="end" class="small">1 SECOND CADENCE</text>
   <rect x="25" y="25" width="1870" height="1030" fill="none" stroke="#e8eef3" stroke-width="2" stroke-dasharray="12 12" opacity="0.42"/>
+  <rect x="0.5" y="0.5" width="1919" height="1079" fill="none" stroke="#ffffff" stroke-width="1" shape-rendering="crispEdges"/>
 </svg>'''
 
 

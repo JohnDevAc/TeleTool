@@ -257,6 +257,7 @@ def _write_test_card_marker() -> Path:
 
 
 from gst_base import GstPipelineBase
+from gst_timing import MediaTiming, SharedAudioPipeline, audio_output_chain, video_output_chain
 
 import gi
 
@@ -331,7 +332,9 @@ class GstNDIBridge(GstPipelineBase):
         self._cfg: Dict[str, Any] = dict(config or load_config(config_path))
 
         super().__init__(log_maxlen=int(self._cfg.get("log_maxlen", 400)))
-        self._lineout_pipeline = GstPipelineBase(log_maxlen=300)
+        self._lineout_pipeline = SharedAudioPipeline(log_maxlen=300)
+        self._media_timing = None
+        self._motion_geometry = None
 
         # Config-driven feature toggles / defaults (may be overridden per-start).
         self._bitrate_probe_enabled: bool = bool(self._cfg.get("enable_bitrate_probe", False))
@@ -376,7 +379,7 @@ class GstNDIBridge(GstPipelineBase):
         self._fps_last_rendered: Optional[int] = None
         self._fps_last_t: Optional[float] = None
 
-        # Line output branch control (lives in the same pipeline; inactive until valve opened)
+        # Separate output pipeline fed from decoded PCM, isolated from NDI.
         self._lineout_enabled: bool = False
         self._lineout_device_id: Optional[str] = None
         self._lineout_device_label: Optional[str] = None
@@ -669,7 +672,9 @@ class GstNDIBridge(GstPipelineBase):
                 last_warning=base["last_warning"],
                 bitrate_bps_est=self._bitrate_bps_est,
             )
-            return asdict(st)
+            result = asdict(st)
+            result["timing"] = self._media_timing.snapshot() if self._media_timing is not None else None
+            return result
 
     
     def status_lite(self, include_logs: bool = False, include_stats: bool = False) -> Dict:
@@ -715,6 +720,7 @@ class GstNDIBridge(GstPipelineBase):
                         "ndi_last_stats_at": self._ndi_last_stats_at,
                         "ndi_fps_est": self._ndi_fps_est,
                         "bitrate_bps_est": self._bitrate_bps_est,
+                        "timing": self._media_timing.snapshot() if self._media_timing is not None else None,
                     }
                 )
             return d
@@ -767,13 +773,15 @@ class GstNDIBridge(GstPipelineBase):
         selected_kind = str(selected.get("kind") or "")
         rate_hz = int(self._cfg.get("audio_rate_hz", 48000))
         channels = int(self._cfg.get("audio_channels", 2))
-        queue_time_ns = max(50, int(self._cfg.get("lineout_queue_time_ms", 200))) * 1_000_000
+        queue_ms = max(50, min(500, int(self._cfg.get("lineout_queue_time_ms", 200))))
+        queue_time_ns = queue_ms * 1_000_000
+        queue_bytes = rate_hz * channels * 4 * queue_ms // 1000
 
         if sink_factory == "alsasink":
             device = str(selected.get("device") or "").strip()
             if not device:
                 raise RuntimeError("Selected ALSA output has no device name")
-            inferno_props = ""
+            inferno_props = "provide-clock=false slave-method=resample "
             if selected_kind == "inferno":
                 buffer_time_us = max(21333, int(self._cfg.get("inferno_alsa_buffer_time_us", 85333)))
                 latency_time_us = max(1333, int(self._cfg.get("inferno_alsa_latency_time_us", 5333)))
@@ -798,25 +806,11 @@ class GstNDIBridge(GstPipelineBase):
             if selected_kind == "inferno"
             else f"audio/x-raw,rate={rate_hz},channels={channels},layout=interleaved"
         )
-        if source_mode == "test_card":
-            if Gst.ElementFactory.find("interaudiosrc") is None:
-                raise RuntimeError("Test-card alignment tone routing is unavailable")
-            source = (
-                "interaudiosrc channel=teletool-test-card buffer-time=100000000 "
-                "latency-time=50000000 period-time=10000000 "
-                f"! queue max-size-buffers=0 max-size-bytes=0 max-size-time={queue_time_ns} "
-            )
-        else:
-            decoder = "uridecodebin3" if Gst.ElementFactory.find("uridecodebin3") is not None else "uridecodebin"
-            decoder_props = (
-                f"{decoder} uri={_gst_quote(input_url)} name=lineoutdecode caps=audio/x-raw"
-            )
-            if decoder == "uridecodebin":
-                decoder_props += " expose-all-streams=false"
-            source = (
-                f"{decoder_props} lineoutdecode. ! queue max-size-buffers=0 "
-                f"max-size-bytes=0 max-size-time={queue_time_ns} "
-            )
+        source = (
+            f"appsrc name=shared_audio is-live=true format=time do-timestamp=false "
+            f"block=false max-bytes={queue_bytes} max-buffers=64 "
+            f"max-time={queue_time_ns} leaky-type=downstream "
+        )
         return (
             f"{source}"
             f"! audioconvert ! audioresample "
@@ -870,7 +864,14 @@ class GstNDIBridge(GstPipelineBase):
                 sink_sync=sink_sync,
                 source_mode=str(source_mode),
             )
-            self._lineout_pipeline._start_pipeline(pipeline_desc)
+            timing = self._media_timing
+            if timing is None or timing.pipeline is None:
+                raise RuntimeError("Shared decoded audio is not ready")
+            if not timing.audio_ready.wait(3) or not timing.latency_ready.wait(3) or timing.pipeline is None:
+                raise RuntimeError("The NDI source has not provided synchronized decoded audio yet; try again shortly")
+            self._lineout_pipeline.start_shared(
+                pipeline_desc, timing, poll_cb=lambda: self._poll_lineout(selected_kind)
+            )
             self._lineout_pipeline._wait_until_playing(
                 timeout_s=10.0 if selected_kind == "inferno" else 5.0
             )
@@ -921,6 +922,17 @@ class GstNDIBridge(GstPipelineBase):
         if was:
             self._lineout_log_push("Line output disabled")
 
+    def _poll_lineout(self, selected_kind):
+        if selected_kind == "inferno":
+            status = self._inferno_clock_status()
+            if not status.get("ready"):
+                self._lineout_pipeline._push_err(
+                    str(status.get("details") or "Inferno lost synchronization with the PTP primary leader.")
+                )
+                self._lineout_pipeline.stop()
+                return False
+        return True
+
 
     def start(self, input_url: str, ndi_name: str, channel_uuid: Optional[str] = None):
         """Start the pipeline.
@@ -957,6 +969,10 @@ class GstNDIBridge(GstPipelineBase):
         delay_ms is clamped to [ndi_delay_min_ms, ndi_delay_max_ms] from config.json.
         """
         self.stop()
+
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                raise RuntimeError("The previous NDI pipeline is still stopping")
 
         # Line output is disabled on every NDI pipeline rebuild; the supervisor
         # reopens it if the user left it enabled.
@@ -1085,39 +1101,24 @@ class GstNDIBridge(GstPipelineBase):
         channels = int(cfg.get("audio_channels", 2))
 
         ndi_video_format = str(cfg.get("ndi_video_format", "UYVY"))
+        self._media_timing = MediaTiming(
+            delay_ns, max_time_ns, rate_hz, channels,
+            handoff_ms=int(cfg.get("lineout_queue_time_ms", 200)),
+        )
+        self._motion_geometry = None
 
         # Video processing for NDI. For interlaced sources (e.g., 1080i/50), software deinterlacing
         # is often the dominant CPU cost and can cause single-core spikes leading to stutter.
         # Default is deinterlace=False (send interlaced frames if the decoder provides them).
         def _video_processing_chain(src_prefix: str) -> str:
-            if deinterlace_i:
-                return (
-                    f'{src_prefix} ! queue ! videoconvert ! deinterlace ! videoconvert '
-                    f'! video/x-raw,format={ndi_video_format},interlace-mode=progressive '
-                    f'! queue max-size-buffers=0 max-size-bytes=0 max-size-time={max_time_ns} '
-                    f'min-threshold-time={delay_ns} ! combiner.video '
-                )
-            # Some MPEG decoders expose PAL/HD interlaced sources as "mixed", which
-            # this ndisink build rejects. Preserve interlaced frames but normalise
-            # the raw caps to a concrete interleaved mode for NDI negotiation.
-            return (
-                f'{src_prefix} ! queue ! videoconvert '
-                f'! video/x-raw,format={ndi_video_format} '
-                f'! capssetter caps=video/x-raw,format={ndi_video_format},interlace-mode=interleaved replace=false '
-                f'! queue max-size-buffers=0 max-size-bytes=0 max-size-time={max_time_ns} '
-                f'min-threshold-time={delay_ns} ! combiner.video '
+            return video_output_chain(
+                src_prefix, ndi_video_format, delay_ns, max_time_ns,
+                deinterlace=deinterlace_i and source_mode_i != "test_card",
+                progressive=source_mode_i == "test_card",
             )
 
         def _audio_processing_chain(src_prefix: str) -> str:
-            return (
-                # Normalise audio timestamps before the delayed NDI branch.
-                # audiorate helps prevent timestamp jitter/discontinuities from becoming audible artifacts
-                # in downstream RTP receivers.
-                f'{src_prefix} ! queue ! audioconvert ! audioresample ! audiorate '
-                f'! audio/x-raw,rate={rate_hz},channels={channels},layout=interleaved '
-                f'! queue max-size-buffers=0 max-size-bytes=0 max-size-time={max_time_ns} '
-                f'min-threshold-time={delay_ns} ! combiner.audio '
-            )
+            return audio_output_chain(src_prefix, rate_hz, channels, delay_ns, max_time_ns)
 
         probe_clause = (
             '! identity name=bitrateprobe silent=true signal-handoffs=true ' if enable_probe_i else '! '
@@ -1180,26 +1181,25 @@ class GstNDIBridge(GstPipelineBase):
             with self._lock:
                 self._test_card_background_path = background_path
                 self._test_card_marker_path = marker_path
+            self._motion_geometry = (motion_center_x, motion_center_y, motion_radius, marker_size)
+            audio_chain = _audio_processing_chain('testcardtone.')
             pipeline_desc = (
                 f'compositor name=testcardcompositor background=black max-threads=2 '
                 f'sink_0::zorder=0 sink_1::xpos={motion_x} sink_1::ypos={motion_y} '
                 f'sink_1::width={marker_size} sink_1::height={marker_size} sink_1::zorder=1 '
                 f'! video/x-raw,format=BGRA,width={width},height={height},framerate={fps}/1,interlace-mode=progressive '
-                f'! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! combiner.video '
+                f'! identity name=testcardpicture silent=true signal-handoffs=false '
+                f'{_video_processing_chain("testcardpicture.")}'
                 f'filesrc location={_gst_quote(background_path)} ! rsvgdec ! imagefreeze is-live=true '
                 f'! video/x-raw,format=BGRA,width={width},height={height},framerate={fps}/1 '
                 f'! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! testcardcompositor.sink_0 '
                 f'filesrc location={_gst_quote(marker_path)} ! rsvgdec ! imagefreeze is-live=true '
                 f'! video/x-raw,format=BGRA,width={marker_size},height={marker_size},framerate={fps}/1 '
                 f'! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! testcardcompositor.sink_1 '
-                f'audiotestsrc is-live=true do-timestamp=true wave=ticks freq={tone_hz} '
+                f'audiotestsrc name=testcardtone is-live=true do-timestamp=false wave=ticks freq={tone_hz} '
                 f'volume={tone_volume:.3f} tick-interval={tone_interval_ms * 1_000_000} '
                 f'sine-periods-per-tick={sine_periods} apply-tick-ramp=true samplesperbuffer=480 '
-                f'! audio/x-raw,format=F32LE,rate={rate_hz},channels={channels},layout=interleaved '
-                f'! tee name=testcardtone '
-                f'testcardtone. ! queue max-size-buffers=8 max-size-bytes=0 max-size-time=0 ! combiner.audio '
-                f'testcardtone. ! queue max-size-buffers=16 max-size-bytes=0 max-size-time=0 '
-                f'! interaudiosink channel=teletool-test-card sync=true async=false '
+                f'{audio_chain}'
                 f'ndisinkcombiner name=combiner {probe_clause}'
                 f'ndisink name=ndisink0 qos={"true" if ndi_qos_i else "false"} ndi-name={_gst_quote(ndi_name)}'
             )
@@ -1274,14 +1274,6 @@ class GstNDIBridge(GstPipelineBase):
         if source_mode_i == "test_card":
             try:
                 self._wait_until_playing(timeout_s=8.0)
-                self._call_in_gst_context_sync(
-                    lambda: self._setup_test_card_motion(
-                        motion_center_x,
-                        motion_center_y,
-                        motion_radius,
-                        marker_size,
-                    )
-                )
             except Exception:
                 self.stop()
                 raise
@@ -1329,7 +1321,18 @@ class GstNDIBridge(GstPipelineBase):
 
     # ---------- Base hooks ----------
 
+    def _prepare_pipeline(self, pipeline):
+        self._media_timing.prepare(pipeline)
+        if self._motion_geometry is not None:
+            self._setup_test_card_motion(*self._motion_geometry)
+
+    def _release_pipeline(self, pipeline):
+        if self._media_timing is not None and self._media_timing.pipeline is pipeline:
+            self._media_timing.close()
+
     def _on_bus_message_extra(self, msg: Gst.Message) -> bool:
+        if msg.type == Gst.MessageType.LATENCY and self._media_timing is not None:
+            self._media_timing.refresh_latency()
         if msg.type == Gst.MessageType.QOS:
             with self._lock:
                 self._qos_events += 1
@@ -1404,6 +1407,9 @@ class GstNDIBridge(GstPipelineBase):
             return False
 
         self._refresh_stats_cache(pipeline)
+        timing = self._media_timing
+        if timing is not None and not timing.latency_ready.is_set():
+            timing.refresh_latency()
 
         with self._lock:
             ident = self._stats_ident

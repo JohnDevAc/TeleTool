@@ -45,16 +45,21 @@ def main() -> None:
         'rsvgdec ! imagefreeze is-live=true',
         '_write_test_card_marker()',
         'sink_1::width={marker_size}',
-        'audiotestsrc is-live=true do-timestamp=true wave=ticks',
+        'audiotestsrc name=testcardtone is-live=true do-timestamp=false wave=ticks',
         'freq={tone_hz}',
         'tick-interval={tone_interval_ms * 1_000_000}',
         'multicast_enabled=bool(multicast_enabled_i)',
-        'audio/x-raw,format=F32LE',
-        'interaudiosink channel=teletool-test-card',
         'source_mode_i == "test_card"',
-        "combiner.video",
-        "combiner.audio",
+        'video_output_chain(',
+        'audio_output_chain(',
     )
+    common = (ROOT / "gst_timing.py").read_text(encoding="utf-8")
+    require(common, "shared output paths", "format=F32LE", "combiner.video", "combiner.audio",
+            "single-segment=true sync=true", "ndi_video_delay", "ndi_audio_delay")
+    card_start = source_for_function("app.py", "_start_test_card_pipeline_from_dict")
+    require(card_start, "configured card delay", "delay_ms=NDI_DELAY_DEFAULT_MS", 'buffer_extra_ms=req_d["buffer_extra_ms"]')
+    prepare = source_for_function("gst_ndi.py", "_prepare_pipeline", "GstNDIBridge")
+    require(prepare, "motion installed before PLAYING", "self._setup_test_card_motion(*self._motion_geometry)")
 
     motion_setup = source_for_function("gst_ndi.py", "_setup_test_card_motion", "GstNDIBridge")
     require(
@@ -132,8 +137,7 @@ def main() -> None:
     require(
         lineout_pipeline,
         "test-card ALSA route",
-        'source_mode == "test_card"',
-        'interaudiosrc channel=teletool-test-card',
+        'appsrc name=shared_audio',
         'alsasink name=lineoutsink',
     )
 

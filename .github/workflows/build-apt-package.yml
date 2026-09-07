@@ -47,6 +47,7 @@ jobs:
             gir1.2-gstreamer-1.0 \
             gstreamer1.0-alsa \
             gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
             gstreamer1.0-tools \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
@@ -75,6 +76,7 @@ jobs:
       - name: Validate concurrent lifecycle and state changes
         run: |
           python3 scripts/check_gst_lifecycle.py
+          python3 scripts/check_media_timing.py
           python3 scripts/check_concurrent_state.py
           python3 scripts/check_update_health.py
           python3 scripts/check_release_shell.py

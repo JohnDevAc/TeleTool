@@ -29,6 +29,14 @@ FastAPI also publishes generated docs at `/docs` and the OpenAPI schema at `/ope
 | `POST` | `/api/ndi/runtime/upload` | Upload, validate, and install an ARM64 `libndi.so.6` request body. |
 | `POST` | `/api/start` | Start or restart the NDI stream. |
 | `POST` | `/api/stop` | Stop NDI and local audio output. |
+| `POST` | `/api/test-card/start` | Start the card using the configured NDI delay and the same shared output timing as TV. |
+| `POST` | `/api/test-card/stop` | Stop the card and its separate audio output. |
+
+With `stats=1`, status includes `timing`: readiness, the negotiated shared base
+latency, effective NDI delay, queue occupancy/limits, and bounded audio-handoff
+counters. These describe sender-side scheduling, not measured receiver latency.
+The handoff discard count includes buffers skipped when attaching a new audio
+pipeline as well as overflow/late buffers.
 
 Start NDI:
 
@@ -77,7 +85,7 @@ non-AArch64, oversized, or non-NDI files.
 | `GET` | `/api/audio/devices` | List suitable local outputs and a separately installed Inferno ALSA network output, including readiness. |
 | `GET` | `/api/audio/defaults` | Current default audio device and volume. |
 | `GET` | `/api/audio/status?logs=1` | Local audio output status. |
-| `POST` | `/api/audio/start` | Start an isolated audio-only output for the active TV channel. |
+| `POST` | `/api/audio/start` | Start an isolated output from the active TV/card decoded audio timeline. |
 | `POST` | `/api/audio/stop` | Stop line output. |
 
 Inferno device entries include `ptp_state` and set `ready` to `false` while no

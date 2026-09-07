@@ -93,7 +93,7 @@ install -d \
   "$package_root/usr/share/doc/teletool/third-party/licenses" \
   "$package_root/usr/share/doc/teletool/third-party/source"
 
-for source_file in app.py fleet_manager.py system_manager.py gst_base.py gst_ndi.py inferno_status.py ndi_runtime_config.py scan_report.py tvh.py config.example.json INSTALLER_VERSION; do
+for source_file in app.py fleet_manager.py system_manager.py gst_base.py gst_timing.py gst_ndi.py inferno_status.py ndi_runtime_config.py scan_report.py tvh.py config.example.json INSTALLER_VERSION; do
   install -m 0644 "$PROJECT_DIR/$source_file" "$app_root/$source_file"
 done
 printf 'V%s\n' "$VERSION" >"$app_root/VERSION"
@@ -101,6 +101,7 @@ chmod 0644 "$app_root/VERSION"
 cp -a "$PROJECT_DIR/static/." "$app_root/static/"
 install -m 0644 "$PROJECT_DIR/README.md" "$package_root/usr/share/doc/teletool/README.md"
 install -m 0644 "$PROJECT_DIR/API.md" "$package_root/usr/share/doc/teletool/API.md"
+install -m 0644 "$PROJECT_DIR/MEDIA_TIMING.md" "$package_root/usr/share/doc/teletool/MEDIA_TIMING.md"
 install -m 0644 "$PROJECT_DIR/License.md" "$package_root/usr/share/doc/teletool/License.md"
 install -m 0644 "$PROJECT_DIR/THIRD_PARTY_NOTICES.md" \
   "$package_root/usr/share/doc/teletool/THIRD_PARTY_NOTICES.md"

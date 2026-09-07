@@ -54,15 +54,18 @@ That package installs a pinned upstream Inferno ALSA PCM, the Statime clock
 service it needs, and source/licence material under
 `/usr/share/doc/teletool-inferno/`.
 
-Runtime audio uses a bounded, audio-only GStreamer pipeline. It does not decode
-video a second time, and an audio-device or network-clock failure cannot stop
-the primary NDI stream.
+Runtime audio uses a bounded, isolated output pipeline fed from the same decoded
+PCM as NDI. It does not open a second TV subscription. The test card and TV
+share the configured NDI delay and output timing; separate audio does not inherit
+that extra NDI delay. See [Shared Media Timing](MEDIA_TIMING.md) for calibration,
+failure isolation, measurements and physical verification limits.
 
 ## Documentation
 
 - [api.md](API.md) — API reference
 - [Licence](License.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
+- [Shared Media Timing](MEDIA_TIMING.md)
 
 ## Licence
 

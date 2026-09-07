@@ -36,26 +36,30 @@ init = method_source("gst_ndi.py", "GstNDIBridge", "__init__")
 require(
     init,
     "audio pipeline ownership",
-    "self._lineout_pipeline = GstPipelineBase(log_maxlen=300)",
+    "self._lineout_pipeline = SharedAudioPipeline(log_maxlen=300)",
 )
 
 pipeline_desc = method_source("gst_ndi.py", "GstNDIBridge", "_build_lineout_pipeline_desc")
 require(
     pipeline_desc,
     "isolated audio-only pipeline",
-    "caps=audio/x-raw",
-    "lineoutdecode. ! queue",
+    "appsrc name=shared_audio",
+    "block=false",
+    "leaky-type=downstream",
     "audioconvert ! audioresample",
     "alsasink name=lineoutsink",
 )
 if "video/" in pipeline_desc:
     raise SystemExit("isolated audio pipeline must not decode video")
+for forbidden in ("uridecodebin", "interaudiosrc", "uri="):
+    if forbidden in pipeline_desc:
+        raise SystemExit(f"separate audio must use the shared decoded timeline, not {forbidden}")
 
 start = method_source("gst_ndi.py", "GstNDIBridge", "lineout_start")
 require(
     start,
     "audio start",
-    "self._lineout_pipeline._start_pipeline(pipeline_desc)",
+    "self._lineout_pipeline.start_shared(",
     "self._lineout_pipeline._wait_until_playing",
     "self._lineout_pipeline.stop()",
     "self._inferno_clock_status(force=True)",

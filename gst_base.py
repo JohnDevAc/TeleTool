@@ -273,6 +273,14 @@ class GstPipelineBase:
 
     # ---------- GStreamer thread ----------
 
+    def _prepare_pipeline(self, pipeline):
+        """Configure a new pipeline on its worker before entering PLAYING."""
+        pass
+
+    def _release_pipeline(self, pipeline):
+        """Release per-run hooks on the owning worker after entering NULL."""
+        pass
+
     def _run_gst_thread(self, pipeline_desc: str, poll_cb: Optional[Callable[[], bool]], stop_event: threading.Event):
         pipeline = None
         context = None
@@ -302,6 +310,7 @@ class GstPipelineBase:
                     self._context = context
                     self._bus_watch_id = bus_watch_id
                     self._poll_source = poll_source
+                self._prepare_pipeline(pipeline)
                 if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
                     raise RuntimeError("Pipeline failed to enter PLAYING")
             if not stop_event.is_set():
@@ -315,6 +324,7 @@ class GstPipelineBase:
             try:
                 if pipeline is not None:
                     pipeline.set_state(Gst.State.NULL)
+                    self._release_pipeline(pipeline)
             except Exception:
                 pass
             try:

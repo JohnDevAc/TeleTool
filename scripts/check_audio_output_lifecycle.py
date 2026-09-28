@@ -3,6 +3,10 @@
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Dict, Optional
+import threading
+import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -109,4 +113,40 @@ system_html = (ROOT / "static" / "system.html").read_text(encoding="utf-8")
 if 'window.location.replace("/")' not in system_html:
     raise SystemExit("static/system.html: successful updates must return to the main UI")
 
+
+def check_sink_timing_policy():
+    """Exercise a real start with saved settings; replace only hardware calls."""
+    scope = {"Any": Any, "Dict": Dict, "Optional": Optional, "time": time}
+    exec(method_source("gst_ndi.py", "", "_gst_quote"), scope)
+    exec(pipeline_desc, scope)
+    exec(start, scope)
+    for kind in ("inferno", "usb"):
+        for configured_sync in (False, True):
+            selected = {"id": "alsa:test", "device": "test", "sink": "alsasink", "kind": kind}
+            launched = []
+            ready = threading.Event()
+            ready.set()
+            bridge = SimpleNamespace(
+                _lock=threading.RLock(), _source_mode="test_card", _input_url="test-card://local",
+                _cfg={"lineout_sink_sync": configured_sync},
+                _base_status_fields=lambda **kwargs: {"running": True},
+                _resolve_audio_output_device=lambda device: selected,
+                _inferno_clock_status=lambda **kwargs: {"ready": True},
+                _media_timing=SimpleNamespace(pipeline=object(), audio_ready=ready, latency_ready=ready),
+                _lineout_pipeline=SimpleNamespace(
+                    start_shared=lambda description, *args, **kwargs: launched.append(description),
+                    _wait_until_playing=lambda **kwargs: None,
+                    stop=lambda: None,
+                ),
+                _lineout_log_push=lambda message: None,
+            )
+            bridge._build_lineout_pipeline_desc = lambda **kwargs: scope["_build_lineout_pipeline_desc"](bridge, **kwargs)
+            scope["lineout_start"](bridge, device_id=selected["id"])
+            expected = configured_sync if kind == "usb" else False
+            assert len(launched) == 1 and f" sync={str(expected).lower()}" in launched[0], launched
+            assert bridge._lineout_sink_sync is expected
+            assert bridge._lineout_enabled
+
+
+check_sink_timing_policy()
 print("Audio output lifecycle and update redirect tests passed.")

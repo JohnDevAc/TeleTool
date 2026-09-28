@@ -26,6 +26,24 @@ clock is synchronized to a network grandmaster or primary leader. If no leader
 is present, the Web UI marks the output unavailable instead of starting an ALSA
 pipeline that will time out.
 
+The TeleTool service permits realtime priority up to 81 so Inferno can schedule
+its audio transmitter thread at its requested FIFO priority. The rest of the
+application retains normal scheduling. Without this allowance, CPU load from
+video processing can delay audio packets even while PTP remains synchronized.
+For an active Inferno output, the following should show `flows TX` with class
+`FF` and priority `81`:
+
+```sh
+ps -T -p "$(systemctl show teletool -p MainPID --value)" -o tid,comm,cls,rtprio
+```
+
+Inferno output always uses `alsasink sync=false`: the shared decoded-audio
+handoff already paces samples, and Inferno consumes them against its PTP clock.
+Scheduling them again at the ALSA sink can clip late samples into intermittent
+or distorted audio even when network packets arrive on time. Existing saved
+`lineout_sink_sync` settings still apply to other audio outputs; Inferno ignores
+that setting and reports its effective `sink_sync` as `false` in audio status.
+
 During package configuration, known source-install service and ALSA overrides
 are moved to timestamped files under `/var/backups/teletool-inferno/`. This
 allows the package-owned clock service and PCM definition to become active

@@ -68,8 +68,16 @@ override.
 
 ## Calibration
 
-Keep `lineout_sink_sync=true` for clocked alignment. A deliberately unsynchronized
-sink bypasses scheduled playback. Set desk/DSP audio delay while watching the
+For USB/local outputs, keep `lineout_sink_sync=true` for clocked alignment.
+Inferno always bypasses timestamp synchronization at the ALSA sink: the shared
+handoff paces PCM and Inferno consumes it against the network PTP clock. Applying
+the same timestamps again at this sink was observed to break the test-card
+pulse into intermittent audio. Its actual output latency includes ALSA and
+network buffering; the schedule above describes the handoff, not desk playback.
+The service permits the Inferno transmitter to request FIFO priority 81 so
+video processing cannot routinely delay its packet transmission.
+
+Set desk/DSP audio delay while watching the
 actual NDI display and listening through the actual audio endpoint. Keep the
 same NDI delay, audio endpoint, receiver/display processing and output format
 when changing to TV.
@@ -121,3 +129,13 @@ At test time the unit had no mapped TV channels, no USB audio device and no
 ready PTP leader. Live RF/broadcast comparison, real Dante delivery, receiver
 screen/PA alignment, and an extended soak remain site acceptance checks. No
 measured percentage reduction in live TV decoding load is claimed.
+
+On 192.168.20.105, live Dante diagnosis found two independent faults: the
+service's default realtime-priority limit blocked Inferno's FIFO request, and
+ALSA timestamp synchronization broke up the paced PCM. After permitting priority
+81 and bypassing sink synchronization, a 30-second packet capture contained the
+expected tone pulse every second with no capture drops or transmit-timing
+warnings. The receiver subsequently reported zero late packets over 21 minutes
+17 seconds, with a 4.6 ms peak against its 10 ms receive limit. These observations
+cover the test card and this network; they do not establish long-term clock-drift
+behavior or physical A/V alignment for all sources.

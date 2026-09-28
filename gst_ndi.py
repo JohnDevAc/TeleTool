@@ -850,7 +850,11 @@ class GstNDIBridge(GstPipelineBase):
         except Exception:
             volume_i = 0.8
         volume_i = max(0.0, min(1.0, volume_i))
-        sink_sync = bool(self._cfg.get("lineout_sink_sync", True))
+        # The shared handoff already paces PCM on the source timeline. Inferno
+        # consumes it using its PTP clock; scheduling those same timestamps again
+        # in alsasink clips late samples and breaks up the test-card pulse.
+        # Apply this even to existing configurations with lineout_sink_sync=true.
+        sink_sync = selected_kind != "inferno" and bool(self._cfg.get("lineout_sink_sync", True))
         with self._lock:
             input_url = str(self._input_url or "")
         if source_mode == "tv" and not input_url:

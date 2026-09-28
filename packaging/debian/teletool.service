@@ -9,6 +9,9 @@ Type=simple
 User=teletool
 Group=teletool
 SupplementaryGroups=audio video
+# Inferno requests FIFO priority 81 for its audio transmitter thread.
+# Allow that request without running the entire application as realtime.
+LimitRTPRIO=81
 WorkingDirectory=/usr/lib/teletool
 Environment=PYTHONUNBUFFERED=1
 Environment=HOME=/var/lib/teletool
